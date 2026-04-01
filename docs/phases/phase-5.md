@@ -1,43 +1,32 @@
-# Phase 5
+# Phase 5: Audit & Security Baseline
 
-## Objective
+## Status
 
-Introduce audit and security baseline work in later implementation phases.
+Planning
 
-## Scope
+## Goal
 
-- reserve the audit logger path
-- document JSONL-oriented audit expectations
-- define the retroactive instrumentation intent for skills
+Add execution audit capabilities in preparation for future dangerous operations.
 
-## Inputs
+## Tasks
 
-- `docs/dba_assistant_master_plan_en.md`
-- `docs/phases/phase-3.md`
-- `docs/phases/phase-4.md`
-
-## Outputs
-
-- scaffold audit package
-- documented audit phase boundary
-
-## Directories Involved
-
-- `src/dba_assistant/core/audit/`
-
-## Dependencies
-
-- `docs/phases/phase-3.md`
-- `docs/phases/phase-4.md`
+1. Implement lightweight JSONL execution logging in `core/audit/logger.py`.
+2. Record:
+   - Skill name and version
+   - sanitized input summary, including data source, file list, and connection target
+   - tool invocation sequence and duration
+   - output path and output mode
+   - execution result, including success, failure, or partial failure
+   - error messages and stack traces where present
+3. Retroactively add audit instrumentation to the Phase 3 and Phase 4 Skills.
+4. Document the future interrupt-based human confirmation strategy as a design artifact only.
 
 ## Acceptance Criteria
 
-- audit package exists
-- logger placeholder exists
-- no executable audit pipeline is implemented during initialization
+- Each Skill execution generates a complete JSONL audit record in the `logs/` directory.
+- Audit logging does not materially impact Skill execution performance.
 
-## Non-Goals
+## Dependency Notes
 
-- JSONL logging behavior
-- execution tracing
-- human confirmation implementation
+- Depends on the skills delivered in Phase 3 and Phase 4.
+- Current repository scaffold status is tracked separately in `docs/phases/current-scaffold-status.md`.

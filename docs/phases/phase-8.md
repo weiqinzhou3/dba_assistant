@@ -1,39 +1,20 @@
-# Phase 8
+# Phase 8: Future Expansion
 
-## Objective
+## Status
 
-Document future expansion boundaries so initialization does not accidentally introduce out-of-scope behavior.
+Deferred
 
-## Scope
+## Goal
 
-- record deferred dangerous-write operations
-- record future multi-database expansion direction
-- keep initialization neutral on later framework choices
+Record deferred expansion items without implementing them early.
 
-## Inputs
+## Deferred Items
 
-- `docs/dba_assistant_master_plan_en.md`
-- `AGENTS.md`
+- Integrate dangerous write operations requiring approval, such as `CONFIG SET` and `SLAVEOF`, through an interrupt mechanism for human confirmation.
+- Introduce a general-purpose framework only if real complexity proves it necessary.
+- Expand to additional DBA skill areas such as MySQL and MongoDB after the Redis scope is stable.
 
-## Outputs
+## Dependency Notes
 
-- documented future-expansion boundary
-
-## Directories Involved
-
-- `docs/phases/`
-
-## Dependencies
-
-- `docs/phases/phase-5.md`
-
-## Acceptance Criteria
-
-- future work is clearly documented as deferred
-- initialization does not pre-implement safety workflows
-
-## Non-Goals
-
-- write operations
-- approval interrupts
-- MySQL or MongoDB skill implementation
+- This phase is intentionally postponed until earlier Redis-focused phases are stable.
+- Current repository scaffold status is tracked separately in `docs/phases/current-scaffold-status.md`.

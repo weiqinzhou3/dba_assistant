@@ -1,44 +1,63 @@
-# Phase 4
+# Phase 4: Skill Two — Redis Inspection Report
 
-## Objective
+## Status
 
-Implement the Redis inspection report skill in later work, while keeping initialization limited to contracts and paths.
+Planning
 
-## Scope
+## Goal
 
-- reserve the `redis_inspection_report` production package
-- document offline and remote collection paths
-- define where inspection analysis and report work will live
+Implement the full pipeline for Redis inspection reports, supporting offline source data and remote real-time collection, with multiple output modes.
 
-## Inputs
+## Input Paths
 
-- `docs/dba_assistant_master_plan_en.md`
-- `docs/phases/phase-1.md`
-- `docs/phases/phase-2.md`
+| Path | Description | Data Flow | Delivery Order |
+|------|-------------|-----------|----------------|
+| A: Offline source data | Multiple source data files already collected locally | Local file directory → parse and normalize → analyze → generate report | Deliver first |
+| B: Remote real-time collection | Connect to Redis or SSH for live collection | Redis `INFO`, `CONFIG`, `SLOWLOG`, `CLIENT LIST`, system commands, and related data → analyze → generate report | Deliver after Path A |
 
-## Outputs
+## Implementation Breakdown
 
-- skill scaffold under `src/dba_assistant/skills/redis_inspection_report/`
-- contract-oriented `SKILL.md`
+### Phase 4a: Offline Source Data Path
 
-## Directories Involved
+1. Write `skills/redis-inspection-report/SKILL.md` defining inspection scope, data contract, and output contract.
+2. Implement the Inspection Offline Collector.
+   - Accept a local source data directory path.
+   - Auto-detect and parse multiple source data formats, including `INFO`, `CONFIG`, `SLOWLOG`, and custom collection outputs.
+   - Output a normalized `InspectionRawData`.
+3. Implement the Inspection Analyzer.
+   - Cover basic information, configuration audit, persistence status, replication topology, memory usage, slow query analysis, connection status, security configuration, and known risk items.
+   - For each inspection item, output current value, expected value or threshold, risk level, and remediation recommendation.
+   - Output a standardized `InspectionAnalysisResult`.
+4. Implement report generation.
+   - Reference historical inspection reports to build a standard inspection template.
+   - Standardize cover page information, executive summary, inspection detail tables, risk visualization, remediation prioritization, and evidence appendix structure.
+   - Render through the Reporter Layer.
+5. Test end to end with fixture offline source data, including full report output and summary output.
 
-- `src/dba_assistant/skills/redis_inspection_report/`
+### Phase 4b: Remote Real-Time Collection Path
 
-## Dependencies
+1. Implement the Inspection Remote Collector.
+   - Execute the inspection command sequence through `RedisAdaptor`.
+   - Collect system-level information through `SSHAdaptor` where needed.
+   - Output the same `InspectionRawData`.
+2. Reuse the Analyzer and Reporter from Phase 4a.
+3. Keep all remote collection strictly read-only.
+4. Test end to end against a test Redis instance.
 
-- `docs/phases/phase-1.md`
-- `docs/phases/phase-2.md`
+## Output Modes
+
+- `--output=report --format=docx`: full Word inspection report
+- `--output=report --format=pdf`: full PDF inspection report
+- `--output=report --format=html`: full HTML inspection report
+- `--output=summary`: stdout summary with risk items, level statistics, and remediation priority ranking
 
 ## Acceptance Criteria
 
-- skill directory exists
-- `SKILL.md` exists
-- analyzer and collectors placeholders exist
-- no inspection command, parsing, or reporting logic is implemented during initialization
+- After Phase 4a completion, offline source data can produce a standardized, clearly structured document of higher quality than historical reports.
+- After Phase 4b completion, the remote collection pipeline is functional and its output structures remain consistent with the offline path.
+- Summary mode provides conclusions directly in the terminal without opening a file.
 
-## Non-Goals
+## Dependency Notes
 
-- Redis collection
-- SSH collection
-- inspection report rendering
+- Depends on shared layers from Phase 1 and remote/runtime foundations from Phase 2.
+- Current repository scaffold status is tracked separately in `docs/phases/current-scaffold-status.md`.

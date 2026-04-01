@@ -1,42 +1,20 @@
-# Phase 7
+# Phase 7: Report Template Continuous Optimization
 
-## Objective
+## Status
 
-Document template optimization as an ongoing quality track rather than a one-time initialization deliverable.
+Ongoing alongside each implementation phase
 
-## Scope
+## Goal
 
-- define how generated reports will be reviewed later
-- preserve template ownership under repository-controlled paths
+Continuously improve template quality based on actual generated reports.
 
-## Inputs
+## Ongoing Tasks
 
-- `docs/dba_assistant_master_plan_en.md`
-- `templates/reports/`
+- After each Skill's first report is generated, review output quality and compare it against historical reports.
+- Optimize layout professionalism, information density, readability, risk visualization, and remediation recommendation actionability.
+- Collect usage feedback and turn repeated improvements into template defaults.
 
-## Outputs
+## Dependency Notes
 
-- documented optimization policy
-
-## Directories Involved
-
-- `templates/reports/`
-- `references/report-samples/`
-
-## Dependencies
-
-- `docs/phases/phase-1.md`
-- `docs/phases/phase-3.md`
-- `docs/phases/phase-4.md`
-- `docs/phases/phase-6.md`
-
-## Acceptance Criteria
-
-- template optimization intent is documented
-- no template rendering behavior is added during initialization
-
-## Non-Goals
-
-- final template design
-- visual polish work
-- report comparison automation
+- Runs continuously across Phase 3 through Phase 6.
+- Current repository scaffold status is tracked separately in `docs/phases/current-scaffold-status.md`.

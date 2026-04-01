@@ -1,0 +1,1 @@
+"""SSH adaptor scaffold."""

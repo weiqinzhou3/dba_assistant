@@ -1,0 +1,36 @@
+# DBA Assistant Repository Policy
+
+## Purpose
+
+This repository is developed phase by phase from the DBA Assistant master plan.
+
+DBA Assistant is a Deep Agent SDK-based project. Initialization creates repository scaffolding only. Functional delivery happens later, one phase at a time.
+
+## Non-Negotiable Rules
+
+- `AGENTS.md` is the repository policy source of truth.
+- DBA Assistant uses Deep Agent SDK as its runtime foundation.
+- Production code must live under `src/dba_assistant/`.
+- `src/claude-code-source-code/` and `src/docs/` are reference-only inputs for design and coding guidance.
+- Do not copy runtime implementation code from the reference layer into production modules.
+- Do not import production modules from the reference layer, and do not import the reference layer into production modules.
+- Follow the master plan when reference material and local preference diverge.
+- Phase work must stay scoped. Do not mix unfinished later-phase behavior into an earlier-phase delivery.
+
+## Repository Layout Rules
+
+- `docs/phases/` stores execution-oriented phase notes.
+- `templates/reports/` stores repository-owned report template work.
+- `references/report-samples/` stores historical report samples for comparison only.
+- `tests/` stores repository-native fixtures and verification assets.
+
+## Initialization Rules
+
+- `/init` creates structure, contracts, and documentation only.
+- `/init` must not claim runtime completeness.
+- Placeholder modules must clearly state `scaffold-only` status.
+
+## Language Direction
+
+- The repository is Python-first.
+- TypeScript files under the reference layer do not define the production language choice.

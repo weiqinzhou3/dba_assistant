@@ -1,0 +1,1 @@
+DEFAULT_DOCX_TABLE_STYLE = "Table Grid"

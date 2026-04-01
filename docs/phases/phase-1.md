@@ -1,47 +1,40 @@
-# Phase 1
+# Phase 1: Architecture Foundation & Shared Layers
 
-## Objective
+## Status
 
-Establish shared repository foundations for collectors, reporters, analyzers, audit, templates, and tests.
+Planning
 
-## Scope
+## Goal
 
-- define production package boundaries
-- reserve shared core paths
-- document offline-first phase intent
-- prepare template and test areas for later implementation
+Establish the repository structure and deliver the interface definitions and offline implementations for the Collector, Reporter, and Template shared layers.
 
-## Inputs
+## Tasks
 
-- `docs/dba_assistant_master_plan_en.md`
-- `AGENTS.md`
-- existing reference material under `src/`
-
-## Outputs
-
-- documented scaffold under `src/dba_assistant/core/`
-- scaffold template directories under `templates/reports/`
-- scaffold test directories under `tests/`
-
-## Directories Involved
-
-- `src/dba_assistant/core/`
-- `templates/reports/`
-- `tests/`
-
-## Dependencies
-
-- none
+1. Establish repository directory structure and create `AGENTS.md`.
+2. Define Collector interfaces and types.
+   - Declare `ICollector<TInput, TOutput>`.
+   - Implement an `OfflineCollector` base class that reads local files or directories, validates format, and outputs structured data.
+   - Keep the Remote Collector at interface-definition level only.
+3. Define Reporter interfaces and types.
+   - Declare `IReporter<TAnalysis>`.
+   - Implement `DocxReporter` to render analysis results into Word documents based on templates.
+   - Implement `SummaryReporter` to format analysis results into terminal-readable structured output.
+   - Keep PDF and HTML Reporters at interface-definition level only.
+4. Establish the report template system.
+   - Create `templates/reports/shared/` and implement shared components such as cover page, risk level styles, disclaimer, and related shared template elements.
+   - Analyze historical report samples in `references/report-samples/`, extract content structure, and identify improvement areas.
+   - Build initial standard template skeletons for RDB analysis and inspection reports.
+5. Establish the reference file isolation directory and create usage-constraint documentation for it.
+6. Set up the base testing framework and write unit tests for Collector and Reporter interfaces.
 
 ## Acceptance Criteria
 
-- shared core directories exist
-- template directories exist
-- test directories exist
-- no functional collector or reporter logic is introduced during scaffold setup
+- The Collector interface can be called by Skills, and the offline path can read local files and output structured data.
+- The Reporter interface can be called by Skills, and at minimum `DocxReporter` and `SummaryReporter` are functional.
+- Template skeletons are ready and can render a minimal Word document with a cover page, headings, and tables.
+- Tests pass.
 
-## Non-Goals
+## Dependency Notes
 
-- collector implementation
-- reporter implementation
-- runtime execution
+- This is the foundation phase for later runtime, skill, and audit work.
+- Current repository scaffold status is tracked separately in `docs/phases/current-scaffold-status.md`.

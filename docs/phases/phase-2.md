@@ -1,46 +1,31 @@
-# Phase 2
+# Phase 2: Runtime Assembly & Remote Collection Foundation
 
-## Objective
+## Status
 
-Prepare for Deep Agent SDK assembly and remote collection work without implementing it during initialization.
+Planning
 
-## Scope
+## Goal
 
-- reserve adaptor and tool ownership boundaries
-- explicitly document Deep Agent SDK as the future runtime assembly target
-- document the read-only remote collection direction
-- keep production code separate from the reference layer
+Register skills and tools via Deep Agent SDK, configure the LLM, and implement the remote collection path.
 
-## Inputs
+## Tasks
 
-- `docs/dba_assistant_master_plan_en.md`
-- `AGENTS.md`
-- `docs/phases/phase-1.md`
-
-## Outputs
-
-- scaffold adaptor package
-- scaffold tool package
-- documented phase boundary for later Deep Agent SDK runtime work
-
-## Directories Involved
-
-- `src/dba_assistant/adaptors/`
-- `src/dba_assistant/tools/`
-
-## Dependencies
-
-- `docs/phases/phase-1.md`
+1. Register skills and tools through Deep Agent SDK to complete runtime assembly.
+2. Configure a working LLM setup, including model selection, token limits, and retry strategy.
+3. Implement Remote Collector infrastructure.
+   - `RedisAdaptor`: manage Redis connections, including direct connections and SSH tunnels, and wrap commands such as `INFO`, `CONFIG GET`, `SLOWLOG`, and `CLIENT LIST`.
+   - `SSHAdaptor`: manage SSH connections, including remote command execution and file transfer.
+   - `MySQLAdaptor`: manage MySQL connections, including query execution and result export.
+4. Mark all remote collection paths as read-only. No write operations are executed.
+5. Implement PDF Reporter and HTML Reporter if complexity is manageable; otherwise defer them until after Phase 4.
 
 ## Acceptance Criteria
 
-- adaptor module paths exist
-- tool package path exists
-- phase notes explicitly identify Deep Agent SDK as the runtime foundation
-- no runtime registration logic is added during scaffold setup
+- The Agent can invoke registered skills through the SDK.
+- At least one remote Adaptor, starting with Redis direct connection, is functional.
+- The runtime remains lightweight and does not introduce a custom framework.
 
-## Non-Goals
+## Dependency Notes
 
-- Deep Agent SDK integration
-- live remote connections
-- command execution behavior
+- Depends on the shared-layer foundations established in Phase 1.
+- Current repository scaffold status is tracked separately in `docs/phases/current-scaffold-status.md`.

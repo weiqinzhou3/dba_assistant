@@ -1,12 +1,15 @@
 # Phase Documents
 
-This directory breaks the DBA Assistant master plan into phase-specific working notes.
+This directory records the target delivery scope for each phase of DBA Assistant.
 
-Each phase document should be used for:
+These phase files are aligned with `docs/dba_assistant_master_plan_en.md`. They describe what each phase is expected to deliver when executed.
 
-- scope control
-- delivery inspection
-- dependency tracking
-- acceptance review
+They do not describe the repository's current implementation completeness.
 
-These documents describe intended work. They do not imply that the phase is already implemented.
+For current repository state after `/init`, see `docs/phases/current-scaffold-status.md`.
+
+When reading this directory:
+
+- `phase-1.md` to `phase-8.md` define target phase outcomes
+- `current-scaffold-status.md` defines what the repository currently contains
+- `docs/dba_assistant_master_plan_en.md` remains the source of truth when wording conflicts appear

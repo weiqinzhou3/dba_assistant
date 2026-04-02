@@ -29,3 +29,27 @@ def test_normalize_raw_request_uses_default_output_mode_when_unspecified() -> No
     assert request.runtime_inputs.output_mode == "summary"
     assert request.secrets.redis_password is None
     assert request.prompt == "Inspect Redis 10.0.0.9:6379"
+
+
+def test_normalize_raw_request_prefers_explicit_use_as_password_form() -> None:
+    request = normalize_raw_request(
+        "Use abc123 as the redis password and inspect Redis 10.0.0.8:6379",
+        default_output_mode="summary",
+    )
+
+    assert request.secrets.redis_password == "abc123"
+    assert request.runtime_inputs.redis_host == "10.0.0.8"
+    assert request.runtime_inputs.redis_port == 6379
+    assert "abc123" not in request.prompt
+
+
+def test_normalize_raw_request_allows_colon_and_dot_in_password_without_host_confusion() -> None:
+    request = normalize_raw_request(
+        "Use password abc:123.def to inspect Redis 10.0.0.8:6379 and give me a summary",
+        default_output_mode="summary",
+    )
+
+    assert request.secrets.redis_password == "abc:123.def"
+    assert request.runtime_inputs.redis_host == "10.0.0.8"
+    assert request.runtime_inputs.redis_port == 6379
+    assert "abc:123.def" not in request.prompt

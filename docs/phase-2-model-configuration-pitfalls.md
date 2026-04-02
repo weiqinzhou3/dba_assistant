@@ -4,7 +4,8 @@ This note captures the model/provider assumptions that matter for Phase 2. The s
 
 ## Pitfalls to Avoid
 
-- The default DashScope China preset is not the free preset.
+- The checked-in default config uses `ollama_local` for safe local debugging, not a hosted free-tier model.
+- If you switch to DashScope China, that preset is not the free preset.
 - Any international free-tier assumption is vendor policy, not a repository guarantee, and it can change or expire.
 - Do not hardcode model configuration outside the Deep Agent SDK integration layer.
 - `config/config.yaml` is the static source of truth for repository usage. Do not reintroduce environment-variable-only config loading as the normal path.

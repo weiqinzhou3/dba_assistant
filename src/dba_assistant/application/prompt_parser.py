@@ -5,11 +5,14 @@ import re
 from dba_assistant.application.request_models import NormalizedRequest, RuntimeInputs, Secrets
 
 
+_SECRET_TOKEN_PATTERN = r"(?P<password>\"[^\"]+\"|'[^']+'|[^\s,;]+)"
 _PASSWORD_PATTERNS = (
     re.compile(
-        r"(?i)\b(?:redis\s+)?password(?:\s+is|\s+to|\s+as)?\s+(?P<password>[^\s,;:.]+)"
+        rf"(?i)\buse\s+{_SECRET_TOKEN_PATTERN}\s+as\s+(?:the\s+)?redis\s+password\b"
     ),
-    re.compile(r"(?i)\buse\s+(?P<password>[^\s,;:.]+)\s+as\s+(?:the\s+)?redis\s+password\b"),
+    re.compile(
+        rf"(?i)\b(?:redis\s+)?password(?:\s+is|\s+to|\s+as)?\s+{_SECRET_TOKEN_PATTERN}"
+    ),
 )
 _HOST_PORT_PATTERN = re.compile(
     r"(?i)\b(?:redis\s+)?(?P<host>(?:localhost)|(?:\d{1,3}(?:\.\d{1,3}){3})|(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*)):(?P<port>\d{1,5})\b"
@@ -21,14 +24,15 @@ _WHITESPACE_PATTERN = re.compile(r"\s+")
 
 def normalize_raw_request(raw_prompt: str, *, default_output_mode: str) -> NormalizedRequest:
     password_match, password_pattern = _extract_password(raw_prompt)
-    host_match = _HOST_PORT_PATTERN.search(raw_prompt)
-    db_match = _DB_PATTERN.search(raw_prompt)
-    output_mode = _extract_output_mode(raw_prompt, default_output_mode)
 
     prompt = raw_prompt
     if password_match is not None and password_pattern is not None:
         prompt = password_pattern.sub(" ", prompt, count=1)
     prompt = _WHITESPACE_PATTERN.sub(" ", prompt).strip()
+
+    host_match = _HOST_PORT_PATTERN.search(prompt)
+    db_match = _DB_PATTERN.search(prompt)
+    output_mode = _extract_output_mode(prompt, default_output_mode)
 
     return NormalizedRequest(
         raw_prompt=raw_prompt,
@@ -39,7 +43,7 @@ def normalize_raw_request(raw_prompt: str, *, default_output_mode: str) -> Norma
             redis_db=int(db_match.group("db")) if db_match else 0,
             output_mode=output_mode,
         ),
-        secrets=Secrets(redis_password=password_match.group("password") if password_match else None),
+        secrets=Secrets(redis_password=_clean_secret(password_match.group("password")) if password_match else None),
     )
 
 
@@ -57,3 +61,7 @@ def _extract_output_mode(raw_prompt: str, default_output_mode: str) -> str:
         return default_output_mode
 
     return matches[-1].group("mode").lower()
+
+
+def _clean_secret(value: str) -> str:
+    return value.strip().strip("\"'")

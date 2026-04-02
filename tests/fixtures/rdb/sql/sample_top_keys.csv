@@ -1,0 +1,4 @@
+database,type,key,size_in_bytes,encoding,num_elements,len_largest_element,expiry
+0,hash,loan:1,128,hashtable,4,48,
+0,string,loan:active:2,64,raw,1,64,1700000000
+0,set,cache,32,intset,3,16,

@@ -29,7 +29,6 @@ _HOST_PORT_PATTERN = re.compile(
     r"(?i)\b(?:redis\s+)?(?P<host>(?:localhost)|(?:\d{1,3}(?:\.\d{1,3}){3})|(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*)):(?P<port>\d{1,5})\b"
 )
 _DB_PATTERN = re.compile(r"(?i)\bdb(?:\s+(?:index\s+)?)?(?P<db>\d+)\b")
-_OUTPUT_MODE_PATTERN = re.compile(r"(?i)\b(?P<mode>report|summary)\b")
 _WITH_PROFILE_PATTERN = re.compile(
     r"(?i)\bwith\s+(?:the\s+)?(?P<profile>generic|rcs)\s+profile(?![a-z0-9_])"
 )
@@ -42,7 +41,11 @@ _BY_PROFILE_PATTERN = re.compile(
 _CHINESE_GENERIC_PROFILE_PATTERN = re.compile(
     r"(?i)(?:(?<=按)|(?<=用))(?P<profile_cn>通用)\s*profile(?![a-z0-9_])"
 )
-_PREFIX_PATTERN = re.compile(r"(?<![A-Za-z0-9_.-])(?P<prefix>[A-Za-z0-9_.-]+:\*)")
+_PREFIX_OVERRIDE_PATTERNS = (
+    re.compile(
+        r"(?i)(?:重点看|重点关注|关注|看|分析|analyze|analyse|inspect|focus(?:\s+on)?)\s*(?P<prefix>[A-Za-z0-9_.-]+:\*)\s*(?:前缀|prefix)?"
+    ),
+)
 _SECTION_TOP_PATTERN = re.compile(
     r"(?i)\b(?P<section>prefix|hash|list|set)\s+top\s+(?P<count>\d{1,4})\b"
 )
@@ -63,7 +66,6 @@ def normalize_raw_request(raw_prompt: str, *, default_output_mode: str) -> Norma
 
     host_match = _HOST_PORT_PATTERN.search(prompt)
     db_match = _DB_PATTERN.search(prompt)
-    output_mode = _extract_output_mode(prompt, default_output_mode)
 
     return NormalizedRequest(
         raw_prompt=raw_prompt,
@@ -72,7 +74,7 @@ def normalize_raw_request(raw_prompt: str, *, default_output_mode: str) -> Norma
             redis_host=host_match.group("host") if host_match else None,
             redis_port=int(host_match.group("port")) if host_match else 6379,
             redis_db=int(db_match.group("db")) if db_match else 0,
-            output_mode=output_mode,
+            output_mode=default_output_mode,
         ),
         secrets=Secrets(redis_password=_clean_secret(password_match.group("password")) if password_match else None),
         rdb_overrides=_extract_rdb_overrides(prompt),
@@ -85,14 +87,6 @@ def _extract_password(raw_prompt: str) -> tuple[re.Match[str] | None, re.Pattern
         if match:
             return match, pattern
     return None, None
-
-
-def _extract_output_mode(raw_prompt: str, default_output_mode: str) -> str:
-    matches = list(_OUTPUT_MODE_PATTERN.finditer(raw_prompt))
-    if not matches:
-        return default_output_mode
-
-    return matches[-1].group("mode").lower()
 
 
 def _extract_rdb_overrides(prompt: str) -> RdbOverrides:
@@ -121,11 +115,12 @@ def _extract_profile_name(prompt: str) -> str | None:
 def _extract_focus_prefixes(prompt: str) -> tuple[str, ...]:
     prefixes: list[str] = []
     seen: set[str] = set()
-    for match in _PREFIX_PATTERN.finditer(prompt):
-        prefix = match.group("prefix")
-        if prefix not in seen:
-            seen.add(prefix)
-            prefixes.append(prefix)
+    for pattern in _PREFIX_OVERRIDE_PATTERNS:
+        for match in pattern.finditer(prompt):
+            prefix = match.group("prefix")
+            if prefix not in seen:
+                seen.add(prefix)
+                prefixes.append(prefix)
     return tuple(prefixes)
 
 

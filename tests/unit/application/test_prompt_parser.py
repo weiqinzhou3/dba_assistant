@@ -139,6 +139,24 @@ def test_normalize_raw_request_extracts_only_prefix_token_from_chinese_context()
     assert request.rdb_overrides.profile_name == "generic"
 
 
+def test_normalize_raw_request_does_not_treat_bare_prefix_token_as_override() -> None:
+    request = normalize_raw_request(
+        "I saw order:* in the logs, but this is just narration about the dataset",
+        default_output_mode="summary",
+    )
+
+    assert request.rdb_overrides.focus_prefixes == ()
+
+
+def test_normalize_raw_request_does_not_switch_output_mode_from_standalone_tokens() -> None:
+    request = normalize_raw_request(
+        "Please give me a report and a summary of this Redis analysis",
+        default_output_mode="compact",
+    )
+
+    assert request.runtime_inputs.output_mode == "compact"
+
+
 def test_normalize_raw_request_does_not_treat_summary_top_n_phrases_as_rdb_overrides() -> None:
     for prompt in (
         "include the top 8 findings in the summary",

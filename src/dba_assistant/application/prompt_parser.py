@@ -30,8 +30,18 @@ _HOST_PORT_PATTERN = re.compile(
 )
 _DB_PATTERN = re.compile(r"(?i)\bdb(?:\s+(?:index\s+)?)?(?P<db>\d+)\b")
 _OUTPUT_MODE_PATTERN = re.compile(r"(?i)\b(?P<mode>report|summary)\b")
-_ENGLISH_PROFILE_PATTERN = re.compile(r"(?i)(?P<profile>generic|rcs)\s+profile(?![a-z0-9_])")
-_CHINESE_PROFILE_PATTERN = re.compile(r"(?i)(?P<profile_cn>通用)\s*profile(?![a-z0-9_])")
+_WITH_PROFILE_PATTERN = re.compile(
+    r"(?i)\bwith\s+(?:the\s+)?(?P<profile>generic|rcs)\s+profile(?![a-z0-9_])"
+)
+_USE_PROFILE_PATTERN = re.compile(
+    r"(?i)\b(?:use|using|choose|select)\s+(?:the\s+)?(?P<profile>generic|rcs)\s+profile(?![a-z0-9_])"
+)
+_BY_PROFILE_PATTERN = re.compile(
+    r"(?i)(?:(?<=按)|(?<=用))(?P<profile>generic|rcs)\s+profile(?![a-z0-9_])"
+)
+_CHINESE_GENERIC_PROFILE_PATTERN = re.compile(
+    r"(?i)(?:(?<=按)|(?<=用))(?P<profile_cn>通用)\s*profile(?![a-z0-9_])"
+)
 _PREFIX_PATTERN = re.compile(r"(?<![A-Za-z0-9_.-])(?P<prefix>[A-Za-z0-9_.-]+:\*)")
 _SECTION_TOP_PATTERN = re.compile(
     r"(?i)\b(?P<section>prefix|hash|list|set)\s+top\s+(?P<count>\d{1,4})\b"
@@ -40,6 +50,7 @@ _GENERIC_TOP_PATTERN = re.compile(
     r"(?i)(?<!prefix\s)(?<!hash\s)(?<!list\s)(?<!set\s)\btop\s+(?P<count>\d{1,4})(?=\s*(?:[,;，。]|$))"
 )
 _WHITESPACE_PATTERN = re.compile(r"\s+")
+_MAX_TOP_N = 100
 
 
 def normalize_raw_request(raw_prompt: str, *, default_output_mode: str) -> NormalizedRequest:
@@ -94,13 +105,12 @@ def _extract_rdb_overrides(prompt: str) -> RdbOverrides:
 def _extract_profile_name(prompt: str) -> str | None:
     matches: list[tuple[int, str]] = []
 
-    for match in _ENGLISH_PROFILE_PATTERN.finditer(prompt):
-        if _is_valid_profile_prefix(prompt, match.start()):
+    for pattern in (_WITH_PROFILE_PATTERN, _USE_PROFILE_PATTERN, _BY_PROFILE_PATTERN):
+        for match in pattern.finditer(prompt):
             matches.append((match.start(), match.group("profile").lower()))
 
-    for match in _CHINESE_PROFILE_PATTERN.finditer(prompt):
-        if _is_valid_profile_prefix(prompt, match.start()):
-            matches.append((match.start(), "generic"))
+    for match in _CHINESE_GENERIC_PROFILE_PATTERN.finditer(prompt):
+        matches.append((match.start(), "generic"))
 
     if not matches:
         return None
@@ -124,10 +134,13 @@ def _extract_top_n_overrides(prompt: str) -> dict[str, int]:
     for match in _SECTION_TOP_PATTERN.finditer(prompt):
         section = match.group("section").lower()
         count = int(match.group("count"))
-        top_n[_map_section_to_top_key(section)] = count
+        if _is_valid_top_n(count):
+            top_n[_map_section_to_top_key(section)] = count
 
     for match in _GENERIC_TOP_PATTERN.finditer(prompt):
-        top_n["top_big_keys"] = int(match.group("count"))
+        count = int(match.group("count"))
+        if _is_valid_top_n(count):
+            top_n["top_big_keys"] = count
 
     return top_n
 
@@ -141,12 +154,8 @@ def _map_section_to_top_key(section: str) -> str:
     }[section]
 
 
-def _is_valid_profile_prefix(prompt: str, start: int) -> bool:
-    if start == 0:
-        return True
-
-    previous = prompt[start - 1]
-    return previous.isspace() or previous in "([【（,，;；:：" or previous == "按"
+def _is_valid_top_n(count: int) -> bool:
+    return 1 <= count <= _MAX_TOP_N
 
 
 def _clean_secret(value: str) -> str:

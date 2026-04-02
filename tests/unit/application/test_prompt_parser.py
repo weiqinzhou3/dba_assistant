@@ -105,6 +105,15 @@ def test_normalize_raw_request_extracts_rcs_profile_from_task_2_form() -> None:
     assert request.rdb_overrides.top_n == {}
 
 
+def test_normalize_raw_request_extracts_profile_from_explicit_with_form() -> None:
+    request = normalize_raw_request(
+        "analyze this rdb with the generic profile",
+        default_output_mode="summary",
+    )
+
+    assert request.rdb_overrides.profile_name == "generic"
+
+
 def test_normalize_raw_request_ignores_profile_false_positives() -> None:
     for prompt in (
         "analyze the nongeneric profile for this RDB",
@@ -112,6 +121,8 @@ def test_normalize_raw_request_ignores_profile_false_positives() -> None:
         "analyze the genericprofile for this RDB",
         "analyze the non-generic profile for this RDB",
         "analyze the custom-generic profile for this RDB",
+        "analyze the custom generic profile for this RDB",
+        "analyze a very generic profile for this RDB",
         "按非rcs profile分析这个rdb",
     ):
         request = normalize_raw_request(prompt, default_output_mode="summary")
@@ -135,3 +146,12 @@ def test_normalize_raw_request_does_not_treat_summary_top_n_phrases_as_rdb_overr
     ):
         request = normalize_raw_request(prompt, default_output_mode="summary")
         assert request.rdb_overrides.top_n == {}
+
+
+def test_normalize_raw_request_ignores_out_of_range_top_n_overrides() -> None:
+    request = normalize_raw_request(
+        "按通用profile分析这个rdb，prefix top 0，hash top 101，top 9999",
+        default_output_mode="summary",
+    )
+
+    assert request.rdb_overrides.top_n == {}

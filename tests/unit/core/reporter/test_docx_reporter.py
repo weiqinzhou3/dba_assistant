@@ -51,6 +51,7 @@ def test_docx_reporter_creates_a_minimal_report_document(tmp_path: Path) -> None
     assert output_path.exists()
     assert "Redis RDB Analysis Report" in text
     assert "Largest Keys" in text
+    assert "Risk Summary" not in text
     assert len(document.tables) == 1
 
 

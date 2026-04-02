@@ -21,7 +21,6 @@ class DocxReporter(IReporter[AnalysisResult | AnalysisReport]):
         if config.output_path is None:
             raise ValueError("DocxReporter requires an output_path.")
 
-        report = coerce_analysis_report(analysis)
         template_name = config.template_name or "rdb-analysis"
         template = self._load_module(
             self.repository_root / "templates" / "reports" / template_name / "template_spec.py",
@@ -49,24 +48,63 @@ class DocxReporter(IReporter[AnalysisResult | AnalysisReport]):
         document.add_heading(cover.title, level=0)
         if cover.subtitle:
             document.add_paragraph(cover.subtitle)
-        for key in cover.metadata_order:
-            if key in report.metadata:
-                document.add_paragraph(f"{key}: {report.metadata[key]}")
 
         document.add_heading(template["summary_heading"], level=1)
-        if report.summary:
-            document.add_paragraph(report.summary)
+        if isinstance(analysis, AnalysisResult):
+            self._render_legacy_analysis_result(document, analysis, cover.metadata_order, template, disclaimer_module, table_style_module.DEFAULT_DOCX_TABLE_STYLE)
+        else:
+            report = coerce_analysis_report(analysis)
+            self._render_analysis_report(document, report, cover.metadata_order, template, disclaimer_module, table_style_module.DEFAULT_DOCX_TABLE_STYLE)
 
-        self._render_sections(document, report.sections, table_style_module.DEFAULT_DOCX_TABLE_STYLE)
+        config.output_path.parent.mkdir(parents=True, exist_ok=True)
+        document.save(config.output_path)
+        return ReportArtifact(format=ReportFormat.DOCX, output_path=config.output_path, content=None)
+
+    def _render_legacy_analysis_result(
+        self,
+        document: Document,
+        analysis: AnalysisResult,
+        metadata_order,
+        template,
+        disclaimer_module,
+        table_style: str,
+    ) -> None:
+        for key in metadata_order:
+            if key in analysis.metadata:
+                document.add_paragraph(f"{key}: {analysis.metadata[key]}")
+
+        if analysis.summary:
+            document.add_paragraph(analysis.summary)
+
+        self._render_legacy_sections(document, analysis.sections, table_style)
 
         if template["include_disclaimer"]:
             document.add_heading(disclaimer_module.DISCLAIMER_TITLE, level=1)
             for paragraph in disclaimer_module.DISCLAIMER_PARAGRAPHS:
                 document.add_paragraph(paragraph)
 
-        config.output_path.parent.mkdir(parents=True, exist_ok=True)
-        document.save(config.output_path)
-        return ReportArtifact(format=ReportFormat.DOCX, output_path=config.output_path, content=None)
+    def _render_analysis_report(
+        self,
+        document: Document,
+        report: AnalysisReport,
+        metadata_order,
+        template,
+        disclaimer_module,
+        table_style: str,
+    ) -> None:
+        for key in metadata_order:
+            if key in report.metadata:
+                document.add_paragraph(f"{key}: {report.metadata[key]}")
+
+        if report.summary:
+            document.add_paragraph(report.summary)
+
+        self._render_sections(document, report.sections, table_style)
+
+        if template["include_disclaimer"]:
+            document.add_heading(disclaimer_module.DISCLAIMER_TITLE, level=1)
+            for paragraph in disclaimer_module.DISCLAIMER_PARAGRAPHS:
+                document.add_paragraph(paragraph)
 
     def _render_sections(self, document: Document, sections, table_style: str) -> None:
         for section in sections:
@@ -83,6 +121,23 @@ class DocxReporter(IReporter[AnalysisResult | AnalysisReport]):
                 for index, column in enumerate(block.columns):
                     docx_table.rows[0].cells[index].text = column
                 for row in block.rows:
+                    cells = docx_table.add_row().cells
+                    for index, value in enumerate(row):
+                        cells[index].text = value
+
+    def _render_legacy_sections(self, document: Document, sections, table_style: str) -> None:
+        for section in sections:
+            document.add_heading(section.title, level=1)
+            document.add_paragraph(section.summary)
+            for paragraph in section.paragraphs:
+                document.add_paragraph(paragraph)
+            for table in section.tables:
+                document.add_paragraph(table.title)
+                docx_table = document.add_table(rows=1, cols=len(table.columns))
+                docx_table.style = table_style
+                for index, column in enumerate(table.columns):
+                    docx_table.rows[0].cells[index].text = column
+                for row in table.rows:
                     cells = docx_table.add_row().cells
                     for index, value in enumerate(row):
                         cells[index].text = value

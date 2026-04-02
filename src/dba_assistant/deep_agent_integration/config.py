@@ -8,7 +8,7 @@ from typing import Any
 import yaml
 
 
-DEFAULT_CONFIG_PATH = Path("config/config.yaml")
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "config.yaml"
 
 SUPPORTED_PRESET_NAMES = frozenset(
     {

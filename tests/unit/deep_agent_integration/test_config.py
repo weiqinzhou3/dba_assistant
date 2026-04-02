@@ -36,7 +36,9 @@ def test_load_app_config_reads_repository_default_shape(tmp_path: Path) -> None:
 
     config = load_app_config(config_path)
 
-    assert DEFAULT_CONFIG_PATH == Path("config/config.yaml")
+    assert DEFAULT_CONFIG_PATH.is_absolute()
+    assert DEFAULT_CONFIG_PATH.name == "config.yaml"
+    assert DEFAULT_CONFIG_PATH.parent.name == "config"
     assert config.model.preset_name == "ollama_local"
     assert config.model.provider_kind is ProviderKind.OPENAI_COMPATIBLE
     assert config.model.model_name == "qwen3:8b"
@@ -44,6 +46,19 @@ def test_load_app_config_reads_repository_default_shape(tmp_path: Path) -> None:
     assert config.model.api_key == "ollama"
     assert config.runtime.default_output_mode == "summary"
     assert config.runtime.redis_socket_timeout == 6.5
+
+
+def test_load_app_config_uses_repo_default_path_outside_repo_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    config = load_app_config()
+
+    assert DEFAULT_CONFIG_PATH.is_absolute()
+    assert config.model.preset_name == "ollama_local"
+    assert config.runtime.default_output_mode == "summary"
 
 
 def test_load_app_config_supports_dashscope_preset_values(tmp_path: Path) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from dba_assistant.application.request_models import (
     NormalizedRequest,
@@ -56,7 +57,12 @@ _WHITESPACE_PATTERN = re.compile(r"\s+")
 _MAX_TOP_N = 100
 
 
-def normalize_raw_request(raw_prompt: str, *, default_output_mode: str) -> NormalizedRequest:
+def normalize_raw_request(
+    raw_prompt: str,
+    *,
+    default_output_mode: str,
+    input_paths: list[Path] | tuple[Path, ...] | None = None,
+) -> NormalizedRequest:
     password_match, password_pattern = _extract_password(raw_prompt)
 
     prompt = raw_prompt
@@ -75,6 +81,7 @@ def normalize_raw_request(raw_prompt: str, *, default_output_mode: str) -> Norma
             redis_port=int(host_match.group("port")) if host_match else 6379,
             redis_db=int(db_match.group("db")) if db_match else 0,
             output_mode=default_output_mode,
+            input_paths=tuple(input_paths or ()),
         ),
         secrets=Secrets(redis_password=_clean_secret(password_match.group("password")) if password_match else None),
         rdb_overrides=_extract_rdb_overrides(prompt),

@@ -2,7 +2,7 @@
 
 ## Status
 
-Planning
+Delivered
 
 ## Goal
 
@@ -58,6 +58,12 @@ Implement the full pipeline for RDB memory analysis, supporting multiple input p
 
 - After Phase 3a completion, the current manual workflow is fully reproducible and generates documents of higher quality than historical reports.
 - After Phase 3b and Phase 3c completion, all three paths work independently with consistent output structures.
+
+## Wired Entry Points
+
+- `dba-assistant ask "<prompt>" --input /path/to/dump.rdb` routes local RDB debug runs through the prompt-first CLI and returns summary text.
+- `dba_assistant.tools.analyze_rdb.analyze_rdb_tool` is the public local-RDB analysis entry point.
+- `dba_assistant.tools.generate_analysis_report.generate_analysis_report` is the public generic report renderer export.
 
 ## Dependency Notes
 

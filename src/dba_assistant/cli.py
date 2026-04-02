@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 from dba_assistant.application.prompt_parser import normalize_raw_request
 from dba_assistant.application.service import execute_request
@@ -14,6 +15,7 @@ def build_parser() -> argparse.ArgumentParser:
     ask_parser = subparsers.add_parser("ask")
     ask_parser.add_argument("prompt")
     ask_parser.add_argument("--config", default=None)
+    ask_parser.add_argument("--input", action="append", default=[], type=Path)
     return parser
 
 
@@ -26,6 +28,7 @@ def main(argv: list[str] | None = None) -> int:
         request = normalize_raw_request(
             args.prompt,
             default_output_mode=config.runtime.default_output_mode,
+            input_paths=args.input,
         )
         print(execute_request(request, config=config))
         return 0

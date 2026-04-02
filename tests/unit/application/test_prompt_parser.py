@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from dba_assistant.application.prompt_parser import normalize_raw_request
 
 
@@ -29,6 +31,18 @@ def test_normalize_raw_request_uses_default_output_mode_when_unspecified() -> No
     assert request.runtime_inputs.output_mode == "summary"
     assert request.secrets.redis_password is None
     assert request.prompt == "Inspect Redis 10.0.0.9:6379"
+
+
+def test_normalize_raw_request_threads_explicit_input_paths() -> None:
+    source = Path("/tmp/dump.rdb")
+
+    request = normalize_raw_request(
+        "analyze this rdb",
+        default_output_mode="summary",
+        input_paths=[source],
+    )
+
+    assert request.runtime_inputs.input_paths == (source,)
 
 
 def test_normalize_raw_request_prefers_explicit_use_as_password_form() -> None:

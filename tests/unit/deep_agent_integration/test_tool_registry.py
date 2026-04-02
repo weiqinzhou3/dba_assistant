@@ -1,9 +1,11 @@
 import asyncio
+from pathlib import Path
 
 from agents.tool import ToolContext
 
 from dba_assistant.adaptors.redis_adaptor import RedisConnectionConfig
-from dba_assistant.deep_agent_integration.tool_registry import build_redis_tools
+from dba_assistant.deep_agent_integration import tool_registry
+from dba_assistant.deep_agent_integration.tool_registry import build_phase3_tools, build_redis_tools
 
 
 class FakeRedisAdaptor:
@@ -72,3 +74,26 @@ def test_build_redis_tools_exposes_phase2_safe_tools_and_structured_outputs() ->
         ("slowlog_get", connection, {"length": 5}),
         ("client_list", connection, {}),
     ]
+
+
+def test_build_phase3_tools_exposes_local_rdb_analyze_tool(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_analyze_rdb_tool(prompt, input_paths, **kwargs):
+        captured["prompt"] = prompt
+        captured["input_paths"] = input_paths
+        captured["kwargs"] = kwargs
+        return {"path": "3c", "profile": "generic"}
+
+    monkeypatch.setattr("dba_assistant.tools.analyze_rdb.analyze_rdb_tool", fake_analyze_rdb_tool)
+
+    tools = build_phase3_tools()
+
+    assert [tool.name for tool in tools] == ["analyze_rdb"]
+    assert asyncio.run(_invoke(tools[0], '{"prompt": "analyze this rdb", "input_paths": ["/tmp/a.rdb"]}')) == {
+        "path": "3c",
+        "profile": "generic",
+    }
+    assert captured["prompt"] == "analyze this rdb"
+    assert captured["input_paths"] == [Path("/tmp/a.rdb")]
+    assert captured["kwargs"] == {}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 
 from agents import function_tool
 
@@ -39,6 +40,16 @@ def build_redis_tools(
             name_override="redis_client_list",
             description_override="Return structured Redis client-list metadata.",
         ),
+    ]
+
+
+def build_phase3_tools() -> list:
+    return [
+        function_tool(
+            _make_analyze_rdb_tool(),
+            name_override="analyze_rdb",
+            description_override="Analyze local Redis RDB files and return structured Phase 3 results.",
+        )
     ]
 
 
@@ -90,3 +101,12 @@ def _make_client_list_tool(
         return adaptor.client_list(connection)
 
     return redis_client_list
+
+
+def _make_analyze_rdb_tool() -> Callable[..., object]:
+    def analyze_rdb(prompt: str, input_paths: list[str]) -> object:
+        from dba_assistant.tools.analyze_rdb import analyze_rdb_tool
+
+        return analyze_rdb_tool(prompt=prompt, input_paths=[Path(path) for path in input_paths])
+
+    return analyze_rdb

@@ -1,0 +1,20 @@
+name: generic
+sections:
+  - executive_summary
+  - sample_overview
+  - overall_summary
+  - key_type_summary
+  - key_type_memory_breakdown
+  - expiration_summary
+  - prefix_top_summary
+  - prefix_expiration_breakdown
+  - top_big_keys
+  - top_keys_by_type
+  - conclusions
+focus_prefixes: []
+top_n:
+  prefix_top: 20
+  top_big_keys: 20
+  list_big_keys: 10
+  hash_big_keys: 10
+  set_big_keys: 10

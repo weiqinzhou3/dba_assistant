@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import re
 
-from dba_assistant.application.request_models import NormalizedRequest, RuntimeInputs, Secrets
+from dba_assistant.application.request_models import (
+    NormalizedRequest,
+    RdbOverrides,
+    RuntimeInputs,
+    Secrets,
+)
 
 
 _SECRET_TOKEN_PATTERN = r"(?P<password>\"[^\"]+\"|'[^']+'|[^\s,;]+)"
@@ -25,6 +30,16 @@ _HOST_PORT_PATTERN = re.compile(
 )
 _DB_PATTERN = re.compile(r"(?i)\bdb(?:\s+(?:index\s+)?)?(?P<db>\d+)\b")
 _OUTPUT_MODE_PATTERN = re.compile(r"(?i)\b(?P<mode>report|summary)\b")
+_PROFILE_PATTERN = re.compile(
+    r"(?i)(?P<profile>generic|rcs)\s*profile\b|(?P<profile_cn>通用)\s*profile\b"
+)
+_PREFIX_PATTERN = re.compile(r"(?P<prefix>[\w.-]+:\*)")
+_SECTION_TOP_PATTERN = re.compile(
+    r"(?i)\b(?P<section>prefix|hash|list|set)\s+top\s+(?P<count>\d{1,4})\b"
+)
+_GENERIC_TOP_PATTERN = re.compile(
+    r"(?i)(?<!prefix\s)(?<!hash\s)(?<!list\s)(?<!set\s)\btop\s+(?P<count>\d{1,4})\b"
+)
 _WHITESPACE_PATTERN = re.compile(r"\s+")
 
 
@@ -50,6 +65,7 @@ def normalize_raw_request(raw_prompt: str, *, default_output_mode: str) -> Norma
             output_mode=output_mode,
         ),
         secrets=Secrets(redis_password=_clean_secret(password_match.group("password")) if password_match else None),
+        rdb_overrides=_extract_rdb_overrides(prompt),
     )
 
 
@@ -67,6 +83,62 @@ def _extract_output_mode(raw_prompt: str, default_output_mode: str) -> str:
         return default_output_mode
 
     return matches[-1].group("mode").lower()
+
+
+def _extract_rdb_overrides(prompt: str) -> RdbOverrides:
+    profile_name = _extract_profile_name(prompt)
+    focus_prefixes = _extract_focus_prefixes(prompt)
+    top_n = _extract_top_n_overrides(prompt)
+    return RdbOverrides(profile_name=profile_name, focus_prefixes=focus_prefixes, top_n=top_n)
+
+
+def _extract_profile_name(prompt: str) -> str | None:
+    matches = list(_PROFILE_PATTERN.finditer(prompt))
+    if not matches:
+        return None
+
+    match = matches[-1]
+    profile = match.group("profile")
+    if profile:
+        return profile.lower()
+
+    if match.group("profile_cn"):
+        return "generic"
+
+    return None
+
+
+def _extract_focus_prefixes(prompt: str) -> tuple[str, ...]:
+    prefixes: list[str] = []
+    seen: set[str] = set()
+    for match in _PREFIX_PATTERN.finditer(prompt):
+        prefix = match.group("prefix")
+        if prefix not in seen:
+            seen.add(prefix)
+            prefixes.append(prefix)
+    return tuple(prefixes)
+
+
+def _extract_top_n_overrides(prompt: str) -> dict[str, int]:
+    top_n: dict[str, int] = {}
+    for match in _SECTION_TOP_PATTERN.finditer(prompt):
+        section = match.group("section").lower()
+        count = int(match.group("count"))
+        top_n[_map_section_to_top_key(section)] = count
+
+    for match in _GENERIC_TOP_PATTERN.finditer(prompt):
+        top_n["top_big_keys"] = int(match.group("count"))
+
+    return top_n
+
+
+def _map_section_to_top_key(section: str) -> str:
+    return {
+        "prefix": "prefix_top",
+        "hash": "hash_big_keys",
+        "list": "list_big_keys",
+        "set": "set_big_keys",
+    }[section]
 
 
 def _clean_secret(value: str) -> str:

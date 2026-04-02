@@ -1,0 +1,24 @@
+name: rcs
+sections:
+  - background
+  - analysis_results
+  - overall_summary
+  - expiration_summary
+  - non_expiration_summary
+  - prefix_top_summary
+  - loan_prefix_detail
+  - top_big_keys
+  - top_list_keys
+  - top_set_keys
+  - top_hash_keys
+  - conclusions
+focus_prefixes:
+  - loan:*
+  - cis:*
+  - tag:*
+top_n:
+  prefix_top: 20
+  top_big_keys: 20
+  list_big_keys: 10
+  hash_big_keys: 10
+  set_big_keys: 10

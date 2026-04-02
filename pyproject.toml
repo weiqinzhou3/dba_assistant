@@ -9,7 +9,9 @@ description = "Phase-oriented scaffold for the DBA Assistant project."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "openai-agents",
     "python-docx>=1.1,<2",
+    "redis>=5",
 ]
 
 [project.optional-dependencies]

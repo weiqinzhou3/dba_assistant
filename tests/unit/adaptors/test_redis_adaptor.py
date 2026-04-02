@@ -1,5 +1,5 @@
 import pytest
-from redis.exceptions import AuthenticationError, ConnectionError, ResponseError
+from redis.exceptions import AuthenticationError, ConnectionError, ResponseError, TimeoutError
 
 from dba_assistant.adaptors.redis_adaptor import RedisAdaptor, RedisConnectionConfig
 
@@ -78,6 +78,23 @@ class ConnectionFailingRedisClient(FakeRedisClient):
 
     def client_list(self):
         raise ConnectionError("connection lost")
+
+
+class TimeoutFailingRedisClient(FakeRedisClient):
+    def ping(self) -> bool:
+        raise TimeoutError("timed out")
+
+    def info(self, section=None):
+        raise TimeoutError("timed out")
+
+    def config_get(self, pattern: str):
+        raise TimeoutError("timed out")
+
+    def slowlog_get(self, length: int):
+        raise TimeoutError("timed out")
+
+    def client_list(self):
+        raise TimeoutError("timed out")
 
 
 def test_redis_adaptor_wraps_read_only_commands() -> None:
@@ -192,6 +209,34 @@ def test_redis_adaptor_wraps_ping_and_info_failures() -> None:
     assert connection_adaptor.info(connection, section="server") == {
         "available": False,
         "error": {"kind": "connection_failed", "message": "connection lost"},
+    }
+
+
+def test_redis_adaptor_normalizes_timeout_failures() -> None:
+    adaptor = RedisAdaptor(client_factory=TimeoutFailingRedisClient)
+    connection = RedisConnectionConfig(host="redis.example")
+
+    assert adaptor.ping(connection) == {
+        "available": False,
+        "error": {"kind": "timeout_failed", "message": "timed out"},
+    }
+    assert adaptor.info(connection, section="server") == {
+        "available": False,
+        "error": {"kind": "timeout_failed", "message": "timed out"},
+    }
+    assert adaptor.config_get(connection, pattern="maxmemory*") == {
+        "available": False,
+        "pattern": "maxmemory*",
+        "error": {"kind": "timeout_failed", "message": "timed out"},
+    }
+    assert adaptor.slowlog_get(connection, length=5) == {
+        "available": False,
+        "requested_length": 5,
+        "error": {"kind": "timeout_failed", "message": "timed out"},
+    }
+    assert adaptor.client_list(connection) == {
+        "available": False,
+        "error": {"kind": "timeout_failed", "message": "timed out"},
     }
 
 

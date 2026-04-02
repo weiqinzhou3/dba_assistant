@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from redis import Redis
-from redis.exceptions import AuthenticationError, ConnectionError, RedisError
+from redis.exceptions import AuthenticationError, ConnectionError, RedisError, TimeoutError
 
 
 DEFAULT_CONFIG_PATTERN = "maxmemory*"
@@ -121,6 +121,8 @@ class RedisAdaptor:
             return self._probe_unavailable(metadata, "authentication_failed", error)
         except ConnectionError as error:
             return self._probe_unavailable(metadata, "connection_failed", error)
+        except TimeoutError as error:
+            return self._probe_unavailable(metadata, "timeout_failed", error)
         except PermissionError as error:
             return self._probe_unavailable(metadata, "permission_denied", error)
         except RedisError as error:
@@ -144,6 +146,8 @@ class RedisAdaptor:
             return self._probe_unavailable({}, "authentication_failed", error)
         except ConnectionError as error:
             return self._probe_unavailable({}, "connection_failed", error)
+        except TimeoutError as error:
+            return self._probe_unavailable({}, "timeout_failed", error)
 
         return formatter(payload)
 

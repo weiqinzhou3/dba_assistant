@@ -10,7 +10,7 @@ from redis.exceptions import AuthenticationError, ConnectionError, RedisError, T
 
 
 DEFAULT_CONFIG_PATTERN = "maxmemory*"
-ALLOWED_CONFIG_PATTERNS = frozenset({DEFAULT_CONFIG_PATTERN})
+ALLOWED_CONFIG_PATTERNS = frozenset({DEFAULT_CONFIG_PATTERN, "dir", "dbfilename"})
 DEFAULT_SLOWLOG_LENGTH = 5
 MAX_SLOWLOG_LENGTH = 5
 

@@ -10,3 +10,4 @@ dist/
 *.egg-info/
 src/claude-code-source-code/
 src/docs/
+config/config.yaml

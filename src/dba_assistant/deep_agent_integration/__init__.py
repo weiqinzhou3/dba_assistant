@@ -1,7 +1,14 @@
 """Repository-owned Deep Agent SDK assembly layer for DBA Assistant."""
 
 from dba_assistant.deep_agent_integration.agent_factory import build_phase2_agent
-from dba_assistant.deep_agent_integration.config import AppConfig, ModelConfig, ProviderKind, load_app_config
+from dba_assistant.deep_agent_integration.config import (
+    DEFAULT_CONFIG_PATH,
+    AppConfig,
+    ModelConfig,
+    ProviderKind,
+    RuntimeConfig,
+    load_app_config,
+)
 from dba_assistant.deep_agent_integration.model_provider import build_model
 from dba_assistant.deep_agent_integration.tool_registry import build_redis_tools
 
@@ -24,6 +31,7 @@ def main() -> int:
 
 
 __all__ = [
+    "DEFAULT_CONFIG_PATH",
     "AppConfig",
     "DEFAULT_PROMPT",
     "build_model",
@@ -31,6 +39,7 @@ __all__ = [
     "build_redis_tools",
     "ModelConfig",
     "ProviderKind",
+    "RuntimeConfig",
     "main",
     "load_app_config",
     "run_phase2",

@@ -25,7 +25,6 @@ def test_build_model_uses_async_openai_and_chat_completions(monkeypatch) -> None
         model_name="qwen3.5-flash",
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         api_key="sk-cn",
-        api_key_env="DASHSCOPE_API_KEY",
         tracing_disabled=True,
     )
 
@@ -47,7 +46,6 @@ def test_build_model_rejects_unknown_provider_kind() -> None:
         model_name="bad-model",
         base_url="https://example.com/v1",
         api_key="sk-test",
-        api_key_env=None,
     )
 
     with pytest.raises(ValueError, match="Unsupported provider kind"):

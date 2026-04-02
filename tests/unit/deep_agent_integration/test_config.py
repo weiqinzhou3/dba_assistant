@@ -1,87 +1,134 @@
+from pathlib import Path
+import textwrap
+
 import pytest
 
-from dba_assistant.adaptors.redis_adaptor import RedisConnectionConfig as SharedRedisConnectionConfig
 from dba_assistant.deep_agent_integration.config import (
-    DEFAULT_MODEL_PRESET,
+    DEFAULT_CONFIG_PATH,
     ProviderKind,
     load_app_config,
 )
 
 
-@pytest.fixture(autouse=True)
-def clear_config_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in (
-        "DASHSCOPE_API_KEY",
-        "DBA_MODEL_PRESET",
-        "DBA_MODEL_NAME",
-        "DBA_MODEL_BASE_URL",
-        "DBA_MODEL_API_KEY",
-        "DBA_MODEL_API_KEY_ENV",
-        "DBA_MODEL_TEMPERATURE",
-        "DBA_MODEL_MAX_TURNS",
-        "DBA_MODEL_TRACING_DISABLED",
-        "DBA_REDIS_HOST",
-        "DBA_REDIS_PORT",
-        "DBA_REDIS_DB",
-        "DBA_REDIS_USERNAME",
-        "DBA_REDIS_PASSWORD",
-        "DBA_REDIS_SOCKET_TIMEOUT",
-    ):
-        monkeypatch.delenv(name, raising=False)
+def _write_config(path: Path, content: str) -> None:
+    path.write_text(textwrap.dedent(content).strip() + "\n")
 
 
-def test_load_app_config_uses_dashscope_cn_preset_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-cn")
-    monkeypatch.setenv("DBA_MODEL_NAME", "   ")
-    monkeypatch.setenv("DBA_MODEL_BASE_URL", " \t ")
+def test_load_app_config_reads_repository_default_shape(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    _write_config(
+        config_path,
+        """
+        model:
+          preset_name: ollama_local
+          provider_kind: openai_compatible
+          model_name: qwen3:8b
+          base_url: http://127.0.0.1:11434/v1
+          api_key: ollama
+          temperature: 0.1
+          max_turns: 9
+          tracing_disabled: true
+        runtime:
+          default_output_mode: summary
+          redis_socket_timeout: 6.5
+        """,
+    )
 
-    config = load_app_config()
+    config = load_app_config(config_path)
 
-    assert DEFAULT_MODEL_PRESET == "dashscope_cn_qwen35_flash"
+    assert DEFAULT_CONFIG_PATH == Path("config/config.yaml")
+    assert config.model.preset_name == "ollama_local"
     assert config.model.provider_kind is ProviderKind.OPENAI_COMPATIBLE
-    assert config.model.base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    assert config.model.model_name == "qwen3.5-flash"
-    assert config.model.api_key == "sk-cn"
-    assert config.redis.host == "127.0.0.1"
-    assert config.redis.port == 6379
-    assert isinstance(config.redis, SharedRedisConnectionConfig)
-    assert config.redis.__class__ is SharedRedisConnectionConfig
-
-
-def test_load_app_config_requires_dashscope_api_key_for_default_preset(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("DBA_MODEL_NAME", "qwen3.5-flash")
-
-    with pytest.raises(ValueError, match="Missing API key for preset dashscope_cn_qwen35_flash"):
-        load_app_config()
-
-
-def test_load_app_config_supports_ollama_without_external_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("DBA_MODEL_PRESET", "ollama_local")
-    monkeypatch.setenv("DBA_MODEL_NAME", "qwen3:8b")
-
-    config = load_app_config()
-
-    assert config.model.base_url == "http://127.0.0.1:11434/v1"
     assert config.model.model_name == "qwen3:8b"
+    assert config.model.base_url == "http://127.0.0.1:11434/v1"
     assert config.model.api_key == "ollama"
+    assert config.runtime.default_output_mode == "summary"
+    assert config.runtime.redis_socket_timeout == 6.5
 
 
-def test_custom_openai_compatible_requires_base_url_and_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("DBA_MODEL_PRESET", "custom_openai_compatible")
-    monkeypatch.setenv("DBA_MODEL_API_KEY", "sk-custom")
-    monkeypatch.setenv("DBA_MODEL_BASE_URL", "   ")
+def test_load_app_config_supports_dashscope_preset_values(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.example.yaml"
+    _write_config(
+        config_path,
+        """
+        model:
+          preset_name: dashscope_cn
+          provider_kind: openai_compatible
+          model_name: qwen3.5-flash
+          base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+          api_key: replace-with-real-api-key
+          temperature: 0.0
+          max_turns: 8
+          tracing_disabled: true
+        runtime:
+          default_output_mode: summary
+          redis_socket_timeout: 5.0
+        """,
+    )
 
-    with pytest.raises(ValueError, match="DBA_MODEL_BASE_URL"):
-        load_app_config()
+    config = load_app_config(config_path)
+
+    assert config.model.preset_name == "dashscope_cn"
+    assert config.model.provider_kind is ProviderKind.OPENAI_COMPATIBLE
+    assert config.model.model_name == "qwen3.5-flash"
+    assert config.model.base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    assert config.model.api_key == "replace-with-real-api-key"
 
 
-def test_custom_openai_compatible_requires_model_name(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("DBA_MODEL_PRESET", "custom_openai_compatible")
-    monkeypatch.setenv("DBA_MODEL_BASE_URL", "https://example.com/v1")
-    monkeypatch.setenv("DBA_MODEL_API_KEY", "sk-custom")
-    monkeypatch.setenv("DBA_MODEL_NAME", "   ")
+def test_load_app_config_requires_existing_file(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="missing.yaml"):
+        load_app_config(tmp_path / "missing.yaml")
 
-    with pytest.raises(ValueError, match="DBA_MODEL_NAME"):
-        load_app_config()
+
+def test_load_app_config_requires_model_api_key(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    _write_config(
+        config_path,
+        """
+        model:
+          preset_name: dashscope_intl
+          provider_kind: openai_compatible
+          model_name: qwen3.5-flash
+          base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+          api_key: ""
+        runtime:
+          default_output_mode: summary
+          redis_socket_timeout: 5.0
+        """,
+    )
+
+    with pytest.raises(ValueError, match="model.api_key"):
+        load_app_config(config_path)
+
+
+def test_load_app_config_requires_runtime_section(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    _write_config(
+        config_path,
+        """
+        model:
+          preset_name: ollama_local
+          provider_kind: openai_compatible
+          model_name: qwen3:8b
+          base_url: http://127.0.0.1:11434/v1
+          api_key: ollama
+        """,
+    )
+
+    with pytest.raises(ValueError, match="runtime"):
+        load_app_config(config_path)
+
+
+def test_load_app_config_rejects_bad_root_shape(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    _write_config(
+        config_path,
+        """
+        - not
+        - a
+        - mapping
+        """,
+    )
+
+    with pytest.raises(ValueError, match="document root"):
+        load_app_config(config_path)

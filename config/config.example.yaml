@@ -1,0 +1,12 @@
+model:
+  preset_name: dashscope_cn_qwen35_flash
+  provider_kind: openai_compatible
+  model_name: qwen3.5-flash
+  base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  api_key: replace-with-your-dashscope-api-key
+  temperature: 0.0
+  max_turns: 8
+  tracing_disabled: true
+runtime:
+  default_output_mode: summary
+  redis_socket_timeout: 5.0

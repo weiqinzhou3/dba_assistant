@@ -10,9 +10,13 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "openai-agents",
+    "PyYAML>=6,<7",
     "python-docx>=1.1,<2",
     "redis>=5",
 ]
+
+[project.scripts]
+dba-assistant = "dba_assistant.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<9"]

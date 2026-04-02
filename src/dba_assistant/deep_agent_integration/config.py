@@ -2,9 +2,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-import os
+from pathlib import Path
+from typing import Any
 
-from dba_assistant.adaptors.redis_adaptor import RedisConnectionConfig
+import yaml
+
+
+DEFAULT_CONFIG_PATH = Path("config/config.yaml")
+
+SUPPORTED_PRESET_NAMES = frozenset(
+    {
+        "dashscope_cn",
+        "dashscope_cn_qwen35_flash",
+        "dashscope_intl",
+        "dashscope_intl_qwen35_flash_free",
+        "ollama_local",
+        "custom_openai_compatible",
+    }
+)
 
 
 class ProviderKind(str, Enum):
@@ -18,136 +33,84 @@ class ModelConfig:
     model_name: str
     base_url: str
     api_key: str
-    api_key_env: str | None
     temperature: float = 0.0
     max_turns: int = 8
     tracing_disabled: bool = True
 
 
 @dataclass(frozen=True)
+class RuntimeConfig:
+    default_output_mode: str = "summary"
+    redis_socket_timeout: float = 5.0
+
+
+@dataclass(frozen=True)
 class AppConfig:
     model: ModelConfig
-    redis: RedisConnectionConfig
+    runtime: RuntimeConfig
 
 
-DEFAULT_MODEL_PRESET = "dashscope_cn_qwen35_flash"
-MODEL_PRESETS = {
-    "dashscope_cn_qwen35_flash": {
-        "provider_kind": ProviderKind.OPENAI_COMPATIBLE,
-        "model_name": "qwen3.5-flash",
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "api_key_env": "DASHSCOPE_API_KEY",
-        "default_api_key": "",
-    },
-    "dashscope_intl_qwen35_flash_free": {
-        "provider_kind": ProviderKind.OPENAI_COMPATIBLE,
-        "model_name": "qwen3.5-flash",
-        "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-        "api_key_env": "DASHSCOPE_API_KEY",
-        "default_api_key": "",
-    },
-    "ollama_local": {
-        "provider_kind": ProviderKind.OPENAI_COMPATIBLE,
-        "model_name": "qwen3:8b",
-        "base_url": "http://127.0.0.1:11434/v1",
-        "api_key_env": None,
-        "default_api_key": "ollama",
-    },
-}
+def load_app_config(config_path: str | Path | None = None) -> AppConfig:
+    path = Path(config_path) if config_path is not None else DEFAULT_CONFIG_PATH
+    if not path.exists():
+        raise FileNotFoundError(f"Config file not found: {path}")
 
-
-def load_app_config() -> AppConfig:
+    document = _load_yaml_document(path)
     return AppConfig(
-        model=load_model_config(),
-        redis=load_redis_connection_config(),
+        model=_load_model_config(_require_mapping(document, "model")),
+        runtime=_load_runtime_config(_require_mapping(document, "runtime")),
     )
 
 
-def load_model_config() -> ModelConfig:
-    preset_name = _read_env_str("DBA_MODEL_PRESET", DEFAULT_MODEL_PRESET)
-    if preset_name == "custom_openai_compatible":
-        return _load_custom_openai_compatible()
+def _load_yaml_document(path: Path) -> dict[str, Any]:
+    loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict):
+        raise ValueError(f"Config file must contain a mapping at the document root: {path}")
+    return loaded
 
-    if preset_name not in MODEL_PRESETS:
-        raise ValueError(f"Unsupported DBA_MODEL_PRESET: {preset_name}")
 
-    preset = MODEL_PRESETS[preset_name]
-    api_key_env = _read_env_str("DBA_MODEL_API_KEY_ENV") or preset["api_key_env"]
-    api_key = _read_env_str("DBA_MODEL_API_KEY")
-    if not api_key and api_key_env:
-        api_key = _read_env_str(api_key_env)
-    if not api_key:
-        api_key = preset["default_api_key"]
+def _load_model_config(data: dict[str, Any]) -> ModelConfig:
+    preset_name = _require_string(data, "preset_name", "model")
+    if preset_name not in SUPPORTED_PRESET_NAMES:
+        supported = ", ".join(sorted(SUPPORTED_PRESET_NAMES))
+        raise ValueError(f"Unsupported model.preset_name: {preset_name}. Supported presets: {supported}.")
 
-    if not api_key:
-        raise ValueError(f"Missing API key for preset {preset_name}. Set {api_key_env}.")
+    provider_kind = ProviderKind(_require_string(data, "provider_kind", "model"))
+    api_key = _require_string(data, "api_key", "model")
 
     return ModelConfig(
         preset_name=preset_name,
-        provider_kind=preset["provider_kind"],
-        model_name=_read_env_str("DBA_MODEL_NAME", preset["model_name"]),
-        base_url=_read_env_str("DBA_MODEL_BASE_URL", preset["base_url"]),
+        provider_kind=provider_kind,
+        model_name=_require_string(data, "model_name", "model"),
+        base_url=_require_string(data, "base_url", "model"),
         api_key=api_key,
-        api_key_env=api_key_env,
-        temperature=float(_read_env_str("DBA_MODEL_TEMPERATURE", "0.0")),
-        max_turns=int(_read_env_str("DBA_MODEL_MAX_TURNS", "8")),
-        tracing_disabled=_read_bool("DBA_MODEL_TRACING_DISABLED", default=True),
+        temperature=float(data.get("temperature", 0.0)),
+        max_turns=int(data.get("max_turns", 8)),
+        tracing_disabled=bool(data.get("tracing_disabled", True)),
     )
 
 
-def _load_custom_openai_compatible() -> ModelConfig:
-    base_url = _read_env_str("DBA_MODEL_BASE_URL")
-    model_name = _read_env_str("DBA_MODEL_NAME")
-    api_key_env = _read_env_str("DBA_MODEL_API_KEY_ENV")
-    api_key = _read_env_str("DBA_MODEL_API_KEY")
-
-    if not base_url:
-        raise ValueError("DBA_MODEL_BASE_URL is required for custom_openai_compatible.")
-    if not model_name:
-        raise ValueError("DBA_MODEL_NAME is required for custom_openai_compatible.")
-    if not api_key and api_key_env:
-        api_key = _read_env_str(api_key_env)
-    if not api_key:
-        raise ValueError("DBA_MODEL_API_KEY or DBA_MODEL_API_KEY_ENV is required for custom_openai_compatible.")
-
-    return ModelConfig(
-        preset_name="custom_openai_compatible",
-        provider_kind=ProviderKind.OPENAI_COMPATIBLE,
-        model_name=model_name,
-        base_url=base_url,
-        api_key=api_key,
-        api_key_env=api_key_env,
-        temperature=float(_read_env_str("DBA_MODEL_TEMPERATURE", "0.0")),
-        max_turns=int(_read_env_str("DBA_MODEL_MAX_TURNS", "8")),
-        tracing_disabled=_read_bool("DBA_MODEL_TRACING_DISABLED", default=True),
+def _load_runtime_config(data: dict[str, Any]) -> RuntimeConfig:
+    return RuntimeConfig(
+        default_output_mode=_require_string(data, "default_output_mode", "runtime"),
+        redis_socket_timeout=float(data.get("redis_socket_timeout", 5.0)),
     )
 
 
-def load_redis_connection_config() -> RedisConnectionConfig:
-    return RedisConnectionConfig(
-        host=_read_env_str("DBA_REDIS_HOST", "127.0.0.1"),
-        port=int(_read_env_str("DBA_REDIS_PORT", "6379")),
-        db=int(_read_env_str("DBA_REDIS_DB", "0")),
-        username=_read_env_str("DBA_REDIS_USERNAME"),
-        password=_read_env_str("DBA_REDIS_PASSWORD"),
-        socket_timeout=float(_read_env_str("DBA_REDIS_SOCKET_TIMEOUT", "5.0")),
-    )
-
-
-def _read_env_str(name: str, default: str | None = None) -> str | None:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-
-    value = raw.strip()
-    if not value:
-        return default
-
+def _require_mapping(document: dict[str, Any], field: str) -> dict[str, Any]:
+    value = document.get(field)
+    if not isinstance(value, dict):
+        raise ValueError(f"Config section {field} must be a mapping.")
     return value
 
 
-def _read_bool(name: str, *, default: bool) -> bool:
-    raw = _read_env_str(name)
-    if raw is None:
-        return default
-    return raw.lower() in {"1", "true", "yes", "on"}
+def _require_string(data: dict[str, Any], field: str, section: str) -> str:
+    value = data.get(field)
+    if value is None:
+        raise ValueError(f"Config field {section}.{field} is required.")
+
+    value = str(value).strip()
+    if not value:
+        raise ValueError(f"Config field {section}.{field} is required.")
+
+    return value

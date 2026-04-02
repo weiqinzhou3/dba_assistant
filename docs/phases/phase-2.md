@@ -16,8 +16,8 @@ Assemble the repository-owned Deep Agent SDK layer, configure provider-capable m
    - Is glue code around Deep Agent SDK, not a custom runtime framework.
 
 2. Provider-capable model configuration
-   - Uses a default DashScope China preset.
-   - Supports optional DashScope International and Ollama-compatible presets.
+   - Uses repository-owned `config/config.yaml` instead of environment-variable-first loading.
+   - Supports DashScope China, DashScope International, and Ollama-compatible presets through centralized config.
    - Keeps model/provider configuration centralized in the integration layer.
    - Defaults tracing to disabled for safer provider portability.
 
@@ -26,9 +26,12 @@ Assemble the repository-owned Deep Agent SDK layer, configure provider-capable m
    - Exposes one remote collector path built on that adaptor.
    - Keeps collection strictly read-only.
 
-4. Bounded Redis tool registration and minimal validation agent
+4. Bounded Redis tool registration and minimal validation entry points
    - Registers a small, read-only Redis tool set.
    - Builds a minimal integration-validation agent that summarizes structured Redis results.
+   - Exposes a thin prompt-first CLI for local debugging.
+   - Extracts request-scoped targets and secrets into a normalized application request before agent execution.
+   - Keeps the CLI thin so future GUI and API surfaces can reuse the same application contract.
    - Defers SSH and MySQL live work to later phases.
 
 ## Deferred Scope

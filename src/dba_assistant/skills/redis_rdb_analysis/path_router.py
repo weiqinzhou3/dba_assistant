@@ -3,7 +3,7 @@ from __future__ import annotations
 from dba_assistant.skills.redis_rdb_analysis.types import InputSourceKind, RdbAnalysisRequest
 
 _EXPLICIT_PATHS = frozenset({"3a", "3b", "3c"})
-_MYSQL_PATH_HINTS = ("mysql staging", "sql-style", "sql style")
+_MYSQL_PATH_HINTS = ("mysql", "sql-style", "sql style")
 
 
 def choose_path(request: RdbAnalysisRequest) -> str:

@@ -31,6 +31,15 @@ def test_choose_path_uses_3a_for_explicit_mysql_staging_request() -> None:
     assert choose_path(request) == "3a"
 
 
+def test_choose_path_uses_3a_for_explicit_mysql_request() -> None:
+    request = RdbAnalysisRequest(
+        prompt="analyze this rdb via mysql",
+        inputs=[SampleInput(source=Path("/tmp/dump.rdb"), kind=InputSourceKind.LOCAL_RDB)],
+    )
+
+    assert choose_path(request) == "3a"
+
+
 def test_choose_path_honors_explicit_path_mode_override() -> None:
     request = RdbAnalysisRequest(
         prompt="analyze this rdb",

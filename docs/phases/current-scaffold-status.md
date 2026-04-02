@@ -22,7 +22,7 @@ Present in the repository now:
 - `/init` design and plan documents under `docs/superpowers/`
 - a production package root under `src/dba_assistant/`
 - the repository-owned `src/dba_assistant/deep_agent_integration/` assembly layer
-- delivered shared collector, reporter, adaptor, and skill surfaces under `src/dba_assistant/`
+- delivered shared collector and reporter foundations, the narrow Redis adaptor path, and later-phase skill scaffolding under `src/dba_assistant/`
 - template, reference, and test directories
 - git initialization and GitHub remote setup
 

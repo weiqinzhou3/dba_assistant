@@ -1,46 +1,50 @@
 ```yaml
 skill:
   name: redis-rdb-analysis
-  description: Generate Redis RDB analysis outputs from repository-supported collection paths.
+  description: Phase 3 Redis RDB analysis with profile-driven routing and confirmation-gated remote acquisition.
 
 status:
   phase_owner: phase-3
-  implementation_status: scaffold-only
-  execution_status: not-runnable
+  implementation_status: phase-3-active
+  execution_status: runnable
+
+phase_3_scope:
+  owns_package_path: src/dba_assistant/skills/redis_rdb_analysis/
+  supported_paths:
+    - 3a
+    - 3b
+    - 3c
+  supported_profiles:
+    - generic
+    - rcs
 
 input_contract:
-  required_data:
-    - name: source_path
-      type: string
-      description: Path to one RDB file, an exported analysis data file, or a directory selected by the collector path.
-  supported_collectors:
-    - offline
-    - remote-mysql
-  parameters:
-    - name: output_mode
-      type: string
-      default: report
-      description: Output mode, either report or summary.
-    - name: output_format
-      type: string
-      default: docx
-      description: Report format when output_mode is report.
+  request_model: RdbAnalysisRequest
+  request_fields:
+    - prompt
+    - inputs
+    - profile_name
+    - path_mode
+    - merge_multiple_inputs
+    - profile_overrides
+  input_sources:
+    - local_rdb
+    - remote_redis
+    - precomputed
+  confirmation_model: ConfirmationRequest
+  confirmation_behavior:
+    - remote Redis discovery pauses before acquisition when the requested action requires fetching an existing RDB
+    - confirmation status uses AnalysisStatus.CONFIRMATION_REQUIRED
 
 output_contract:
-  analysis_schema: RdbAnalysisResult
-  supported_modes:
-    - report
-    - summary
-  supported_formats:
-    - docx
-    - pdf
-    - html
-  default_mode: report
-  default_format: docx
+  dataset_model: NormalizedRdbDataset
+  profile_model: EffectiveProfile
+  record_model: KeyRecord
+  sample_model: SampleInput
 ```
 
 Notes:
 
-- This file defines contract intent only.
-- Parsing, SQL workflows, and rendering belong to later phase implementation.
-- The skill is intended for later integration into the repository's Deep Agent SDK runtime.
+- This file defines the Phase 3 skill contract and ownership boundaries.
+- Later-phase analyzer, collector, and report assembly behavior must continue to align with these contracts.
+- The skill is intended for integration into the repository's Deep Agent SDK runtime.

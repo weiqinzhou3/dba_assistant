@@ -2,6 +2,8 @@
 
 Phase owner: Phase 3
 
-Status: scaffold-only.
+Status: Phase 3 implementation contracts.
 
-This directory reserves the production package path for the Redis RDB analysis skill.
+This package owns the Phase 3 `redis_rdb_analysis` production path.
+
+It will provide profile-driven Redis RDB analysis, path routing across `3a`, `3b`, and `3c`, remote Redis discovery with confirmation-gated RDB acquisition, and report assembly for the generic and RCS output profiles.

@@ -1,5 +1,23 @@
+import pytest
+
 from dba_assistant.application.prompt_parser import normalize_raw_request
 from dba_assistant.skills.redis_rdb_analysis.profile_resolver import resolve_profile
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "analyze the nongeneric profile for this RDB",
+        "analyze the srcs profile for this RDB",
+        "analyze the genericprofile for this RDB",
+    ],
+)
+def test_normalize_raw_request_ignores_profile_substrings_inside_larger_words(
+    prompt: str,
+) -> None:
+    request = normalize_raw_request(prompt, default_output_mode="summary")
+
+    assert request.rdb_overrides.profile_name is None
 
 
 def test_normalize_raw_request_extracts_generic_profile_and_bounded_overrides() -> None:

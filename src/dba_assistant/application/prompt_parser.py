@@ -31,7 +31,7 @@ _HOST_PORT_PATTERN = re.compile(
 _DB_PATTERN = re.compile(r"(?i)\bdb(?:\s+(?:index\s+)?)?(?P<db>\d+)\b")
 _OUTPUT_MODE_PATTERN = re.compile(r"(?i)\b(?P<mode>report|summary)\b")
 _PROFILE_PATTERN = re.compile(
-    r"(?i)(?P<profile>generic|rcs)\s*profile\b|(?P<profile_cn>通用)\s*profile\b"
+    r"(?i)(?:(?<!\w)(?P<profile>generic|rcs)\s+profile(?!\w)|(?P<profile_cn>通用)\s+profile(?!\w))"
 )
 _PREFIX_PATTERN = re.compile(r"(?P<prefix>[\w.-]+:\*)")
 _SECTION_TOP_PATTERN = re.compile(

@@ -52,12 +52,12 @@ def test_build_redis_tools_exposes_phase2_safe_tools_and_structured_outputs() ->
 
     assert asyncio.run(_invoke(tools[0], "{}")) == {"ok": True}
     assert asyncio.run(_invoke(tools[1], '{"section": "memory"}')) == {"role": "master", "section": "memory"}
-    assert asyncio.run(_invoke(tools[2], "{}")) == {
+    assert asyncio.run(_invoke(tools[2], '{"pattern": "*"}')) == {
         "available": True,
         "pattern": "maxmemory*",
         "data": {"maxmemory": "0"},
     }
-    assert asyncio.run(_invoke(tools[3], "{}")) == {
+    assert asyncio.run(_invoke(tools[3], '{"length": 999}')) == {
         "available": True,
         "requested_length": 5,
         "count": 1,

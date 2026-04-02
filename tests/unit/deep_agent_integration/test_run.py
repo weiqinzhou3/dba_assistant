@@ -57,3 +57,13 @@ def test_run_phase2_loads_config_builds_agent_and_returns_final_output(monkeypat
         "max_turns": 4,
         "kwargs": {},
     }
+
+
+def test_main_prints_run_phase2_output(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(run_module, "run_phase2", lambda prompt=run_module.DEFAULT_PROMPT: "phase2 ok")
+
+    assert run_module.main() == 0
+
+    captured = capsys.readouterr()
+    assert captured.out == "phase2 ok\n"
+    assert captured.err == ""

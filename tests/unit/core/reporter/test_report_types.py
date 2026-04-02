@@ -3,7 +3,8 @@ import sys
 from pathlib import Path
 
 from dba_assistant.core.analyzer.types import AnalysisResult, ReportSection, TableModel
-from dba_assistant.core.reporter import SummaryReporter
+from dba_assistant.core.reporter import SummaryReporter, generate_analysis_report as package_generate_analysis_report
+from dba_assistant.core.reporter.generate_analysis_report import generate_analysis_report as module_generate_analysis_report
 from dba_assistant.core.reporter.types import OutputMode, ReportFormat, ReportOutputConfig
 
 
@@ -57,3 +58,7 @@ def test_reporter_package_import_does_not_load_docx() -> None:
 
 def test_reporter_package_still_exports_summary_reporter() -> None:
     assert SummaryReporter is not None
+
+
+def test_reporter_package_exports_generate_analysis_report_function() -> None:
+    assert package_generate_analysis_report is module_generate_analysis_report

@@ -2,6 +2,7 @@
 
 from typing import TYPE_CHECKING
 
+from dba_assistant.core.reporter.generate_analysis_report import generate_analysis_report
 from dba_assistant.core.reporter.report_model import (
     AnalysisReport,
     ReportSectionModel,
@@ -60,10 +61,6 @@ def __getattr__(name: str):
         return exported
     if name == "SummaryReporter":
         from dba_assistant.core.reporter.summary_reporter import SummaryReporter as exported
-
-        return exported
-    if name == "generate_analysis_report":
-        from dba_assistant.core.reporter.generate_analysis_report import generate_analysis_report as exported
 
         return exported
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

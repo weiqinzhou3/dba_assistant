@@ -1,6 +1,9 @@
+import subprocess
+import sys
 from pathlib import Path
 
 from dba_assistant.core.analyzer.types import AnalysisResult, ReportSection, TableModel
+from dba_assistant.core.reporter import SummaryReporter
 from dba_assistant.core.reporter.types import OutputMode, ReportFormat, ReportOutputConfig
 
 
@@ -35,3 +38,22 @@ def test_analysis_result_preserves_nested_sections_and_tables() -> None:
     assert analysis.sections[0].tables[0].rows[0][1] == "128"
     assert analysis.metadata["environment"] == "prod"
     assert analysis.risk_summary["warning"] == 1
+
+
+def test_reporter_package_import_does_not_load_docx() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; import dba_assistant.core.reporter; print('docx' in sys.modules)",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.strip() == "False"
+
+
+def test_reporter_package_still_exports_summary_reporter() -> None:
+    assert SummaryReporter is not None

@@ -53,3 +53,27 @@ def test_normalize_raw_request_allows_colon_and_dot_in_password_without_host_con
     assert request.runtime_inputs.redis_host == "10.0.0.8"
     assert request.runtime_inputs.redis_port == 6379
     assert "abc:123.def" not in request.prompt
+
+
+def test_normalize_raw_request_extracts_password_from_chinese_password_phrase() -> None:
+    request = normalize_raw_request(
+        "使用密码 abc123 检查 Redis 10.0.0.8:6379 并给我 summary",
+        default_output_mode="summary",
+    )
+
+    assert request.secrets.redis_password == "abc123"
+    assert request.runtime_inputs.redis_host == "10.0.0.8"
+    assert request.runtime_inputs.redis_port == 6379
+    assert "abc123" not in request.prompt
+
+
+def test_normalize_raw_request_extracts_password_from_chinese_as_password_phrase() -> None:
+    request = normalize_raw_request(
+        "使用 abc123 作为 Redis 密码，检查 Redis 10.0.0.8:6379",
+        default_output_mode="summary",
+    )
+
+    assert request.secrets.redis_password == "abc123"
+    assert request.runtime_inputs.redis_host == "10.0.0.8"
+    assert request.runtime_inputs.redis_port == 6379
+    assert "abc123" not in request.prompt

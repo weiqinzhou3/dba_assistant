@@ -62,6 +62,42 @@ def test_summary_reporter_can_write_summary_to_a_text_file(tmp_path: Path) -> No
     assert output_path.read_text(encoding="utf-8").startswith("Redis RDB Analysis")
 
 
+def test_summary_reporter_preserves_legacy_analysis_result_text_shape() -> None:
+    artifact = SummaryReporter().render(
+        build_analysis(),
+        ReportOutputConfig(
+            mode=OutputMode.SUMMARY,
+            format=ReportFormat.SUMMARY,
+            output_path=None,
+        ),
+    )
+
+    assert artifact.content == (
+        "Redis RDB Analysis\n"
+        "==================\n"
+        "\n"
+        "No urgent risk found.\n"
+        "\n"
+        "Metadata\n"
+        "--------\n"
+        "- environment: prod\n"
+        "\n"
+        "Risk Summary\n"
+        "------------\n"
+        "- warning: 1\n"
+        "\n"
+        "Largest Keys\n"
+        "------------\n"
+        "Largest keys in the dataset\n"
+        "\n"
+        "Two session keys dominate memory usage.\n"
+        "\n"
+        "Top Keys\n"
+        "Key, Bytes\n"
+        "session:1, 2048\n"
+    )
+
+
 def test_summary_reporter_supports_generic_analysis_report() -> None:
     report = AnalysisReport(
         title="Redis RDB Analysis",

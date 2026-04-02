@@ -1,33 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, make_dataclass
+from dataclasses import dataclass
 from enum import Enum
 import os
 
-from dba_assistant.adaptors import redis_adaptor
+from dba_assistant.adaptors.redis_adaptor import RedisConnectionConfig
 
 
 class ProviderKind(str, Enum):
     OPENAI_COMPATIBLE = "openai_compatible"
-
-
-try:
-    from dba_assistant.adaptors.redis_adaptor import RedisConnectionConfig
-except ImportError:
-    RedisConnectionConfig = make_dataclass(
-        "RedisConnectionConfig",
-        [
-            ("host", str),
-            ("port", int),
-            ("db", int, 0),
-            ("username", str | None, None),
-            ("password", str | None, None),
-            ("socket_timeout", float, 5.0),
-        ],
-        frozen=True,
-    )
-    redis_adaptor.RedisConnectionConfig = RedisConnectionConfig
-
 
 @dataclass(frozen=True)
 class ModelConfig:

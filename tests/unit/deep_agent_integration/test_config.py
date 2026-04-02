@@ -1,11 +1,11 @@
 import pytest
 
+from dba_assistant.adaptors.redis_adaptor import RedisConnectionConfig as SharedRedisConnectionConfig
 from dba_assistant.deep_agent_integration.config import (
     DEFAULT_MODEL_PRESET,
     ProviderKind,
     load_app_config,
 )
-from dba_assistant.adaptors.redis_adaptor import RedisConnectionConfig as SharedRedisConnectionConfig
 
 
 def test_load_app_config_uses_dashscope_cn_preset_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -20,6 +20,7 @@ def test_load_app_config_uses_dashscope_cn_preset_by_default(monkeypatch: pytest
     assert config.model.api_key == "sk-cn"
     assert config.redis.host == "127.0.0.1"
     assert config.redis.port == 6379
+    assert isinstance(config.redis, SharedRedisConnectionConfig)
     assert config.redis.__class__ is SharedRedisConnectionConfig
 
 

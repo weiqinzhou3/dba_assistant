@@ -48,6 +48,15 @@ def test_load_app_config_uses_dashscope_cn_preset_by_default(monkeypatch: pytest
     assert config.redis.__class__ is SharedRedisConnectionConfig
 
 
+def test_load_app_config_requires_dashscope_api_key_for_default_preset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DBA_MODEL_NAME", "qwen3.5-flash")
+
+    with pytest.raises(ValueError, match="Missing API key for preset dashscope_cn_qwen35_flash"):
+        load_app_config()
+
+
 def test_load_app_config_supports_ollama_without_external_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DBA_MODEL_PRESET", "ollama_local")
     monkeypatch.setenv("DBA_MODEL_NAME", "qwen3:8b")

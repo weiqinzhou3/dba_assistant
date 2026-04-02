@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from redis import Redis
-from redis.exceptions import RedisError
+from redis.exceptions import AuthenticationError, ConnectionError, RedisError
 
 
 DEFAULT_CONFIG_PATTERN = "maxmemory*"
@@ -29,8 +29,12 @@ class RedisAdaptor:
     def __init__(self, client_factory: Callable[..., Any] = Redis) -> None:
         self._client_factory = client_factory
 
-    def ping(self, connection: RedisConnectionConfig) -> dict[str, bool]:
-        return {"ok": bool(self._run(connection, lambda client: client.ping()))}
+    def ping(self, connection: RedisConnectionConfig) -> dict[str, Any]:
+        return self._run_read_only_probe(
+            connection,
+            callback=lambda client: client.ping(),
+            formatter=lambda payload: {"ok": bool(payload)},
+        )
 
     def info(
         self,
@@ -38,7 +42,11 @@ class RedisAdaptor:
         *,
         section: str | None = None,
     ) -> dict[str, Any]:
-        return dict(self._run(connection, lambda client: client.info(section=section)))
+        return self._run_read_only_probe(
+            connection,
+            callback=lambda client: client.info(section=section),
+            formatter=lambda payload: dict(payload),
+        )
 
     def config_get(
         self,
@@ -47,7 +55,7 @@ class RedisAdaptor:
         pattern: str = DEFAULT_CONFIG_PATTERN,
     ) -> dict[str, Any]:
         self._validate_config_pattern(pattern)
-        return self._run_admin_probe(
+        return self._run_structured_probe(
             connection,
             metadata={"pattern": pattern},
             callback=lambda client: client.config_get(pattern),
@@ -61,7 +69,7 @@ class RedisAdaptor:
         length: int = DEFAULT_SLOWLOG_LENGTH,
     ) -> dict[str, Any]:
         self._validate_slowlog_length(length)
-        return self._run_admin_probe(
+        return self._run_structured_probe(
             connection,
             metadata={"requested_length": length},
             callback=lambda client: client.slowlog_get(length),
@@ -72,7 +80,7 @@ class RedisAdaptor:
         )
 
     def client_list(self, connection: RedisConnectionConfig) -> dict[str, Any]:
-        return self._run_admin_probe(
+        return self._run_structured_probe(
             connection,
             metadata={},
             callback=lambda client: client.client_list(),
@@ -99,7 +107,7 @@ class RedisAdaptor:
             if callable(close):
                 close()
 
-    def _run_admin_probe(
+    def _run_structured_probe(
         self,
         connection: RedisConnectionConfig,
         *,
@@ -109,6 +117,10 @@ class RedisAdaptor:
     ) -> dict[str, Any]:
         try:
             payload = self._run(connection, callback)
+        except AuthenticationError as error:
+            return self._probe_unavailable(metadata, "authentication_failed", error)
+        except ConnectionError as error:
+            return self._probe_unavailable(metadata, "connection_failed", error)
         except PermissionError as error:
             return self._probe_unavailable(metadata, "permission_denied", error)
         except RedisError as error:
@@ -118,6 +130,22 @@ class RedisAdaptor:
             return self._probe_unavailable(metadata, kind, error)
 
         return {"available": True, **metadata, **formatter(payload)}
+
+    def _run_read_only_probe(
+        self,
+        connection: RedisConnectionConfig,
+        *,
+        callback: Callable[[Any], Any],
+        formatter: Callable[[Any], dict[str, Any]],
+    ) -> dict[str, Any]:
+        try:
+            payload = self._run(connection, callback)
+        except AuthenticationError as error:
+            return self._probe_unavailable({}, "authentication_failed", error)
+        except ConnectionError as error:
+            return self._probe_unavailable({}, "connection_failed", error)
+
+        return formatter(payload)
 
     def _probe_unavailable(
         self,

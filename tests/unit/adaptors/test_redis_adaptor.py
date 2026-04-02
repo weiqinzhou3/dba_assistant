@@ -1,5 +1,5 @@
 import pytest
-from redis.exceptions import ResponseError
+from redis.exceptions import AuthenticationError, ConnectionError, ResponseError
 
 from dba_assistant.adaptors.redis_adaptor import RedisAdaptor, RedisConnectionConfig
 
@@ -46,6 +46,40 @@ class RestrictedRedisClient(FakeRedisClient):
         raise PermissionError("permission denied for CLIENT LIST")
 
 
+class AuthFailingRedisClient(FakeRedisClient):
+    def ping(self) -> bool:
+        raise AuthenticationError("invalid username-password pair or user is disabled")
+
+    def info(self, section=None):
+        raise AuthenticationError("invalid username-password pair or user is disabled")
+
+    def config_get(self, pattern: str):
+        raise AuthenticationError("invalid username-password pair or user is disabled")
+
+    def slowlog_get(self, length: int):
+        raise AuthenticationError("invalid username-password pair or user is disabled")
+
+    def client_list(self):
+        raise AuthenticationError("invalid username-password pair or user is disabled")
+
+
+class ConnectionFailingRedisClient(FakeRedisClient):
+    def ping(self) -> bool:
+        raise ConnectionError("connection lost")
+
+    def info(self, section=None):
+        raise ConnectionError("connection lost")
+
+    def config_get(self, pattern: str):
+        raise ConnectionError("connection lost")
+
+    def slowlog_get(self, length: int):
+        raise ConnectionError("connection lost")
+
+    def client_list(self):
+        raise ConnectionError("connection lost")
+
+
 def test_redis_adaptor_wraps_read_only_commands() -> None:
     adaptor = RedisAdaptor(client_factory=FakeRedisClient)
     connection = RedisConnectionConfig(host="redis.example", port=6380, password="secret")
@@ -84,6 +118,81 @@ def test_redis_adaptor_reports_unavailable_admin_probes() -> None:
 
     assert clients["available"] is False
     assert clients["error"]["kind"] == "permission_denied"
+
+
+def test_redis_adaptor_normalizes_auth_and_connection_failures() -> None:
+    auth_adaptor = RedisAdaptor(client_factory=AuthFailingRedisClient)
+    connection_adaptor = RedisAdaptor(client_factory=ConnectionFailingRedisClient)
+    connection = RedisConnectionConfig(host="redis.example")
+
+    assert auth_adaptor.config_get(connection, pattern="maxmemory*") == {
+        "available": False,
+        "pattern": "maxmemory*",
+        "error": {
+            "kind": "authentication_failed",
+            "message": "invalid username-password pair or user is disabled",
+        },
+    }
+    assert auth_adaptor.slowlog_get(connection, length=5) == {
+        "available": False,
+        "requested_length": 5,
+        "error": {
+            "kind": "authentication_failed",
+            "message": "invalid username-password pair or user is disabled",
+        },
+    }
+    assert auth_adaptor.client_list(connection) == {
+        "available": False,
+        "error": {
+            "kind": "authentication_failed",
+            "message": "invalid username-password pair or user is disabled",
+        },
+    }
+
+    assert connection_adaptor.config_get(connection, pattern="maxmemory*") == {
+        "available": False,
+        "pattern": "maxmemory*",
+        "error": {"kind": "connection_failed", "message": "connection lost"},
+    }
+    assert connection_adaptor.slowlog_get(connection, length=5) == {
+        "available": False,
+        "requested_length": 5,
+        "error": {"kind": "connection_failed", "message": "connection lost"},
+    }
+    assert connection_adaptor.client_list(connection) == {
+        "available": False,
+        "error": {"kind": "connection_failed", "message": "connection lost"},
+    }
+
+
+def test_redis_adaptor_wraps_ping_and_info_failures() -> None:
+    auth_adaptor = RedisAdaptor(client_factory=AuthFailingRedisClient)
+    connection_adaptor = RedisAdaptor(client_factory=ConnectionFailingRedisClient)
+    connection = RedisConnectionConfig(host="redis.example")
+
+    assert auth_adaptor.ping(connection) == {
+        "available": False,
+        "error": {
+            "kind": "authentication_failed",
+            "message": "invalid username-password pair or user is disabled",
+        },
+    }
+    assert auth_adaptor.info(connection, section="server") == {
+        "available": False,
+        "error": {
+            "kind": "authentication_failed",
+            "message": "invalid username-password pair or user is disabled",
+        },
+    }
+
+    assert connection_adaptor.ping(connection) == {
+        "available": False,
+        "error": {"kind": "connection_failed", "message": "connection lost"},
+    }
+    assert connection_adaptor.info(connection, section="server") == {
+        "available": False,
+        "error": {"kind": "connection_failed", "message": "connection lost"},
+    }
 
 
 @pytest.mark.parametrize("pattern", ["*", "requirepass", "clients*"])

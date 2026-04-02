@@ -11,7 +11,8 @@ It does not redefine any phase. The target phase outcomes remain described by:
 
 ## Current State
 
-The repository now contains delivered Phase 1 and Phase 2 docs and implementation, plus remaining later-phase scaffolding.
+The repository now contains delivered Phase 1 shared foundations and Phase 2 Deep Agent
+assembly plus read-only Redis remote foundation, alongside later-phase scaffolding.
 
 Present in the repository now:
 
@@ -21,7 +22,7 @@ Present in the repository now:
 - `/init` design and plan documents under `docs/superpowers/`
 - a production package root under `src/dba_assistant/`
 - the repository-owned `src/dba_assistant/deep_agent_integration/` assembly layer
-- delivered shared collector, reporter, adaptor, and skill implementation under `src/dba_assistant/`
+- delivered shared collector, reporter, adaptor, and skill surfaces under `src/dba_assistant/`
 - template, reference, and test directories
 - git initialization and GitHub remote setup
 
@@ -51,8 +52,8 @@ Present in the repository now:
 
 ### Phase 4 not yet delivered
 
-- working Redis inspection pipeline for offline source data
-- working Redis or SSH real-time collection path
+- the full Redis inspection pipeline built on the shipped Phase 2 Redis remote foundation
+- the SSH real-time collection path
 
 ### Phase 5 not yet delivered
 

@@ -33,8 +33,8 @@ Phase 1 delivered the repository-owned offline foundation for shared collection 
 
 ## Acceptance Criteria
 
-- The Collector interface can be called by Skills, and the offline path can read local files and output structured data.
-- The Reporter interface can be called by Skills, and at minimum `DocxReporter` and `SummaryReporter` are functional.
+- The Collector interface is usable by later skills, and the offline path can read local files and output structured data.
+- The Reporter interface is usable by later skills, and at minimum `DocxReporter` and `SummaryReporter` are functional.
 - Template skeletons are ready and can render a minimal Word document with a cover page, headings, and tables.
 - Tests pass.
 

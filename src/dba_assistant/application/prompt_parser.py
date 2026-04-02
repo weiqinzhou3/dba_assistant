@@ -30,15 +30,14 @@ _HOST_PORT_PATTERN = re.compile(
 )
 _DB_PATTERN = re.compile(r"(?i)\bdb(?:\s+(?:index\s+)?)?(?P<db>\d+)\b")
 _OUTPUT_MODE_PATTERN = re.compile(r"(?i)\b(?P<mode>report|summary)\b")
-_PROFILE_PATTERN = re.compile(
-    r"(?i)(?:(?<![a-z0-9_])(?P<profile>generic|rcs)\s+profile(?![a-z0-9_])|(?<![a-z0-9_])(?P<profile_cn>通用)\s*profile(?![a-z0-9_]))"
-)
+_ENGLISH_PROFILE_PATTERN = re.compile(r"(?i)(?P<profile>generic|rcs)\s+profile(?![a-z0-9_])")
+_CHINESE_PROFILE_PATTERN = re.compile(r"(?i)(?P<profile_cn>通用)\s*profile(?![a-z0-9_])")
 _PREFIX_PATTERN = re.compile(r"(?<![A-Za-z0-9_.-])(?P<prefix>[A-Za-z0-9_.-]+:\*)")
 _SECTION_TOP_PATTERN = re.compile(
     r"(?i)\b(?P<section>prefix|hash|list|set)\s+top\s+(?P<count>\d{1,4})\b"
 )
 _GENERIC_TOP_PATTERN = re.compile(
-    r"(?i)(?<!prefix\s)(?<!hash\s)(?<!list\s)(?<!set\s)\btop\s+(?P<count>\d{1,4})\b"
+    r"(?i)(?<!prefix\s)(?<!hash\s)(?<!list\s)(?<!set\s)\btop\s+(?P<count>\d{1,4})(?=\s*(?:[,;，。]|$))"
 )
 _WHITESPACE_PATTERN = re.compile(r"\s+")
 
@@ -93,19 +92,20 @@ def _extract_rdb_overrides(prompt: str) -> RdbOverrides:
 
 
 def _extract_profile_name(prompt: str) -> str | None:
-    matches = list(_PROFILE_PATTERN.finditer(prompt))
+    matches: list[tuple[int, str]] = []
+
+    for match in _ENGLISH_PROFILE_PATTERN.finditer(prompt):
+        if _is_valid_profile_prefix(prompt, match.start()):
+            matches.append((match.start(), match.group("profile").lower()))
+
+    for match in _CHINESE_PROFILE_PATTERN.finditer(prompt):
+        if _is_valid_profile_prefix(prompt, match.start()):
+            matches.append((match.start(), "generic"))
+
     if not matches:
         return None
 
-    match = matches[-1]
-    profile = match.group("profile")
-    if profile:
-        return profile.lower()
-
-    if match.group("profile_cn"):
-        return "generic"
-
-    return None
+    return max(matches, key=lambda item: item[0])[1]
 
 
 def _extract_focus_prefixes(prompt: str) -> tuple[str, ...]:
@@ -139,6 +139,14 @@ def _map_section_to_top_key(section: str) -> str:
         "list": "list_big_keys",
         "set": "set_big_keys",
     }[section]
+
+
+def _is_valid_profile_prefix(prompt: str, start: int) -> bool:
+    if start == 0:
+        return True
+
+    previous = prompt[start - 1]
+    return previous.isspace() or previous in "([【（,，;；:：" or previous == "按"
 
 
 def _clean_secret(value: str) -> str:

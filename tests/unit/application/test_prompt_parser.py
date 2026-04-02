@@ -77,3 +77,61 @@ def test_normalize_raw_request_extracts_password_from_chinese_as_password_phrase
     assert request.runtime_inputs.redis_host == "10.0.0.8"
     assert request.runtime_inputs.redis_port == 6379
     assert "abc123" not in request.prompt
+
+
+def test_normalize_raw_request_extracts_task_2_profile_overrides() -> None:
+    request = normalize_raw_request(
+        "按通用profile分析这个rdb，重点看order:*前缀，prefix top 30，hash top 20，top 8",
+        default_output_mode="summary",
+    )
+
+    assert request.rdb_overrides.profile_name == "generic"
+    assert request.rdb_overrides.focus_prefixes == ("order:*",)
+    assert request.rdb_overrides.top_n == {
+        "prefix_top": 30,
+        "hash_big_keys": 20,
+        "top_big_keys": 8,
+    }
+
+
+def test_normalize_raw_request_extracts_rcs_profile_from_task_2_form() -> None:
+    request = normalize_raw_request(
+        "按rcs profile分析这批rdb",
+        default_output_mode="summary",
+    )
+
+    assert request.rdb_overrides.profile_name == "rcs"
+    assert request.rdb_overrides.focus_prefixes == ()
+    assert request.rdb_overrides.top_n == {}
+
+
+def test_normalize_raw_request_ignores_profile_false_positives() -> None:
+    for prompt in (
+        "analyze the nongeneric profile for this RDB",
+        "analyze the srcs profile for this RDB",
+        "analyze the genericprofile for this RDB",
+        "analyze the non-generic profile for this RDB",
+        "analyze the custom-generic profile for this RDB",
+        "按非rcs profile分析这个rdb",
+    ):
+        request = normalize_raw_request(prompt, default_output_mode="summary")
+        assert request.rdb_overrides.profile_name is None
+
+
+def test_normalize_raw_request_extracts_only_prefix_token_from_chinese_context() -> None:
+    request = normalize_raw_request(
+        "按通用profile分析这个rdb，重点看order:*前缀",
+        default_output_mode="summary",
+    )
+
+    assert request.rdb_overrides.focus_prefixes == ("order:*",)
+    assert request.rdb_overrides.profile_name == "generic"
+
+
+def test_normalize_raw_request_does_not_treat_summary_top_n_phrases_as_rdb_overrides() -> None:
+    for prompt in (
+        "include the top 8 findings in the summary",
+        "报告里只写 top 8 个结论",
+    ):
+        request = normalize_raw_request(prompt, default_output_mode="summary")
+        assert request.rdb_overrides.top_n == {}

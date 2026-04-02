@@ -5,6 +5,36 @@ from dba_assistant.skills.redis_rdb_analysis.profile_resolver import resolve_pro
 
 
 @pytest.mark.parametrize(
+    ("prompt", "profile_name", "focus_prefixes", "top_n"),
+    [
+        (
+            "按通用profile分析这个rdb，重点看order:*前缀，prefix top 30，hash top 20，top 8",
+            "generic",
+            ("order:*",),
+            {"prefix_top": 30, "hash_big_keys": 20, "top_big_keys": 8},
+        ),
+        (
+            "按rcs profile分析这批rdb",
+            "rcs",
+            (),
+            {},
+        ),
+    ],
+)
+def test_normalize_raw_request_extracts_task_2_profile_overrides(
+    prompt: str,
+    profile_name: str,
+    focus_prefixes: tuple[str, ...],
+    top_n: dict[str, int],
+) -> None:
+    request = normalize_raw_request(prompt, default_output_mode="summary")
+
+    assert request.rdb_overrides.profile_name == profile_name
+    assert request.rdb_overrides.focus_prefixes == focus_prefixes
+    assert request.rdb_overrides.top_n == top_n
+
+
+@pytest.mark.parametrize(
     "prompt",
     [
         "analyze the nongeneric profile for this RDB",
@@ -20,17 +50,14 @@ def test_normalize_raw_request_ignores_profile_substrings_inside_larger_words(
     assert request.rdb_overrides.profile_name is None
 
 
-def test_normalize_raw_request_extracts_generic_profile_and_bounded_overrides() -> None:
+def test_normalize_raw_request_extracts_only_prefix_token_from_chinese_context() -> None:
     request = normalize_raw_request(
-        "按通用 profile 分析这个 RDB，重点看 order:* 前缀，prefix top 30，hash top 20，top 8",
+        "按通用profile分析这个rdb，重点看order:*前缀",
         default_output_mode="summary",
     )
 
     assert request.rdb_overrides.profile_name == "generic"
     assert request.rdb_overrides.focus_prefixes == ("order:*",)
-    assert request.rdb_overrides.top_n["prefix_top"] == 30
-    assert request.rdb_overrides.top_n["hash_big_keys"] == 20
-    assert request.rdb_overrides.top_n["top_big_keys"] == 8
 
 
 def test_resolve_generic_profile_merges_defaults_with_prompt_overrides() -> None:

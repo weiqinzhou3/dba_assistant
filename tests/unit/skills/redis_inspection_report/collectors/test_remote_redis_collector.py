@@ -1,3 +1,5 @@
+import pytest
+
 from dba_assistant.adaptors.redis_adaptor import RedisConnectionConfig
 from dba_assistant.skills.redis_inspection_report.collectors.remote_redis_collector import (
     RedisInspectionRemoteCollector,
@@ -6,34 +8,107 @@ from dba_assistant.skills.redis_inspection_report.collectors.remote_redis_collec
 
 
 class FakeRedisAdaptor:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, object]] = []
+
     def ping(self, connection: RedisConnectionConfig):
         return {"ok": True, "host": connection.host}
 
     def info(self, connection: RedisConnectionConfig, section=None):
         return {"role": "master", "section": section}
 
-    def config_get(self, connection: RedisConnectionConfig, pattern="*"):
-        return {"pattern": pattern}
+    def config_get(self, connection: RedisConnectionConfig, pattern="maxmemory*"):
+        self.calls.append(("config", pattern))
+        return {"available": True, "pattern": pattern, "data": {"maxmemory": "0"}}
 
-    def slowlog_get(self, connection: RedisConnectionConfig, length=10):
-        return [{"length": length}]
+    def slowlog_get(self, connection: RedisConnectionConfig, length=5):
+        self.calls.append(("slowlog", length))
+        return {
+            "available": True,
+            "requested_length": length,
+            "count": 1,
+            "entries": [{"id": 1, "duration": 99, "command": "SET"}],
+        }
 
     def client_list(self, connection: RedisConnectionConfig):
-        return [{"addr": "127.0.0.1:5000"}]
+        return {"available": True, "count": 1}
+
+
+class LimitedRedisAdaptor(FakeRedisAdaptor):
+    def config_get(self, connection: RedisConnectionConfig, pattern="maxmemory*"):
+        return {
+            "available": False,
+            "pattern": pattern,
+            "error": {"kind": "permission_denied", "message": "NOPERM"},
+        }
+
+    def slowlog_get(self, connection: RedisConnectionConfig, length=5):
+        return {
+            "available": False,
+            "requested_length": length,
+            "error": {"kind": "command_unavailable", "message": "unknown command"},
+        }
+
+    def client_list(self, connection: RedisConnectionConfig):
+        return {
+            "available": False,
+            "error": {"kind": "permission_denied", "message": "NOPERM"},
+        }
 
 
 def test_remote_redis_collector_reads_structured_redis_snapshot() -> None:
-    collector = RedisInspectionRemoteCollector(adaptor=FakeRedisAdaptor())
+    adaptor = FakeRedisAdaptor()
+    collector = RedisInspectionRemoteCollector(adaptor=adaptor)
     result = collector.collect(
         RedisInspectionRemoteInput(
             connection=RedisConnectionConfig(host="redis.example"),
             info_section="server",
-            config_pattern="max*",
+            config_pattern="maxmemory*",
             slowlog_length=5,
         )
     )
 
     assert result["ping"]["host"] == "redis.example"
     assert result["info"]["section"] == "server"
-    assert result["config"]["pattern"] == "max*"
-    assert result["slowlog"][0]["length"] == 5
+    assert result["config"] == {
+        "available": True,
+        "pattern": "maxmemory*",
+        "data": {"maxmemory": "0"},
+    }
+    assert result["slowlog"] == {
+        "available": True,
+        "requested_length": 5,
+        "count": 1,
+        "entries": [{"id": 1, "duration": 99, "command": "SET"}],
+    }
+    assert result["clients"] == {"available": True, "count": 1}
+    assert adaptor.calls == [("config", "maxmemory*"), ("slowlog", 5)]
+
+
+def test_remote_redis_collector_keeps_admin_probe_failures_structured() -> None:
+    collector = RedisInspectionRemoteCollector(adaptor=LimitedRedisAdaptor())
+
+    result = collector.collect(RedisInspectionRemoteInput(connection=RedisConnectionConfig(host="redis.example")))
+
+    assert result["config"]["available"] is False
+    assert result["config"]["error"]["kind"] == "permission_denied"
+    assert result["slowlog"]["available"] is False
+    assert result["slowlog"]["error"]["kind"] == "command_unavailable"
+    assert result["clients"]["available"] is False
+    assert result["clients"]["error"]["kind"] == "permission_denied"
+
+
+def test_remote_redis_collector_rejects_broad_config_patterns() -> None:
+    with pytest.raises(ValueError, match="config_pattern"):
+        RedisInspectionRemoteInput(
+            connection=RedisConnectionConfig(host="redis.example"),
+            config_pattern="*",
+        )
+
+
+def test_remote_redis_collector_rejects_large_slowlog_requests() -> None:
+    with pytest.raises(ValueError, match="slowlog_length"):
+        RedisInspectionRemoteInput(
+            connection=RedisConnectionConfig(host="redis.example"),
+            slowlog_length=6,
+        )

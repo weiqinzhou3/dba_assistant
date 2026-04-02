@@ -5,6 +5,7 @@ from dba_assistant.deep_agent_integration.config import (
     ProviderKind,
     load_app_config,
 )
+from dba_assistant.adaptors.redis_adaptor import RedisConnectionConfig as SharedRedisConnectionConfig
 
 
 def test_load_app_config_uses_dashscope_cn_preset_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -19,6 +20,7 @@ def test_load_app_config_uses_dashscope_cn_preset_by_default(monkeypatch: pytest
     assert config.model.api_key == "sk-cn"
     assert config.redis.host == "127.0.0.1"
     assert config.redis.port == 6379
+    assert config.redis.__class__ is SharedRedisConnectionConfig
 
 
 def test_load_app_config_supports_ollama_without_external_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -37,4 +39,13 @@ def test_custom_openai_compatible_requires_base_url_and_model(monkeypatch: pytes
     monkeypatch.setenv("DBA_MODEL_API_KEY", "sk-custom")
 
     with pytest.raises(ValueError, match="DBA_MODEL_BASE_URL"):
+        load_app_config()
+
+
+def test_custom_openai_compatible_requires_model_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DBA_MODEL_PRESET", "custom_openai_compatible")
+    monkeypatch.setenv("DBA_MODEL_BASE_URL", "https://example.com/v1")
+    monkeypatch.setenv("DBA_MODEL_API_KEY", "sk-custom")
+
+    with pytest.raises(ValueError, match="DBA_MODEL_NAME"):
         load_app_config()

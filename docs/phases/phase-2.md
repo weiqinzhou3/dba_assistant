@@ -2,30 +2,51 @@
 
 ## Status
 
-Planning
+Delivered
 
 ## Goal
 
-Register skills and tools via Deep Agent SDK, configure the LLM, and implement the remote collection path.
+Assemble the repository-owned Deep Agent SDK layer, configure provider-capable model access, and implement one real read-only Redis remote collection path.
 
-## Tasks
+## Delivered Scope
 
-1. Register skills and tools through Deep Agent SDK to complete runtime assembly.
-2. Configure a working LLM setup, including model selection, token limits, and retry strategy.
-3. Implement Remote Collector infrastructure.
-   - `RedisAdaptor`: manage Redis connections, including direct connections and SSH tunnels, and wrap commands such as `INFO`, `CONFIG GET`, `SLOWLOG`, and `CLIENT LIST`.
-   - `SSHAdaptor`: manage SSH connections, including remote command execution and file transfer.
-   - `MySQLAdaptor`: manage MySQL connections, including query execution and result export.
-4. Mark all remote collection paths as read-only. No write operations are executed.
-5. Implement PDF Reporter and HTML Reporter if complexity is manageable; otherwise defer them until after Phase 4.
+1. Repository-owned `deep_agent_integration/` layer
+   - Lives under `src/dba_assistant/deep_agent_integration/`.
+   - Loads runtime configuration, builds provider-compatible model objects, registers model-visible tools, constructs the Phase 2 validation agent, and exposes a small run entry.
+   - Is glue code around Deep Agent SDK, not a custom runtime framework.
+
+2. Provider-capable model configuration
+   - Uses a default DashScope China preset.
+   - Supports optional DashScope International and Ollama-compatible presets.
+   - Keeps model/provider configuration centralized in the integration layer.
+   - Defaults tracing to disabled for safer provider portability.
+
+3. Read-only Redis remote collection path
+   - Implements one real Redis direct adaptor.
+   - Exposes one remote collector path built on that adaptor.
+   - Keeps collection strictly read-only.
+
+4. Bounded Redis tool registration and minimal validation agent
+   - Registers a small, read-only Redis tool set.
+   - Builds a minimal integration-validation agent that summarizes structured Redis results.
+   - Defers SSH and MySQL live work to later phases.
+
+## Deferred Scope
+
+- No custom runtime framework.
+- No SSH live path in Phase 2.
+- No MySQL live path in Phase 2.
+- No write-capable remote collection behavior.
+- No full inspection or analysis business logic beyond the validation path.
 
 ## Acceptance Criteria
 
-- The Agent can invoke registered skills through the SDK.
-- At least one remote Adaptor, starting with Redis direct connection, is functional.
+- The Deep Agent SDK assembly layer exists under `src/dba_assistant/deep_agent_integration/`.
+- The agent can invoke the registered read-only Redis tools.
+- The Redis direct adaptor and remote collector path are functional and read-only.
 - The runtime remains lightweight and does not introduce a custom framework.
 
 ## Dependency Notes
 
-- Depends on the shared-layer foundations established in Phase 1.
+- Depends on the Phase 1 shared-layer foundation.
 - Current repository scaffold status is tracked separately in `docs/phases/current-scaffold-status.md`.

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document records the repository's current state after `/init`.
+This document records the repository's current state at the current branch tip.
 
 It does not redefine any phase. The target phase outcomes remain described by:
 
@@ -11,7 +11,7 @@ It does not redefine any phase. The target phase outcomes remain described by:
 
 ## Current State
 
-The repository currently contains scaffold and planning assets, not completed phase deliveries.
+The repository now contains delivered Phase 1 and Phase 2 docs and implementation, plus remaining later-phase scaffolding.
 
 Present in the repository now:
 
@@ -19,25 +19,29 @@ Present in the repository now:
 - the master plan
 - phase-definition documents under `docs/phases/`
 - `/init` design and plan documents under `docs/superpowers/`
-- a production package scaffold under `src/dba_assistant/`
-- `SKILL.md` contract placeholders for the initial Redis skills
-- template, reference, and test placeholder directories
+- a production package root under `src/dba_assistant/`
+- the repository-owned `src/dba_assistant/deep_agent_integration/` assembly layer
+- delivered shared collector, reporter, adaptor, and skill implementation under `src/dba_assistant/`
+- template, reference, and test directories
 - git initialization and GitHub remote setup
 
-## What Is Not Yet Delivered
+## Phase Status
 
-### Phase 1 not yet delivered
+### Phase 1 delivered
 
-- Collector interface and offline implementation
-- functional Reporter implementations
+- shared collector interfaces and offline implementation
+- functional reporter implementations
 - functional template components
 - unit tests that verify working Collector and Reporter behavior
 
-### Phase 2 not yet delivered
+### Phase 2 delivered
 
 - Deep Agent SDK runtime assembly
-- LLM configuration
-- functional remote adaptors and remote collection paths
+- provider-capable model configuration
+- the read-only Redis direct adaptor and remote collection path
+- bounded read-only Redis tool registration and the minimal validation agent
+
+## Later Phases Not Yet Delivered
 
 ### Phase 3 not yet delivered
 

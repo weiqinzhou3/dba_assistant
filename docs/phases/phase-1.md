@@ -2,11 +2,15 @@
 
 ## Status
 
-Planning
+Delivered
 
 ## Goal
 
 Establish the repository structure and deliver the interface definitions and offline implementations for the Collector, Reporter, and Template shared layers.
+
+## Delivery Summary
+
+Phase 1 delivered the repository-owned offline foundation for shared collection and reporting work, including the package scaffold, offline collector path, reporter implementations, template assets, and supporting tests.
 
 ## Tasks
 

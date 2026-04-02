@@ -1,3 +1,5 @@
+"""redis_rdb_analysis skill scaffold."""
+
 from .types import (
     AnalysisStatus,
     ConfirmationRequest,

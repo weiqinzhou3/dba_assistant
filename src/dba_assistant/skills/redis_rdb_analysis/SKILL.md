@@ -1,50 +1,46 @@
 ```yaml
 skill:
   name: redis-rdb-analysis
-  description: Phase 3 Redis RDB analysis with profile-driven routing and confirmation-gated remote acquisition.
+  description: Define Redis RDB analysis contracts and package scaffolding for later Phase 3 implementation.
 
 status:
   phase_owner: phase-3
-  implementation_status: phase-3-active
-  execution_status: runnable
-
-phase_3_scope:
-  owns_package_path: src/dba_assistant/skills/redis_rdb_analysis/
-  supported_paths:
-    - 3a
-    - 3b
-    - 3c
-  supported_profiles:
-    - generic
-    - rcs
+  implementation_status: contract-groundwork
+  execution_status: not-invokable-yet
 
 input_contract:
-  request_model: RdbAnalysisRequest
-  request_fields:
-    - prompt
-    - inputs
-    - profile_name
-    - path_mode
-    - merge_multiple_inputs
-    - profile_overrides
-  input_sources:
-    - local_rdb
-    - remote_redis
-    - precomputed
-  confirmation_model: ConfirmationRequest
-  confirmation_behavior:
-    - remote Redis discovery pauses before acquisition when the requested action requires fetching an existing RDB
-    - confirmation status uses AnalysisStatus.CONFIRMATION_REQUIRED
+  required_data:
+    - name: source_path
+      type: string
+      description: Path to one RDB file, an exported analysis data file, or a directory selected by the collector path.
+  supported_collectors:
+    - offline
+    - remote-mysql
+  parameters:
+    - name: output_mode
+      type: string
+      default: report
+      description: Output mode, either report or summary.
+    - name: output_format
+      type: string
+      default: docx
+      description: Report format when output_mode is report.
 
 output_contract:
-  dataset_model: NormalizedRdbDataset
-  profile_model: EffectiveProfile
-  record_model: KeyRecord
-  sample_model: SampleInput
+  analysis_schema: RdbAnalysisResult
+  supported_modes:
+    - report
+    - summary
+  supported_formats:
+    - docx
+    - pdf
+    - html
+  default_mode: report
+  default_format: docx
 ```
 
 Notes:
 
-- This file defines the Phase 3 skill contract and ownership boundaries.
-- Later-phase analyzer, collector, and report assembly behavior must continue to align with these contracts.
-- The skill is intended for integration into the repository's Deep Agent SDK runtime.
+- This file defines Task 1 contract intent only.
+- Parsing, SQL workflows, rendering, and runtime wiring belong to later Phase 3 implementation.
+- The skill is not invokable yet; it only reserves the package and shared contract surface.

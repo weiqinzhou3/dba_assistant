@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import dba_assistant.skills.redis_rdb_analysis as redis_rdb_analysis
+from dba_assistant.skills.redis_rdb_analysis import types as types_module
 from dba_assistant.skills.redis_rdb_analysis.types import (
     AnalysisStatus,
     ConfirmationRequest,
@@ -68,3 +70,21 @@ def test_effective_profile_defaults_to_empty_overrides() -> None:
     )
 
     assert profile.top_n == {}
+
+
+def test_package_surface_reexports_contract_types() -> None:
+    expected_exports = {
+        "AnalysisStatus",
+        "ConfirmationRequest",
+        "EffectiveProfile",
+        "InputSourceKind",
+        "KeyRecord",
+        "NormalizedRdbDataset",
+        "RdbAnalysisRequest",
+        "SampleInput",
+    }
+
+    assert set(redis_rdb_analysis.__all__) == expected_exports
+
+    for export_name in expected_exports:
+        assert getattr(redis_rdb_analysis, export_name) is getattr(types_module, export_name)

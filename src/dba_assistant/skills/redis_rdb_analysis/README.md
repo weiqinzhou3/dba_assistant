@@ -2,8 +2,6 @@
 
 Phase owner: Phase 3
 
-Status: Phase 3 implementation contracts.
+Status: contract-groundwork.
 
-This package owns the Phase 3 `redis_rdb_analysis` production path.
-
-It will provide profile-driven Redis RDB analysis, path routing across `3a`, `3b`, and `3c`, remote Redis discovery with confirmation-gated RDB acquisition, and report assembly for the generic and RCS output profiles.
+Task 1 contract groundwork has landed here, but runtime behavior is still pending later Phase 3 implementation.

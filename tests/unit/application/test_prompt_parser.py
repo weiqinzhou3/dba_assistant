@@ -139,6 +139,15 @@ def test_normalize_raw_request_extracts_only_prefix_token_from_chinese_context()
     assert request.rdb_overrides.profile_name == "generic"
 
 
+def test_normalize_raw_request_extracts_multiple_prefixes_from_one_explicit_instruction() -> None:
+    request = normalize_raw_request(
+        "按通用profile分析这个rdb，重点看 loan:* 和 cis:* 前缀",
+        default_output_mode="summary",
+    )
+
+    assert request.rdb_overrides.focus_prefixes == ("loan:*", "cis:*")
+
+
 def test_normalize_raw_request_does_not_treat_bare_prefix_token_as_override() -> None:
     request = normalize_raw_request(
         "I saw order:* in the logs, but this is just narration about the dataset",

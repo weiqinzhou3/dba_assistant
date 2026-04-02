@@ -43,7 +43,7 @@ _CHINESE_GENERIC_PROFILE_PATTERN = re.compile(
 )
 _PREFIX_OVERRIDE_PATTERNS = (
     re.compile(
-        r"(?i)(?:重点看|重点关注|关注|看|分析|analyze|analyse|inspect|focus(?:\s+on)?)\s*(?P<prefix>[A-Za-z0-9_.-]+:\*)\s*(?:前缀|prefix)?"
+        r"(?i)(?:重点看|重点关注|关注|看|分析|analyze|analyse|inspect|focus(?:\s+on)?)\s*(?P<body>[^,;，。]*)"
     ),
 )
 _SECTION_TOP_PATTERN = re.compile(
@@ -117,10 +117,12 @@ def _extract_focus_prefixes(prompt: str) -> tuple[str, ...]:
     seen: set[str] = set()
     for pattern in _PREFIX_OVERRIDE_PATTERNS:
         for match in pattern.finditer(prompt):
-            prefix = match.group("prefix")
-            if prefix not in seen:
-                seen.add(prefix)
-                prefixes.append(prefix)
+            body = match.group("body")
+            for prefix_match in re.finditer(r"[A-Za-z0-9_.-]+:\*", body):
+                prefix = prefix_match.group(0)
+                if prefix not in seen:
+                    seen.add(prefix)
+                    prefixes.append(prefix)
     return tuple(prefixes)
 
 

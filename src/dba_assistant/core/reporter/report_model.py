@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from dba_assistant.core.analyzer.types import AnalysisResult, ReportSection, TableModel
 
 
 @dataclass(frozen=True)
@@ -28,3 +29,89 @@ class AnalysisReport:
     sections: list[ReportSectionModel]
     summary: str | None = None
     metadata: dict[str, str] = field(default_factory=dict)
+
+
+def coerce_analysis_report(analysis: AnalysisReport | AnalysisResult) -> AnalysisReport:
+    if isinstance(analysis, AnalysisReport):
+        return analysis
+
+    sections: list[ReportSectionModel] = []
+
+    if analysis.risk_summary:
+        sections.append(
+            ReportSectionModel(
+                id="risk_summary",
+                title="Risk Summary",
+                blocks=[
+                    TextBlock(text=f"- {key}: {value}")
+                    for key, value in sorted(analysis.risk_summary.items())
+                ],
+            )
+        )
+
+    for section in analysis.sections:
+        sections.append(_coerce_section(section))
+
+    return AnalysisReport(
+        title=analysis.title,
+        summary=analysis.summary,
+        sections=sections,
+        metadata={key: str(value) for key, value in analysis.metadata.items()},
+    )
+
+
+def render_summary_text(report: AnalysisReport) -> str:
+    lines = [report.title]
+
+    if report.summary:
+        lines.extend(["", report.summary])
+
+    if report.metadata:
+        lines.extend(["", "Metadata"])
+        for key, value in sorted(report.metadata.items()):
+            lines.append(f"- {key}: {value}")
+
+    for section in report.sections:
+        lines.extend(["", section.title])
+        for block in section.blocks:
+            if isinstance(block, TextBlock):
+                lines.append(block.text)
+                continue
+            lines.append(block.title)
+            if block.columns:
+                lines.append(", ".join(block.columns))
+            for row in block.rows:
+                lines.append(", ".join(row))
+
+    return "\n".join(lines)
+
+
+def _coerce_section(section: ReportSection) -> ReportSectionModel:
+    blocks: list[TextBlock | TableBlock] = []
+
+    if section.summary:
+        blocks.append(TextBlock(text=section.summary))
+
+    for paragraph in section.paragraphs:
+        blocks.append(TextBlock(text=paragraph))
+
+    for table in section.tables:
+        blocks.append(_coerce_table(table))
+
+    return ReportSectionModel(
+        id=_section_id(section.title),
+        title=section.title,
+        blocks=blocks,
+    )
+
+
+def _coerce_table(table: TableModel) -> TableBlock:
+    return TableBlock(
+        title=table.title,
+        columns=[str(column) for column in table.columns],
+        rows=[[str(cell) for cell in row] for row in table.rows],
+    )
+
+
+def _section_id(title: str) -> str:
+    return title.lower().replace(" ", "_")

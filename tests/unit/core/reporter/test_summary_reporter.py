@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from dba_assistant.core.analyzer.types import AnalysisResult, ReportSection, TableModel
+from dba_assistant.core.reporter.report_model import AnalysisReport, ReportSectionModel, TextBlock
 from dba_assistant.core.reporter.summary_reporter import SummaryReporter
 from dba_assistant.core.reporter.types import OutputMode, ReportFormat, ReportOutputConfig
 
@@ -59,3 +60,19 @@ def test_summary_reporter_can_write_summary_to_a_text_file(tmp_path: Path) -> No
 
     assert artifact.output_path == output_path
     assert output_path.read_text(encoding="utf-8").startswith("Redis RDB Analysis")
+
+
+def test_summary_reporter_supports_generic_analysis_report() -> None:
+    report = AnalysisReport(
+        title="Redis RDB Analysis",
+        summary="No urgent risk found.",
+        sections=[ReportSectionModel(id="summary", title="Summary", blocks=[TextBlock(text="ok")])],
+    )
+
+    artifact = SummaryReporter().render(
+        report,
+        ReportOutputConfig(mode=OutputMode.SUMMARY, format=ReportFormat.SUMMARY),
+    )
+
+    assert artifact.content is not None
+    assert "No urgent risk found." in artifact.content

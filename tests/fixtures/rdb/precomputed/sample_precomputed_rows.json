@@ -1,0 +1,16 @@
+[
+  {
+    "key_name": "loan:1",
+    "key_type": "hash",
+    "size_bytes": 128,
+    "has_expiration": false,
+    "ttl_seconds": null
+  },
+  {
+    "key_name": "loan:active:2",
+    "key_type": "string",
+    "size_bytes": 64,
+    "has_expiration": true,
+    "ttl_seconds": 300
+  }
+]

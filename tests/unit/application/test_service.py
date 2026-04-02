@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from dba_assistant.application.request_models import NormalizedRequest, RdbOverrides, RuntimeInputs, Secrets
+from dba_assistant.core.reporter.report_model import AnalysisReport, ReportSectionModel, TextBlock
 from dba_assistant.application.service import execute_request
 from dba_assistant.core.reporter.types import ReportArtifact, ReportFormat
 from dba_assistant.deep_agent_integration.config import AppConfig, ModelConfig, ProviderKind, RuntimeConfig
@@ -46,6 +47,10 @@ def test_execute_request_builds_redis_connection_and_calls_phase2_runner(monkeyp
 
 def test_execute_request_runs_phase3_tool_and_renders_summary(monkeypatch) -> None:
     captured: dict[str, object] = {}
+    analysis_report = AnalysisReport(
+        title="Redis RDB Analysis",
+        sections=[ReportSectionModel(id="summary", title="Summary", blocks=[TextBlock(text="ok")])],
+    )
 
     config = AppConfig(
         model=ModelConfig(
@@ -86,7 +91,7 @@ def test_execute_request_runs_phase3_tool_and_renders_summary(monkeypatch) -> No
         captured["profile_name"] = profile_name
         captured["profile_overrides"] = profile_overrides
         captured["service"] = service
-        return {"path": "3c", "profile": profile_name}
+        return analysis_report
 
     def fake_generate_analysis_report(report, report_config):
         captured["report"] = report
@@ -111,5 +116,5 @@ def test_execute_request_runs_phase3_tool_and_renders_summary(monkeypatch) -> No
         "focus_prefixes": ("loan:*",),
         "top_n": {"top_big_keys": 5},
     }
-    assert captured["report"].title == "Redis RDB Analysis"
+    assert captured["report"] is analysis_report
     assert captured["report_config"].format is ReportFormat.SUMMARY

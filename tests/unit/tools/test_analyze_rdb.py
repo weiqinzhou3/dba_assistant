@@ -4,6 +4,7 @@ import dba_assistant.tools as tools
 from dba_assistant.core.reporter.generate_analysis_report import (
     generate_analysis_report as core_generate_analysis_report,
 )
+from dba_assistant.core.reporter.report_model import AnalysisReport, ReportSectionModel, TextBlock
 from dba_assistant.skills.redis_rdb_analysis.types import InputSourceKind
 from dba_assistant.tools.analyze_rdb import analyze_rdb_tool
 from dba_assistant.tools.generate_analysis_report import generate_analysis_report
@@ -12,11 +13,15 @@ from dba_assistant.tools.generate_analysis_report import generate_analysis_repor
 def test_analyze_rdb_tool_uses_generic_profile_by_default(tmp_path: Path) -> None:
     source = tmp_path / "dump.rdb"
     source.write_text("fixture", encoding="utf-8")
+    report = AnalysisReport(
+        title="Redis RDB Analysis",
+        sections=[ReportSectionModel(id="summary", title="Summary", blocks=[TextBlock(text="ok")])],
+    )
     captured: dict[str, object] = {}
 
     def fake_service(request):
         captured["request"] = request
-        return {"path": request.path_mode, "profile": request.profile_name}
+        return report
 
     result = analyze_rdb_tool(
         prompt="analyze this rdb",
@@ -24,7 +29,7 @@ def test_analyze_rdb_tool_uses_generic_profile_by_default(tmp_path: Path) -> Non
         service=fake_service,
     )
 
-    assert result["profile"] == "generic"
+    assert result is report
     assert captured["request"].inputs[0].source == source
     assert captured["request"].inputs[0].kind is InputSourceKind.LOCAL_RDB
 

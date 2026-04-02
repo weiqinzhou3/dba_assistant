@@ -1,3 +1,4 @@
+import pytest
 from redis.exceptions import ResponseError
 
 from dba_assistant.adaptors.redis_adaptor import RedisAdaptor, RedisConnectionConfig
@@ -83,3 +84,19 @@ def test_redis_adaptor_reports_unavailable_admin_probes() -> None:
 
     assert clients["available"] is False
     assert clients["error"]["kind"] == "permission_denied"
+
+
+@pytest.mark.parametrize("pattern", ["*", "requirepass", "clients*"])
+def test_redis_adaptor_rejects_unknown_config_patterns(pattern: str) -> None:
+    adaptor = RedisAdaptor(client_factory=FakeRedisClient)
+
+    with pytest.raises(ValueError, match="config pattern"):
+        adaptor.config_get(RedisConnectionConfig(host="redis.example"), pattern=pattern)
+
+
+@pytest.mark.parametrize("length", [0, -1, 6, 99])
+def test_redis_adaptor_rejects_invalid_slowlog_lengths(length: int) -> None:
+    adaptor = RedisAdaptor(client_factory=FakeRedisClient)
+
+    with pytest.raises(ValueError, match="slowlog length"):
+        adaptor.slowlog_get(RedisConnectionConfig(host="redis.example"), length=length)

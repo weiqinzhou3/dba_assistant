@@ -3,13 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from dba_assistant.adaptors.redis_adaptor import RedisAdaptor, RedisConnectionConfig
+from dba_assistant.adaptors.redis_adaptor import (
+    ALLOWED_CONFIG_PATTERNS,
+    DEFAULT_CONFIG_PATTERN,
+    DEFAULT_SLOWLOG_LENGTH,
+    MAX_SLOWLOG_LENGTH,
+    RedisAdaptor,
+    RedisConnectionConfig,
+)
 from dba_assistant.core.collector.remote_collector import RemoteCollector
-
-
-DEFAULT_CONFIG_PATTERN = "maxmemory*"
-ALLOWED_CONFIG_PATTERNS = frozenset({DEFAULT_CONFIG_PATTERN})
-MAX_SLOWLOG_LENGTH = 5
 
 
 @dataclass(frozen=True)
@@ -17,7 +19,7 @@ class RedisInspectionRemoteInput:
     connection: RedisConnectionConfig
     info_section: str | None = None
     config_pattern: str = DEFAULT_CONFIG_PATTERN
-    slowlog_length: int = MAX_SLOWLOG_LENGTH
+    slowlog_length: int = DEFAULT_SLOWLOG_LENGTH
 
     def __post_init__(self) -> None:
         if self.config_pattern not in ALLOWED_CONFIG_PATTERNS:

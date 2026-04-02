@@ -9,6 +9,12 @@ from redis import Redis
 from redis.exceptions import RedisError
 
 
+DEFAULT_CONFIG_PATTERN = "maxmemory*"
+ALLOWED_CONFIG_PATTERNS = frozenset({DEFAULT_CONFIG_PATTERN})
+DEFAULT_SLOWLOG_LENGTH = 5
+MAX_SLOWLOG_LENGTH = 5
+
+
 @dataclass(frozen=True)
 class RedisConnectionConfig:
     host: str
@@ -38,8 +44,9 @@ class RedisAdaptor:
         self,
         connection: RedisConnectionConfig,
         *,
-        pattern: str = "maxmemory*",
+        pattern: str = DEFAULT_CONFIG_PATTERN,
     ) -> dict[str, Any]:
+        self._validate_config_pattern(pattern)
         return self._run_admin_probe(
             connection,
             metadata={"pattern": pattern},
@@ -51,8 +58,9 @@ class RedisAdaptor:
         self,
         connection: RedisConnectionConfig,
         *,
-        length: int = 5,
+        length: int = DEFAULT_SLOWLOG_LENGTH,
     ) -> dict[str, Any]:
+        self._validate_slowlog_length(length)
         return self._run_admin_probe(
             connection,
             metadata={"requested_length": length},
@@ -143,3 +151,15 @@ class RedisAdaptor:
             summary["command"] = command.split()[0].upper()
 
         return summary
+
+    def _validate_config_pattern(self, pattern: str) -> None:
+        if pattern not in ALLOWED_CONFIG_PATTERNS:
+            raise ValueError(
+                f"Phase 2 config pattern must be one of {sorted(ALLOWED_CONFIG_PATTERNS)}."
+            )
+
+    def _validate_slowlog_length(self, length: int) -> None:
+        if not 1 <= length <= MAX_SLOWLOG_LENGTH:
+            raise ValueError(
+                f"Phase 2 slowlog length must be between 1 and {MAX_SLOWLOG_LENGTH}."
+            )

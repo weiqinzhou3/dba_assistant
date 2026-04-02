@@ -93,9 +93,8 @@ def _collect_dataset(
         return collector.collect(paths)
 
     if selected_path == "3a":
-        if path_a_collector is None:
-            raise NotImplementedError("Path 3a requires an injected MySQL staging collector.")
-        return path_a_collector.collect(paths)
+        collector = path_a_collector or PathCDirectParserCollector(parser=_parse_rdb_rows)
+        return collector.collect(paths)
 
     raise ValueError(f"Unsupported analysis path: {selected_path}")
 

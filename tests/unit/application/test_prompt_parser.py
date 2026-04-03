@@ -138,6 +138,15 @@ def test_normalize_raw_request_ignores_negated_profile_phrases() -> None:
         assert request.rdb_overrides.profile_name is None
 
 
+def test_normalize_raw_request_ignores_long_distance_negated_profile_phrases() -> None:
+    request = normalize_raw_request(
+        "please do not under any circumstances use the generic profile",
+        default_output_mode="summary",
+    )
+
+    assert request.rdb_overrides.profile_name is None
+
+
 def test_normalize_raw_request_ignores_profile_false_positives() -> None:
     for prompt in (
         "analyze the nongeneric profile for this RDB",
@@ -249,6 +258,33 @@ def test_normalize_raw_request_expands_home_tilde_output_path() -> None:
     assert request.runtime_inputs.output_path == Path("~/rcs.docx").expanduser()
 
 
+def test_normalize_raw_request_extracts_output_path_with_spaces() -> None:
+    request = normalize_raw_request(
+        "output docx to /tmp/my report.docx",
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.output_path == Path("/tmp/my report.docx")
+
+
+def test_normalize_raw_request_extracts_output_path_from_bare_filename() -> None:
+    request = normalize_raw_request(
+        "输出 docx 到 report.docx",
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.output_path == Path("report.docx")
+
+
+def test_normalize_raw_request_extracts_quoted_output_path() -> None:
+    request = normalize_raw_request(
+        '输出 docx 到 "report final.docx"',
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.output_path == Path("report final.docx")
+
+
 def test_normalize_raw_request_extracts_mysql_routing_hint() -> None:
     request = normalize_raw_request(
         "按 generic profile 分析这个 rdb，使用 mysql 路径并输出 summary",
@@ -278,3 +314,12 @@ def test_normalize_raw_request_ignores_negated_mysql_route_phrases() -> None:
     ):
         request = normalize_raw_request(prompt, default_output_mode="summary")
         assert request.rdb_overrides.route_name is None
+
+
+def test_normalize_raw_request_ignores_long_distance_negated_mysql_route_phrases() -> None:
+    request = normalize_raw_request(
+        "please do not under any circumstances use the mysql route",
+        default_output_mode="summary",
+    )
+
+    assert request.rdb_overrides.route_name is None

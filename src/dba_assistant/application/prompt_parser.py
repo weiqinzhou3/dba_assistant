@@ -56,8 +56,9 @@ _GENERIC_TOP_PATTERN = re.compile(
 _REPORT_OUTPUT_PATTERN = re.compile(
     r"(?i)(?:输出|导出|export|output|write|save)\s*(?:为|成|as|to|到|:|：)?\s*(?P<format>docx|pdf|html|summary)\b"
 )
-_REPORT_PATH_PATTERN = re.compile(
-    r"(?i)(?:输出|导出|export|output|write|save)\s*(?:为|成|as|to|到|:|：)?\s*(?:docx|pdf|html|summary)?\s*(?:[,，、\s]+)?(?:到|to|输出到|导出到|write\s+to|output\s+to|save\s+to|保存到|保存至)\s*(?P<path>(?:~?/|\.{1,2}/|/)[^\s,;，。]+)"
+_REPORT_DESTINATION_PATTERN = re.compile(
+    r"(?is)^\s*[\s,，、]*"
+    r"(?:to|到|输出到|导出到|write\s+to|output\s+to|save\s+to|保存到|保存至)\s*(?P<path>.+?)\s*$"
 )
 _MYSQL_ROUTE_HINT_PATTERN = re.compile(
     r"(?i)mysql\s*(?:路径|路由|路线|route|path|pipeline)|(?:路径|路由|路线|route|path|pipeline)\s*mysql"
@@ -191,10 +192,7 @@ def _extract_report_output_intent(
         output_mode = default_output_mode
         report_format = None
 
-    path_match = _REPORT_PATH_PATTERN.search(prompt)
-    output_path = (
-        Path(_clean_output_path(path_match.group("path"))).expanduser() if path_match else None
-    )
+    output_path = _extract_report_output_path(prompt)
 
     return output_mode, report_format, output_path
 
@@ -229,9 +227,34 @@ def _clean_output_path(value: str) -> str:
 
 
 def _has_negation_prefix(prompt: str, match_start: int) -> bool:
-    prefix = prompt[max(0, match_start - 24) : match_start]
+    prefix = prompt[max(0, match_start - 120) : match_start]
     overlap = prompt[max(0, match_start - 1) : min(len(prompt), match_start + 1)]
     return (
         _NEGATION_PREFIX_PATTERN.search(prefix) is not None
         or _NEGATION_PREFIX_PATTERN.search(overlap) is not None
     )
+
+
+def _extract_report_output_path(prompt: str) -> Path | None:
+    output_match = _REPORT_OUTPUT_PATTERN.search(prompt)
+    if output_match is None:
+        return None
+
+    tail = prompt[output_match.end() :]
+    destination_match = _REPORT_DESTINATION_PATTERN.match(tail)
+    if destination_match is None:
+        return None
+
+    raw_path = _clean_output_path(destination_match.group("path"))
+    if not raw_path:
+        return None
+
+    if (raw_path.startswith('"') and raw_path.endswith('"')) or (
+        raw_path.startswith("'") and raw_path.endswith("'")
+    ):
+        raw_path = raw_path[1:-1].strip()
+
+    if not raw_path:
+        return None
+
+    return Path(raw_path).expanduser()

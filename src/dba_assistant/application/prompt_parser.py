@@ -129,22 +129,22 @@ def _extract_rdb_overrides(prompt: str, *, route_name: str | None = None) -> Rdb
 
 
 def _extract_profile_name(prompt: str) -> str | None:
-    matches: list[tuple[int, str]] = []
+    matches: list[tuple[int, str | None]] = []
 
     for pattern in (_WITH_PROFILE_PATTERN, _USE_PROFILE_PATTERN, _BY_PROFILE_PATTERN):
         for match in pattern.finditer(prompt):
             profile = match.group("profile").lower()
-            matches.append((match.start(), profile if not _has_negation_prefix(prompt, match.start()) else ""))
+            matches.append((match.start(), profile if not _has_negation_prefix(prompt, match.start()) else None))
 
     for match in _CHINESE_GENERIC_PROFILE_PATTERN.finditer(prompt):
-        matches.append((match.start(), "generic" if not _has_negation_prefix(prompt, match.start()) else ""))
+        matches.append((match.start(), "generic" if not _has_negation_prefix(prompt, match.start()) else None))
 
     if not matches:
         return None
 
     value = None
-    for _, profile in matches:
-        value = profile or None
+    for _, profile in sorted(matches, key=lambda item: item[0]):
+        value = profile
     return value
 
 
@@ -186,12 +186,18 @@ def _extract_report_output_intent(
     report_format = None
     output_path = None
 
-    for match in _REPORT_OUTPUT_PATTERN.finditer(prompt):
+    matches = sorted(_REPORT_OUTPUT_PATTERN.finditer(prompt), key=lambda match: match.start())
+
+    for match in matches:
         output_token = match.group("format").lower()
         if _has_negation_prefix(prompt, match.start()):
-            output_mode = default_output_mode
-            report_format = None
-        elif output_token in {"docx", "pdf", "html"}:
+            if output_token == report_format or (output_token == "summary" and output_mode == "summary"):
+                output_mode = default_output_mode
+                report_format = None
+                output_path = None
+            continue
+
+        if output_token in {"docx", "pdf", "html"}:
             output_mode = "report"
             report_format = output_token
         elif output_token == "summary":
@@ -207,7 +213,7 @@ def _extract_report_output_intent(
 
 def _extract_route_name(prompt: str) -> str | None:
     route_name = None
-    for match in _MYSQL_ROUTE_HINT_PATTERN.finditer(prompt):
+    for match in sorted(_MYSQL_ROUTE_HINT_PATTERN.finditer(prompt), key=lambda match: match.start()):
         route_name = None if _has_negation_prefix(prompt, match.start()) else "legacy_sql_pipeline"
     return route_name
 

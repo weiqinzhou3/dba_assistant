@@ -156,6 +156,24 @@ def test_normalize_raw_request_honors_later_profile_correction() -> None:
     assert request.rdb_overrides.profile_name == "rcs"
 
 
+def test_normalize_raw_request_prefers_later_textual_profile_match() -> None:
+    request = normalize_raw_request(
+        "按 rcs profile analyze this rdb with the generic profile",
+        default_output_mode="summary",
+    )
+
+    assert request.rdb_overrides.profile_name == "generic"
+
+
+def test_normalize_raw_request_prefers_later_textual_profile_match_in_english() -> None:
+    request = normalize_raw_request(
+        "use the generic profile, then analyze with the rcs profile",
+        default_output_mode="summary",
+    )
+
+    assert request.rdb_overrides.profile_name == "rcs"
+
+
 def test_normalize_raw_request_ignores_profile_false_positives() -> None:
     for prompt in (
         "analyze the nongeneric profile for this RDB",
@@ -256,6 +274,39 @@ def test_normalize_raw_request_honors_later_output_correction() -> None:
 
     assert request.runtime_inputs.output_mode == "report"
     assert request.runtime_inputs.report_format == "docx"
+
+
+def test_normalize_raw_request_keeps_earlier_output_when_later_clause_negates_other_format() -> None:
+    request = normalize_raw_request(
+        "output docx to /tmp/a.docx but do not output pdf",
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.output_mode == "report"
+    assert request.runtime_inputs.report_format == "docx"
+    assert request.runtime_inputs.output_path == Path("/tmp/a.docx")
+
+
+def test_normalize_raw_request_clears_output_when_later_clause_negates_same_format() -> None:
+    request = normalize_raw_request(
+        "output docx, but do not output docx",
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.output_mode == "summary"
+    assert request.runtime_inputs.report_format is None
+    assert request.runtime_inputs.output_path is None
+
+
+def test_normalize_raw_request_drops_output_path_for_negated_output_clause() -> None:
+    request = normalize_raw_request(
+        "do not output docx to /tmp/nope.docx",
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.output_mode == "summary"
+    assert request.runtime_inputs.report_format is None
+    assert request.runtime_inputs.output_path is None
 
 
 def test_normalize_raw_request_does_not_treat_connection_path_as_output_destination() -> None:

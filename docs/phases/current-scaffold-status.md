@@ -11,8 +11,7 @@ It does not redefine any phase. The target phase outcomes remain described by:
 
 ## Current State
 
-The repository now contains delivered Phase 1 shared foundations and Phase 2 Deep Agent
-assembly plus read-only Redis remote foundation, alongside later-phase scaffolding.
+The repository now contains delivered Phase 1 shared foundations, delivered Phase 2 Deep Agents runtime assembly, and delivered Phase 3 RDB-analysis work, alongside later-phase scaffolding.
 
 Present in the repository now:
 
@@ -22,7 +21,8 @@ Present in the repository now:
 - `/init` design and plan documents under `docs/superpowers/`
 - a production package root under `src/dba_assistant/`
 - the repository-owned `src/dba_assistant/deep_agent_integration/` assembly layer
-- delivered shared collector and reporter foundations, the narrow Redis adaptor path, and later-phase skill scaffolding under `src/dba_assistant/`
+- the shared `interface/` boundary and unified `orchestrator/` layer
+- delivered shared collector and reporter foundations, the narrow Redis adaptor path, the delivered RDB-analysis skill flow, and later-phase skill scaffolding under `src/dba_assistant/`
 - template, reference, and test directories
 - git initialization and GitHub remote setup
 
@@ -40,31 +40,35 @@ Present in the repository now:
 - Deep Agent SDK runtime assembly
 - provider-capable model configuration
 - the read-only Redis direct adaptor and remote collection path
-- bounded read-only Redis tool registration and the minimal validation agent
+- bounded read-only Redis tool registration
+- the shared interface-adapter boundary
+- the unified Deep Agent orchestration path
+
+### Phase 3 delivered
+
+- prompt-first RDB analysis under the unified Deep Agent path
+- delivered local RDB analysis and report generation flow
+- repository `skills` loaded into the unified Deep Agent runtime
+- approval-gated remote-RDB acquisition intent through Deep Agent HITL / `interrupt_on`
 
 ## Later Phases Not Yet Delivered
 
-### Phase 3 not yet delivered
-
-- working Redis RDB analysis pipeline
-- MySQL-backed analysis path
-- pure offline direct RDB analysis path
-
 ### Phase 4 not yet delivered
 
-- the full Redis inspection pipeline built on the shipped Phase 2 Redis remote foundation
-- the SSH real-time collection path
+- the full Redis inspection-report skill
+- the complete live inspection collector stack
+- the host-level live collection path where required
 
 ### Phase 5 not yet delivered
 
 - executable JSONL audit logging
-- audit instrumentation for skill execution
+- unified-agent audit instrumentation for skill execution and approvals
 
 ### Phase 6 not yet delivered
 
-- CVE collection pipeline
+- the full Redis CVE-report skill
 - CVE aggregation and impact assessment
-- CVE report generation
+- CVE report generation through the shared report pipeline
 
 ### Phase 7 not yet delivered
 
@@ -74,6 +78,14 @@ Present in the repository now:
 
 - approval-gated dangerous write operations
 - expanded non-Redis skill coverage
+
+## Current Architectural Shape
+
+The current repository-level execution shape is:
+
+`CLI / API / WebUI -> interface adapter -> one Deep Agent -> skills/tools`
+
+This status document records what is currently implemented within that architecture. It does not redefine the target delivery contract of any phase document.
 
 ## Reference-Layer Status
 

@@ -6,58 +6,81 @@ Planning
 
 ## Goal
 
-Implement the full pipeline for Redis inspection reports, supporting offline source data and remote real-time collection, with multiple output modes.
+Deliver the `redis_inspection_report` skill as a Redis inspection and health-audit capability under the unified Deep Agent architecture.
+
+This phase must follow the repository-wide execution shape:
+
+`CLI / API / WebUI -> interface adapter -> one Deep Agent -> skills/tools`
+
+That means Phase 4 is not defined by a dedicated CLI workflow. It is defined by a skill, its collectors, analyzers, tools, and report outputs that the unified Deep Agent can select from prompt intent.
+
+## Architecture Constraints
+
+- The public interaction remains prompt-first.
+- Interface surfaces normalize requests; they do not hard-route Phase 4 behavior.
+- The unified Deep Agent chooses `redis_inspection_report` and the supporting tools.
+- Collection remains read-only unless a future phase explicitly introduces approval-gated dangerous operations.
+- Report output reuses the shared analysis-report rendering path instead of building a parallel report system.
 
 ## Input Paths
 
-| Path | Description | Data Flow | Delivery Order |
-|------|-------------|-----------|----------------|
-| A: Offline source data | Multiple source data files already collected locally | Local file directory → parse and normalize → analyze → generate report | Deliver first |
-| B: Remote real-time collection | Connect to Redis or SSH for live collection | Redis `INFO`, `CONFIG`, `SLOWLOG`, `CLIENT LIST`, system commands, and related data → analyze → generate report | Deliver after Path A |
+| Path | Formal meaning | Data source |
+|------|----------------|-------------|
+| Offline evidence bundle | Previously collected inspection data is available locally | Local files such as `INFO`, `CONFIG`, `SLOWLOG`, `CLIENT LIST`, host snapshots, and custom evidence bundles |
+| Live read-only inspection | Evidence is collected at execution time | Redis read-only inspection plus host-level evidence gathered through allowed read-only adaptors |
 
-## Implementation Breakdown
+These are skill input paths, not separate user-facing products. The unified Deep Agent may choose either path based on the prompt, available runtime inputs, and policy constraints.
 
-### Phase 4a: Offline Source Data Path
+## Delivered Scope
 
-1. Write `skills/redis-inspection-report/SKILL.md` defining inspection scope, data contract, and output contract.
-2. Implement the Inspection Offline Collector.
-   - Accept a local source data directory path.
-   - Auto-detect and parse multiple source data formats, including `INFO`, `CONFIG`, `SLOWLOG`, and custom collection outputs.
-   - Output a normalized `InspectionRawData`.
-3. Implement the Inspection Analyzer.
-   - Cover basic information, configuration audit, persistence status, replication topology, memory usage, slow query analysis, connection status, security configuration, and known risk items.
-   - For each inspection item, output current value, expected value or threshold, risk level, and remediation recommendation.
-   - Output a standardized `InspectionAnalysisResult`.
-4. Implement report generation.
-   - Reference historical inspection reports to build a standard inspection template.
-   - Standardize cover page information, executive summary, inspection detail tables, risk visualization, remediation prioritization, and evidence appendix structure.
-   - Render through the Reporter Layer.
-5. Test end to end with fixture offline source data, including full report output and summary output.
+### Offline inspection path
 
-### Phase 4b: Remote Real-Time Collection Path
+1. Implement the offline inspection collector.
+   - Accept one local evidence bundle or a directory of collected inspection artifacts.
+   - Parse and normalize Redis and host evidence into one shared inspection dataset.
+2. Implement the inspection analyzer.
+   - Cover instance basics, memory posture, persistence posture, replication, slow query health, connection posture, security posture, and configuration risks.
+   - Produce a consistent structured result with findings, evidence, severity, and remediation guidance.
+3. Implement report assembly and rendering.
+   - Reuse the shared report model and renderer.
+   - Support both concise summary output and full report output from the same analysis result.
 
-1. Implement the Inspection Remote Collector.
-   - Execute the inspection command sequence through `RedisAdaptor`.
-   - Collect system-level information through `SSHAdaptor` where needed.
-   - Output the same `InspectionRawData`.
-2. Reuse the Analyzer and Reporter from Phase 4a.
-3. Keep all remote collection strictly read-only.
-4. Test end to end against a test Redis instance.
+### Live read-only inspection path
 
-## Output Modes
+1. Implement the live inspection collector.
+   - Collect read-only Redis evidence through repository tools and adaptors.
+   - Collect host evidence through approved read-only host access paths when needed.
+2. Reuse the same analyzer and reporting pipeline as the offline path.
+3. Keep the live path policy-safe.
+   - No destructive writes.
+   - No implicit dangerous host operations.
+   - Any future risky operation must be gated by Deep Agent HITL / `interrupt_on`.
 
-- `--output=report --format=docx`: full Word inspection report
-- `--output=report --format=pdf`: full PDF inspection report
-- `--output=report --format=html`: full HTML inspection report
-- `--output=summary`: stdout summary with risk items, level statistics, and remediation priority ranking
+## Output Contract
+
+Phase 4 must support the shared report contract already established by earlier phases:
+
+- one structured analysis result for inspection
+- one shared report model
+- one shared rendering pipeline
+
+Expected output forms:
+
+- summary output for prompt-first interaction
+- full inspection report output through the shared renderer
+- reusable artifacts that future GUI / API surfaces can consume without rebuilding inspection logic
 
 ## Acceptance Criteria
 
-- After Phase 4a completion, offline source data can produce a standardized, clearly structured document of higher quality than historical reports.
-- After Phase 4b completion, the remote collection pipeline is functional and its output structures remain consistent with the offline path.
-- Summary mode provides conclusions directly in the terminal without opening a file.
+- `redis_inspection_report` exists as a real skill under the unified Deep Agent runtime.
+- Offline evidence can produce a complete inspection result and a report-quality output.
+- Live read-only inspection can produce the same output structure as the offline path.
+- The Deep Agent can select the inspection capability from prompt intent without CLI-side phase routing.
+- Inspection output reuses the shared report architecture rather than introducing a separate reporting stack.
 
 ## Dependency Notes
 
-- Depends on shared layers from Phase 1 and remote/runtime foundations from Phase 2.
-- Current repository scaffold status is tracked separately in `docs/phases/current-scaffold-status.md`.
+- Depends on shared layers from Phase 1.
+- Depends on Deep Agents runtime assembly from Phase 2.
+- Depends on the shared report pipeline and prompt-first orchestration shape already established by Phase 3.
+- Current repository state is tracked separately in `docs/phases/current-scaffold-status.md`.

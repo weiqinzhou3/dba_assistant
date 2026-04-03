@@ -210,6 +210,15 @@ def test_normalize_raw_request_extracts_docx_report_request() -> None:
     assert request.runtime_inputs.output_path == Path("/tmp/rcs.docx")
 
 
+def test_normalize_raw_request_does_not_treat_connection_path_as_output_destination() -> None:
+    request = normalize_raw_request(
+        "连接到 /tmp/redis.sock 并输出 summary",
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.output_path is None
+
+
 def test_normalize_raw_request_keeps_summary_output_mode_for_summary_intent() -> None:
     request = normalize_raw_request(
         "按 generic profile 分析这个 rdb，输出 summary，到 /tmp/rcs.txt",
@@ -244,6 +253,16 @@ def test_normalize_raw_request_does_not_route_on_bare_mysql_token() -> None:
         "按 generic profile 分析这个 rdb，连接 mysql 数据库并输出 summary",
         "按 generic profile 分析这个 rdb，mysql host 是 127.0.0.1",
         "按 generic profile 分析这个 rdb，mysql 用户名是 root",
+    ):
+        request = normalize_raw_request(prompt, default_output_mode="summary")
+        assert request.rdb_overrides.route_name is None
+
+
+def test_normalize_raw_request_ignores_negated_mysql_route_phrases() -> None:
+    for prompt in (
+        "不要 mysql route",
+        "do not use mysql route",
+        "不要走 mysql 路径",
     ):
         request = normalize_raw_request(prompt, default_output_mode="summary")
         assert request.rdb_overrides.route_name is None

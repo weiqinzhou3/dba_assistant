@@ -57,10 +57,13 @@ _REPORT_OUTPUT_PATTERN = re.compile(
     r"(?i)(?:输出|导出|export|output|write|save)\s*(?:为|成|as|to|到|:|：)?\s*(?P<format>docx|pdf|html|summary)\b"
 )
 _REPORT_PATH_PATTERN = re.compile(
-    r"(?i)(?:到|to|path(?:\s+is)?|output(?:\s+path)?(?:\s+is)?|保存到|保存至)\s*(?P<path>(?:~?/|\.{1,2}/|/)[^\s,;，。]+)"
+    r"(?i)(?:输出|导出|export|output|write|save)\s*(?:为|成|as|to|到|:|：)?\s*(?:docx|pdf|html|summary)?\s*(?:[,，、\s]+)?(?:到|to|输出到|导出到|write\s+to|output\s+to|save\s+to|保存到|保存至)\s*(?P<path>(?:~?/|\.{1,2}/|/)[^\s,;，。]+)"
 )
 _MYSQL_ROUTE_HINT_PATTERN = re.compile(
     r"(?i)mysql\s*(?:路径|路由|路线|route|path|pipeline)|(?:路径|路由|路线|route|path|pipeline)\s*mysql"
+)
+_NEGATED_MYSQL_ROUTE_PATTERN = re.compile(
+    r"(?i)(?:不要|别|勿|禁止|do\s+not|don't|never|not)\s*(?:走|用|使用|use)?\s*(?:mysql\s*(?:路径|路由|路线|route|path|pipeline)|(?:路径|路由|路线|route|path|pipeline)\s*mysql)"
 )
 _WHITESPACE_PATTERN = re.compile(r"\s+")
 _MAX_TOP_N = 100
@@ -193,6 +196,8 @@ def _extract_report_output_intent(
 
 
 def _extract_route_name(prompt: str) -> str | None:
+    if _NEGATED_MYSQL_ROUTE_PATTERN.search(prompt):
+        return None
     if _MYSQL_ROUTE_HINT_PATTERN.search(prompt):
         return "legacy_sql_pipeline"
     return None

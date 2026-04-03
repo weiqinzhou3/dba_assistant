@@ -174,6 +174,15 @@ def test_normalize_raw_request_prefers_later_textual_profile_match_in_english() 
     assert request.rdb_overrides.profile_name == "rcs"
 
 
+def test_normalize_raw_request_prefers_later_generic_profile_match_after_rcs() -> None:
+    request = normalize_raw_request(
+        "按 rcs profile analyze this rdb with the generic profile",
+        default_output_mode="summary",
+    )
+
+    assert request.rdb_overrides.profile_name == "generic"
+
+
 def test_normalize_raw_request_ignores_profile_false_positives() -> None:
     for prompt in (
         "analyze the nongeneric profile for this RDB",
@@ -368,6 +377,15 @@ def test_normalize_raw_request_extracts_quoted_output_path() -> None:
 def test_normalize_raw_request_extracts_output_path_from_trailing_instruction_text() -> None:
     request = normalize_raw_request(
         "output docx to /tmp/a.docx and email it",
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.output_path == Path("/tmp/a.docx")
+
+
+def test_normalize_raw_request_strips_trailing_comma_before_followup_clause_from_output_path() -> None:
+    request = normalize_raw_request(
+        "output docx to /tmp/a.docx, then output summary",
         default_output_mode="summary",
     )
 

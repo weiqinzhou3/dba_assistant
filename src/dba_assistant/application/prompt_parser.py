@@ -276,7 +276,7 @@ def _extract_report_output_path(prompt: str, start: int) -> Path | None:
             raw_path = raw_path[1:end_quote].strip()
     else:
         trailing = re.search(
-            r"\s+(?:and|but|then|also|plus|email|send|and\s+email|and\s+send|并且|并|然后|再|同时|此外|另外|但|但是|不过|然而|可是|而是|却)\b.*$",
+            r"(?:\s*,\s*|\s+)(?:and|but|then|also|plus|email|send|and\s+email|and\s+send|并且|并|然后|再|同时|此外|另外|但|但是|不过|然而|可是|而是|却)\b.*$",
             raw_path,
             flags=re.IGNORECASE,
         )

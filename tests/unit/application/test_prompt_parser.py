@@ -147,6 +147,15 @@ def test_normalize_raw_request_ignores_long_distance_negated_profile_phrases() -
     assert request.rdb_overrides.profile_name is None
 
 
+def test_normalize_raw_request_does_not_treat_not_only_as_profile_negation() -> None:
+    request = normalize_raw_request(
+        "not only use the generic profile",
+        default_output_mode="summary",
+    )
+
+    assert request.rdb_overrides.profile_name == "generic"
+
+
 def test_normalize_raw_request_honors_later_profile_correction() -> None:
     request = normalize_raw_request(
         "do not use the generic profile, but use the rcs profile",
@@ -172,6 +181,15 @@ def test_normalize_raw_request_prefers_later_textual_profile_match_in_english() 
     )
 
     assert request.rdb_overrides.profile_name == "rcs"
+
+
+def test_normalize_raw_request_keeps_existing_profile_when_later_negation_targets_other_profile() -> None:
+    request = normalize_raw_request(
+        "use the generic profile, but do not use the rcs profile",
+        default_output_mode="summary",
+    )
+
+    assert request.rdb_overrides.profile_name == "generic"
 
 
 def test_normalize_raw_request_prefers_later_generic_profile_match_after_rcs() -> None:
@@ -226,6 +244,15 @@ def test_normalize_raw_request_does_not_treat_bare_prefix_token_as_override() ->
     assert request.rdb_overrides.focus_prefixes == ()
 
 
+def test_normalize_raw_request_does_not_treat_incidental_prefix_mention_as_focus_override() -> None:
+    request = normalize_raw_request(
+        "analyze this rdb with the generic profile and mention that order:* is common",
+        default_output_mode="summary",
+    )
+
+    assert request.rdb_overrides.focus_prefixes == ()
+
+
 def test_normalize_raw_request_does_not_switch_output_mode_from_standalone_tokens() -> None:
     request = normalize_raw_request(
         "Please give me a report and a summary of this Redis analysis",
@@ -273,6 +300,16 @@ def test_normalize_raw_request_does_not_enable_report_mode_for_negated_output_re
 
     assert request.runtime_inputs.output_mode == "summary"
     assert request.runtime_inputs.report_format is None
+
+
+def test_normalize_raw_request_does_not_treat_not_only_as_output_negation() -> None:
+    request = normalize_raw_request(
+        "not only output docx",
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.output_mode == "report"
+    assert request.runtime_inputs.report_format == "docx"
 
 
 def test_normalize_raw_request_honors_later_output_correction() -> None:
@@ -421,6 +458,15 @@ def test_normalize_raw_request_ignores_negated_mysql_route_phrases() -> None:
     ):
         request = normalize_raw_request(prompt, default_output_mode="summary")
         assert request.rdb_overrides.route_name is None
+
+
+def test_normalize_raw_request_does_not_treat_not_only_as_mysql_route_negation() -> None:
+    request = normalize_raw_request(
+        "not only use the mysql route",
+        default_output_mode="summary",
+    )
+
+    assert request.rdb_overrides.route_name == "legacy_sql_pipeline"
 
 
 def test_normalize_raw_request_ignores_long_distance_negated_mysql_route_phrases() -> None:

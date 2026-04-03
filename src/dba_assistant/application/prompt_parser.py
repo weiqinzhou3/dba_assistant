@@ -44,7 +44,7 @@ _CHINESE_GENERIC_PROFILE_PATTERN = re.compile(
 )
 _PREFIX_OVERRIDE_PATTERNS = (
     re.compile(
-        r"(?i)(?:重点看|重点关注|关注|看|分析|analyze|analyse|inspect|focus(?:\s+on)?)\s*(?P<body>[^,;，。]*)"
+        r"(?i)(?:重点看|重点关注|关注|看|inspect|focus(?:\s+on)?)\s*(?P<body>[^,;，。]*)"
     ),
 )
 _SECTION_TOP_PATTERN = re.compile(
@@ -64,7 +64,7 @@ _MYSQL_ROUTE_HINT_PATTERN = re.compile(
     r"(?i)mysql\s*(?:路径|路由|路线|route|path|pipeline)|(?:路径|路由|路线|route|path|pipeline)\s*mysql"
 )
 _NEGATION_PREFIX_PATTERN = re.compile(
-    r"(?i)(?:不要|别|勿|禁止|禁用|\bdo\s+not\b|\bdon't\b|\bnever\b|\bnot\b)"
+    r"(?i)(?:不要|别|勿|禁止|禁用|\bdo\s+not\b|\bdon't\b|\bnever\b|\bnot\b(?!\s+only\b))"
 )
 _CLAUSE_BREAK_PATTERN = re.compile(
     r"(?i)[,，。;；!?]|(?:\bbut\b|\bhowever\b|\bthough\b|\balthough\b|\binstead\b|\byet\b|\bexcept\b)|(?:但是|但|不过|然而|可是|而是|却|只是)"
@@ -129,21 +129,25 @@ def _extract_rdb_overrides(prompt: str, *, route_name: str | None = None) -> Rdb
 
 
 def _extract_profile_name(prompt: str) -> str | None:
-    matches: list[tuple[int, str | None]] = []
+    matches: list[tuple[int, str, bool]] = []
 
     for pattern in (_WITH_PROFILE_PATTERN, _USE_PROFILE_PATTERN, _BY_PROFILE_PATTERN):
         for match in pattern.finditer(prompt):
             profile = match.group("profile").lower()
-            matches.append((match.start(), profile if not _has_negation_prefix(prompt, match.start()) else None))
+            matches.append((match.start(), profile, _has_negation_prefix(prompt, match.start())))
 
     for match in _CHINESE_GENERIC_PROFILE_PATTERN.finditer(prompt):
-        matches.append((match.start(), "generic" if not _has_negation_prefix(prompt, match.start()) else None))
+        matches.append((match.start(), "generic", _has_negation_prefix(prompt, match.start())))
 
     if not matches:
         return None
 
     value = None
-    for _, profile in sorted(matches, key=lambda item: item[0]):
+    for _, profile, negated in sorted(matches, key=lambda item: item[0]):
+        if negated:
+            if value == profile:
+                value = None
+            continue
         value = profile
     return value
 

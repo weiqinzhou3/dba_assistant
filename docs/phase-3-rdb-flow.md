@@ -48,10 +48,12 @@ The mapping back to the phase labels is:
 At the Phase 3 domain level, route selection follows the `RdbAnalysisRequest`:
 
 1. The application layer first converts the CLI-oriented `NormalizedRequest` into a Phase 3 `RdbAnalysisRequest`.
-2. If a caller already set `path_mode`, that route wins.
+2. If a caller already set a recognized `path_mode`, that route wins.
 3. If the request contains precomputed inputs, the resolver chooses `precomputed_dataset`.
 4. If the prompt includes an SQL-style hint, the resolver chooses `legacy_sql_pipeline`.
 5. Otherwise, the request falls through to `direct_memory_analysis`.
+
+Unsupported `path_mode` values do not become invalid routes. They are ignored and the router falls back to the normal selection rules.
 
 That ordering keeps the route selection deterministic while still letting the prompt express intent.
 

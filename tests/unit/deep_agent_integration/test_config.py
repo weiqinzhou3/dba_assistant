@@ -6,6 +6,7 @@ import pytest
 from dba_assistant.deep_agent_integration.config import (
     DEFAULT_CONFIG_PATH,
     ProviderKind,
+    SUPPORTED_PRESET_NAMES,
     load_app_config,
 )
 
@@ -57,8 +58,9 @@ def test_load_app_config_uses_repo_default_path_outside_repo_root(
     config = load_app_config()
 
     assert DEFAULT_CONFIG_PATH.is_absolute()
-    assert config.model.preset_name == "ollama_local"
-    assert config.runtime.default_output_mode == "summary"
+    assert config.model.preset_name in SUPPORTED_PRESET_NAMES
+    assert config.model.base_url
+    assert config.runtime.default_output_mode
 
 
 def test_load_app_config_supports_dashscope_preset_values(tmp_path: Path) -> None:

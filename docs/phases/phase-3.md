@@ -6,19 +6,19 @@ Delivered
 
 ## Goal
 
-Implement the full pipeline for RDB memory analysis, supporting multiple input paths and output modes.
+Implement the full pipeline for RDB memory analysis, supporting multiple input paths, prompt-first CLI usage, and shared output modes.
 
-## Input Paths
+## Stage Mapping
 
-| Path | Description | Data Flow | Delivery Order |
-|------|-------------|-----------|----------------|
-| A: Full custom pipeline | Reproduce the current manual workflow | Multiple RDB files → `rdb-tools` parsing → write to MySQL → execute existing SQL analysis → generate report | Deliver first |
-| B: Skip parsing and import | Analysis data already exists in MySQL | MySQL query results or pre-exported CSV → generate report | Deliver after Path A |
-| C: Pure offline direct analysis | No external tool or database dependency | Multiple RDB files → Python or Node direct parsing → in-memory statistical analysis → generate report | Deliver after Path A |
+| Phase stage | Formal route name | Description | Delivery order |
+|-------------|-------------------|-------------|----------------|
+| `3a` | `legacy_sql_pipeline` | Reproduce the current manual workflow: RDB parsing, MySQL staging, SQL aggregation, then report generation. | Deliver first |
+| `3b` | `precomputed_dataset` | Analysis data already exists in MySQL or another precomputed form, so the report can be generated without re-parsing the RDB. | Deliver after `3a` |
+| `3c` | `direct_memory_analysis` | No external tool or database dependency: parse the RDB directly and analyze it in memory. | Deliver after `3a` |
 
 ## Implementation Breakdown
 
-### Phase 3a: Path A — Full Custom Pipeline
+### Phase 3a: `legacy_sql_pipeline`
 
 1. Write `skills/redis-rdb-analysis/SKILL.md` defining input and output contracts.
 2. Implement the RDB Offline Collector.
@@ -34,13 +34,13 @@ Implement the full pipeline for RDB memory analysis, supporting multiple input p
    - Render through the Reporter Layer.
 5. Test end to end with fixture RDB files and a MySQL environment.
 
-### Phase 3b: Path B — Generate Report from Existing MySQL Data
+### Phase 3b: `precomputed_dataset`
 
 1. Implement a MySQL Query Collector that queries existing analysis data from MySQL directly, or reads from pre-exported CSV or JSON.
 2. Reuse the Analyzer and Reporter from Phase 3a.
 3. Test report generation with MySQL fixture data.
 
-### Phase 3c: Path C — Pure Offline Direct Analysis
+### Phase 3c: `direct_memory_analysis`
 
 1. Implement an RDB Direct Parser Collector using Python or Node libraries, without `rdb-tools` or MySQL.
 2. Implement a lightweight Analyzer that performs in-memory statistics and outputs the same `RdbAnalysisResult`.
@@ -49,21 +49,27 @@ Implement the full pipeline for RDB memory analysis, supporting multiple input p
 
 ## Output Modes
 
-- `--output=report --format=docx`: full Word report
-- `--output=report --format=pdf`: full PDF report
-- `--output=report --format=html`: full HTML report
-- `--output=summary`: stdout summary with risk items, Top Key list, and remediation recommendations
+The prompt-first surface uses report-oriented terminology, but the rendered artifact still depends on the selected output mode and format.
+
+| User-facing intent | Normalized mode | Result |
+|--------------------|-----------------|--------|
+| `summary` | `--output=summary` | Stdout summary with risk items, Top Key list, and remediation recommendations. |
+| `report` + `docx` | `--output=report --format=docx` | Full Word report. |
+| `report` + `pdf` | `--output=report --format=pdf` | Full PDF report. |
+| `report` + `html` | `--output=report --format=html` | Full HTML report. |
 
 ## Acceptance Criteria
 
 - After Phase 3a completion, the current manual workflow is fully reproducible and generates documents of higher quality than historical reports.
-- After Phase 3b and Phase 3c completion, all three paths work independently with consistent output structures.
+- After Phase 3b and Phase 3c completion, all three routes work independently with consistent output structures.
 
 ## Wired Entry Points
 
-- `dba-assistant ask "<prompt>" --input /path/to/dump.rdb` routes local RDB debug runs through the prompt-first CLI and returns summary text.
-- `dba_assistant.tools.analyze_rdb.analyze_rdb_tool` is the public local-RDB analysis entry point.
-- `dba_assistant.tools.generate_analysis_report.generate_analysis_report` is the public generic report renderer export.
+- `dba-assistant ask "<prompt>"` is the primary user entry point.
+- The retained CLI flags are `--config`, `--input`, `--profile`, `--report-format`, and `--output`.
+- CLI input is normalized before application execution, so prompt-derived intent and explicit overrides converge into one request model.
+- `dba_assistant.tools.analyze_rdb.analyze_rdb_tool` remains the public local-RDB analysis entry point.
+- `dba_assistant.tools.generate_analysis_report.generate_analysis_report` remains the public generic report renderer export.
 
 ## Dependency Notes
 

@@ -6,7 +6,19 @@ DBA Assistant is a phase-oriented repository for building Redis-focused DBA anal
 
 DBA Assistant runs on Deep Agents SDK.
 
-The repository-owned runtime glue lives under `src/dba_assistant/deep_agent_integration/` and is implemented with `deepagents`. The rest of the repository continues to evolve phase by phase on top of that runtime foundation.
+The repository-owned runtime glue lives under `src/dba_assistant/deep_agent_integration/` and is implemented with `deepagents`.
+
+The current top-level execution shape is:
+
+`CLI / API / WebUI -> interface adapter -> one Deep Agent -> skills/tools`
+
+That means:
+
+- the CLI stays thin and prompt-first
+- normalization and boundary concerns live under `src/dba_assistant/interface/`
+- unified orchestration lives under `src/dba_assistant/orchestrator/`
+- repository `skills` live under `src/dba_assistant/skills/`
+- the Deep Agent chooses skills and tools instead of relying on CLI-side business routing
 
 ## Current Status
 

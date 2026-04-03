@@ -25,8 +25,9 @@ def test_run_phase2_request_invokes_deep_agent_and_returns_final_output(monkeypa
     )
 
     class FakeAgent:
-        def invoke(self, payload):
+        def invoke(self, payload, config=None):
             calls["payload"] = payload
+            calls["config"] = config
             return {"messages": [{"role": "assistant", "content": "phase2 ok"}]}
 
     monkeypatch.setattr(run_module, "build_phase2_agent", lambda cfg, conn: FakeAgent())
@@ -35,6 +36,7 @@ def test_run_phase2_request_invokes_deep_agent_and_returns_final_output(monkeypa
 
     assert result == "phase2 ok"
     assert calls["payload"] == {"messages": [{"role": "user", "content": "inspect redis"}]}
+    assert calls["config"]["configurable"]["thread_id"]
 
 
 def test_main_prints_run_phase2_output(monkeypatch, capsys) -> None:

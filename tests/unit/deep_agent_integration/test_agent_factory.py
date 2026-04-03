@@ -21,7 +21,9 @@ def test_build_phase2_agent_wires_model_tools_memory_and_backend(monkeypatch) ->
     monkeypatch.setattr("dba_assistant.deep_agent_integration.agent_factory.build_model", fake_build_model)
     monkeypatch.setattr("dba_assistant.deep_agent_integration.agent_factory.build_redis_tools", fake_build_redis_tools)
     monkeypatch.setattr("dba_assistant.deep_agent_integration.agent_factory.build_runtime_backend", lambda: "fake-backend")
+    monkeypatch.setattr("dba_assistant.deep_agent_integration.agent_factory.build_runtime_checkpointer", lambda: "fake-checkpointer")
     monkeypatch.setattr("dba_assistant.deep_agent_integration.agent_factory.get_memory_sources", lambda: ["/AGENTS.md"])
+    monkeypatch.setattr("dba_assistant.deep_agent_integration.agent_factory.get_skill_sources", lambda: ["/src/dba_assistant/skills"])
     monkeypatch.setattr("dba_assistant.deep_agent_integration.agent_factory.create_deep_agent", fake_create_deep_agent)
 
     config = AppConfig(
@@ -46,5 +48,7 @@ def test_build_phase2_agent_wires_model_tools_memory_and_backend(monkeypatch) ->
     assert calls["create_deep_agent"]["model"] == "fake-model"
     assert calls["create_deep_agent"]["tools"] == ["redis_ping", "redis_info"]
     assert calls["create_deep_agent"]["backend"] == "fake-backend"
+    assert calls["create_deep_agent"]["checkpointer"] == "fake-checkpointer"
+    assert calls["create_deep_agent"]["skills"] == ["/src/dba_assistant/skills"]
     assert calls["create_deep_agent"]["memory"] == ["/AGENTS.md"]
     assert "read-only" in calls["create_deep_agent"]["system_prompt"].lower()

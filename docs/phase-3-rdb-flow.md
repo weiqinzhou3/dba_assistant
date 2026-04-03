@@ -1,133 +1,158 @@
 # Phase 3 RDB Flow
 
-This document explains how Phase 3 turns a prompt-first CLI request into an analysis report. The important boundary is the normalized request: once the CLI and explicit flags have been resolved into that structure, the application layer can execute the request without caring whether it came from the terminal, a future GUI, or a future API.
+This document describes the current Phase 3 runtime shape:
 
-## 1. Normalized Request Model
+`CLI / API / WebUI -> interface adapter -> one Deep Agent -> skills/tools`
 
-The normalized request is the handoff object between the CLI and the application layer.
+The important point is that the CLI no longer performs business routing. It only hands one normalized request into the shared boundary. From there, the unified Deep Agent decides which `skill` or `tool` to invoke.
 
-At a minimum, it carries:
+## 1. End-to-End Data Flow
 
-| Field | Meaning |
-|------|---------|
-| `raw_prompt` | The original user prompt before cleanup or extraction. |
-| `prompt` | The normalized prompt text after secret stripping and whitespace cleanup. |
-| `runtime_inputs` | Structured runtime inputs such as `redis_host`, `redis_port`, `redis_db`, `output_mode`, `report_format`, `output_path`, and `input_paths`. |
-| `secrets` | Secret material extracted from the prompt, such as the Redis password. |
-| `rdb_overrides` | Prompt-derived RDB preferences such as `profile_name`, `focus_prefixes`, and `top_n` overrides. |
-
-The CLI should not execute business logic directly. It should only build this normalized shape and pass it forward.
-
-The downstream Phase 3 skill uses a second request type, `RdbAnalysisRequest`, for route-oriented execution details such as:
-
-- `path_mode`
-- `merge_multiple_inputs`
-- typed `inputs` such as local RDB, precomputed data, or remote Redis
-
-That split is intentional:
-
-- `NormalizedRequest` belongs to the application boundary shared by CLI, GUI, and API surfaces
-- `RdbAnalysisRequest` belongs to the Redis RDB analysis domain
-
-## 2. Route Resolution
-
-Phase 3 uses formal route names internally:
-
-- `legacy_sql_pipeline`
-- `precomputed_dataset`
-- `direct_memory_analysis`
-
-The mapping back to the phase labels is:
-
-| Phase label | Formal route name | Meaning |
-|------------|-------------------|---------|
-| `3a` | `legacy_sql_pipeline` | RDB parsing plus MySQL staging and SQL aggregation before report generation. |
-| `3b` | `precomputed_dataset` | Already-normalized analysis data is rendered directly into a report. |
-| `3c` | `direct_memory_analysis` | Local RDB parsing and in-memory analysis without the SQL staging path. |
-
-At the Phase 3 domain level, route selection follows the `RdbAnalysisRequest`:
-
-1. The application layer first converts the CLI-oriented `NormalizedRequest` into a Phase 3 `RdbAnalysisRequest`.
-2. If a caller already set a recognized `path_mode`, that route wins.
-3. If the request contains precomputed inputs, the resolver chooses `precomputed_dataset`.
-4. If the prompt includes an SQL-style hint, the resolver chooses `legacy_sql_pipeline`.
-5. Otherwise, the request falls through to `direct_memory_analysis`.
-
-Unsupported `path_mode` values do not become invalid routes. They are ignored and the router falls back to the normal selection rules.
-
-That ordering keeps the route selection deterministic while still letting the prompt express intent.
-
-Current CLI note:
-
-- the current `ask` command does not expose a first-class route override flag
-- the current CLI wiring forwards prompt, local input paths, profile name, and profile overrides into `analyze_rdb_tool`
-- that means route choice currently comes from the prompt hints and the downstream request construction, not from a public CLI `path_mode` option
-
-## 3. Profile Resolution
-
-Profile resolution happens after route selection, because the route says how to collect data and the profile says how to interpret it.
-
-The resolver:
-
-- loads the named profile from the repository-owned profile set
-- defaults to `generic` when no profile is specified
-- accepts `rcs` when the prompt or explicit flag asks for that profile
-- merges prompt-derived overrides into the profile defaults
-
-The prompt can influence the profile through natural language, but explicit CLI flags still override the prompt when both are present.
-
-## 4. Report Generation Flow
-
-Once the route and profile are known, the data flow is straightforward:
-
-1. The collector normalizes the source data into a `NormalizedRdbDataset`.
-2. The analyzer computes the RDB analysis result for the selected profile.
-3. The reporter assembles an `AnalysisReport`.
-4. `generate_analysis_report` renders the final artifact in the requested output mode.
-
-The renderer is intentionally generic. Phase 3 should not have a separate report pipeline for each route or each profile.
-
-## 5. Confirmation-Required Remote Flow
-
-Remote Redis is special because the request may need to inspect a live host before it can acquire an RDB file.
-
-The service-contract sequence is:
-
-1. The request identifies a remote Redis input.
-2. The analysis layer performs read-only discovery, such as calling persistence metadata plus `dir` and `dbfilename` lookups to determine the expected RDB path.
-3. If a real acquisition would occur next, the service returns a `ConfirmationRequest` with `status=confirmation_required` and `required_action=fetch_existing`.
-4. The caller must confirm the action before any fetch happens.
-5. After confirmation, the flow resumes with the normal route selection and report generation steps.
-
-This keeps the remote path read-only until a human explicitly approves acquisition.
-
-Today this remote confirmation branch exists at the Phase 3 service-contract level. The current public `ask` CLI is still a thin local-debug shell and does not yet expose a first-class remote input mode. Remote-RDB prompt shapes are rejected at the application boundary instead of being silently rerouted into Phase 2.
-
-## 6. Exact Example Flow
-
-For the request:
+For a request such as:
 
 ```text
 按 rcs profile 分析这个 rdb，输出 docx，到 /tmp/rcs.docx
 ```
 
-the flow is:
+the runtime flow is:
 
-1. The CLI receives the raw prompt and any explicit flags, including the local RDB path when the user supplies one with `--input`.
-2. Prompt parsing extracts `rcs` as the profile intent and records the docx/report intent plus the destination path.
-3. Explicit CLI parameters, if present, override any conflicting prompt-derived values.
-4. The CLI builds the normalized request and passes it to the application layer.
-5. The application layer treats the request as a local RDB analysis job because the current CLI supplies local file inputs through `--input`.
-6. `analyze_rdb_tool` converts those paths into a Phase 3 `RdbAnalysisRequest` with `LOCAL_RDB` inputs.
-7. `analyze_rdb` resolves the route from that Phase 3 request:
-   - local RDB input with no SQL-style hint falls through to `direct_memory_analysis`
-   - SQL-style hints choose `legacy_sql_pipeline`
-8. `profile_resolver` loads `rcs` and merges any prompt overrides into the profile defaults.
-9. The collector produces a normalized dataset from the chosen input path.
-10. The analyzer and report assembler produce the `AnalysisReport`.
-11. `generate_analysis_report` renders the final artifact.
-12. The artifact is written to `/tmp/rcs.docx` when the request asks for a file-backed docx report. If the request selects `docx`, the output destination must be present either in the prompt or via `--output`.
+1. `dba-assistant ask "<prompt>"` receives the prompt and any retained flags such as `--input`.
+2. `src/dba_assistant/interface/adapter.py` loads config and normalizes the raw request.
+3. The interface adapter applies explicit overrides such as `--profile`, `--report-format`, or `--output`.
+4. `src/dba_assistant/orchestrator/agent.py` builds one unified Deep Agent with:
+   - repository `memory`
+   - repository `skills`
+   - all currently available DBA tools
+5. The orchestrator sends one user message to that unified agent.
+6. The Deep Agent decides whether to use:
+   - a local RDB analysis tool
+   - a live Redis inspection tool
+   - remote RDB discovery
+   - a report-generation path
+7. The final assistant output is returned back through the interface adapter to the CLI.
 
-That sequence is the core Phase 3 architecture: prompt first, normalized request second, route/profile resolution third, report rendering last.
+The same interface boundary is intended for future API and WebUI callers.
 
-One important implementation detail: the formal route names describe the intended pipeline semantics. In the current local-debug wiring, `legacy_sql_pipeline` still reuses the default direct-parser collector unless a dedicated path-A collector is injected. The route name is already stable; the specialized collector stack can still evolve behind it.
+## 2. Normalized Request Boundary
+
+The shared request model still matters, but it is now an application boundary, not a business router.
+
+The normalized request carries:
+
+| Field | Meaning |
+|------|---------|
+| `raw_prompt` | Original prompt text |
+| `prompt` | Normalized prompt after secret stripping and cleanup |
+| `runtime_inputs` | Structured runtime values such as `redis_host`, `redis_port`, `input_paths`, `output_mode`, `report_format`, and `output_path` |
+| `secrets` | Extracted secrets such as Redis password |
+| `rdb_overrides` | Prompt-derived Phase 3 hints such as `profile_name`, `focus_prefixes`, `top_n`, and route hints |
+
+This object exists so that:
+
+- CLI can stay thin
+- API / WebUI can reuse the same boundary
+- the Deep Agent receives consistent context regardless of caller surface
+
+## 3. Unified Agent Assembly
+
+The unified agent is built in `src/dba_assistant/orchestrator/agent.py`.
+
+It now explicitly includes:
+
+- `memory` from repository `AGENTS.md`
+- `skills` from `src/dba_assistant/skills/`
+- the full tool list from `src/dba_assistant/orchestrator/tools.py`
+
+That means the runtime is no longer “CLI routes to Phase 2 or Phase 3.” The real shape is:
+
+- one Deep Agent
+- one shared interface adapter
+- one tool registry
+- one repository skill source
+
+## 4. Phase 3 Route Semantics
+
+Phase 3 still keeps the formal route semantics:
+
+- `legacy_sql_pipeline`
+- `precomputed_dataset`
+- `direct_memory_analysis`
+
+These remain Phase 3 domain route names, not public CLI commands.
+
+They are consumed inside the RDB-analysis domain, mainly through:
+
+- prompt-derived route hints
+- input type
+- downstream Phase 3 request construction
+
+The user should not have to think in “3a / 3b / 3c” terms when using the main CLI.
+
+## 5. Remote Redis Approval Flow
+
+Remote Redis is now part of the unified Deep Agent flow.
+
+The runtime sequence is:
+
+1. prompt includes a Redis target such as `redis.example:6379`
+2. the unified agent may call read-only discovery tools first
+3. if it chooses the remote-RDB acquisition tool, that tool call is guarded by Deep Agents `interrupt_on`
+4. the CLI asks for approval
+5. if approved, the tool call resumes
+6. if denied, the orchestrator returns a denial result and the high-risk action is not performed
+
+The important correction is:
+
+- remote-RDB prompts are not rejected at the CLI or application-service layer anymore
+- approval is attached to the high-risk tool call itself
+- this keeps the control point inside the Deep Agent execution path
+
+## 6. Current Tool Roles
+
+At the unified-agent level, the relevant Phase 3 tools are:
+
+- `analyze_local_rdb`
+  - local `.rdb` analysis plus report rendering
+- `discover_remote_rdb`
+  - read-only remote Redis persistence discovery
+- `fetch_and_analyze_remote_rdb`
+  - approval-gated remote RDB acquisition intent
+
+And the Phase 2 live inspection tools remain available alongside them:
+
+- `redis_ping`
+- `redis_info`
+- `redis_config_get`
+- `redis_slowlog_get`
+- `redis_client_list`
+
+That mixed tool set is intentional. It supports the target architecture:
+
+`一个总 Deep Agent -> skills/tools 自由编排`
+
+## 7. Exact Example
+
+Request:
+
+```text
+按 rcs profile 分析这个 rdb，输出 docx，到 /tmp/rcs.docx
+```
+
+With:
+
+```text
+--input ./dump.rdb
+```
+
+the actual flow is:
+
+1. prompt parser extracts `rcs`, `docx`, and `/tmp/rcs.docx`
+2. `--input` provides the concrete local file path
+3. interface adapter merges prompt intent and any explicit CLI overrides
+4. unified Deep Agent receives one final user message with the normalized context
+5. the agent selects the local-RDB analysis tool
+6. Phase 3 analysis resolves its internal route and profile
+7. generic report generation renders the final artifact
+8. `/tmp/rcs.docx` is written as the final result
+
+That is the current architectural contract for Phase 3.

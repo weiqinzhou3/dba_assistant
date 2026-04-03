@@ -5,10 +5,12 @@ from pathlib import Path
 from typing import Any
 
 from deepagents.backends import FilesystemBackend
+from langgraph.checkpoint.memory import InMemorySaver
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 MEMORY_SOURCES = ("/AGENTS.md",)
+SKILL_SOURCES = ("/src/dba_assistant/skills",)
 
 
 def build_runtime_backend() -> FilesystemBackend:
@@ -17,6 +19,14 @@ def build_runtime_backend() -> FilesystemBackend:
 
 def get_memory_sources() -> list[str]:
     return list(MEMORY_SOURCES)
+
+
+def get_skill_sources() -> list[str]:
+    return list(SKILL_SOURCES)
+
+
+def build_runtime_checkpointer() -> InMemorySaver:
+    return InMemorySaver()
 
 
 def extract_agent_output(result: Any) -> str:

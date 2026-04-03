@@ -1,66 +1,70 @@
 from pathlib import Path
-from types import SimpleNamespace
 
 from dba_assistant import cli
+from dba_assistant.interface import adapter as adapter_module
 
 
-def test_cli_ask_loads_config_normalizes_request_and_prints_result(monkeypatch, capsys) -> None:
+def test_cli_ask_delegates_to_interface_adapter(monkeypatch, capsys) -> None:
     captured: dict[str, object] = {}
-    config = SimpleNamespace(runtime=SimpleNamespace(default_output_mode="summary"))
 
-    monkeypatch.setattr(cli, "load_app_config", lambda config_path=None: config)
-    monkeypatch.setattr(
-        cli,
-        "normalize_raw_request",
-        lambda raw_prompt, *, default_output_mode, input_paths=(): captured.update(
-            {
-                "raw_prompt": raw_prompt,
-                "default_output_mode": default_output_mode,
-                "input_paths": input_paths,
-            }
-        )
-        or "REQUEST",
-    )
-    monkeypatch.setattr(cli, "execute_request", lambda request, *, config: "phase2 ok")
+    def fake_handle_request(request, *, approval_handler):
+        captured["request"] = request
+        captured["approval_handler"] = approval_handler
+        return "agent ok"
 
-    exit_code = cli.main(["ask", "Use password abc123 to inspect Redis 10.0.0.8:6379 and give me a summary"])
+    monkeypatch.setattr(cli, "handle_request", fake_handle_request)
+
+    exit_code = cli.main(["ask", "analyze the rdb"])
 
     assert exit_code == 0
-    assert captured["input_paths"] == []
-    captured = capsys.readouterr()
-    assert captured.out == "phase2 ok\n"
+    assert capsys.readouterr().out == "agent ok\n"
+    req = captured["request"]
+    assert req.prompt == "analyze the rdb"
+    assert req.input_paths == []
+    assert req.output_path is None
+    assert req.config_path is None
+    assert req.profile is None
+    assert req.report_format is None
 
 
-def test_cli_ask_threads_input_paths_to_request_normalizer(monkeypatch, tmp_path: Path, capsys) -> None:
+def test_cli_ask_threads_all_flags_to_interface_request(monkeypatch, tmp_path, capsys) -> None:
     captured: dict[str, object] = {}
-    config = SimpleNamespace(runtime=SimpleNamespace(default_output_mode="summary"))
-    source_a = tmp_path / "a.rdb"
-    source_b = tmp_path / "b.rdb"
-    source_a.write_text("a", encoding="utf-8")
-    source_b.write_text("b", encoding="utf-8")
+    source = tmp_path / "dump.rdb"
+    source.write_text("x", encoding="utf-8")
 
-    monkeypatch.setattr(cli, "load_app_config", lambda config_path=None: config)
+    def fake_handle_request(request, *, approval_handler):
+        captured["request"] = request
+        return "ok"
 
-    def fake_normalize_raw_request(raw_prompt, *, default_output_mode, input_paths=()):
-        captured["raw_prompt"] = raw_prompt
-        captured["default_output_mode"] = default_output_mode
-        captured["input_paths"] = input_paths
-        return "REQUEST"
+    monkeypatch.setattr(cli, "handle_request", fake_handle_request)
 
-    monkeypatch.setattr(cli, "normalize_raw_request", fake_normalize_raw_request)
-    monkeypatch.setattr(cli, "execute_request", lambda request, *, config: "phase3 ok")
-
-    exit_code = cli.main(
-        [
-            "ask",
-            "analyze this rdb",
-            "--input",
-            str(source_a),
-            "--input",
-            str(source_b),
-        ]
-    )
+    exit_code = cli.main([
+        "ask", "analyze rdb",
+        "--input", str(source),
+        "--output", "/tmp/out.docx",
+        "--config", "/etc/custom.yaml",
+        "--profile", "rcs",
+        "--report-format", "docx",
+    ])
 
     assert exit_code == 0
-    assert captured["input_paths"] == [source_a, source_b]
-    assert capsys.readouterr().out == "phase3 ok\n"
+    req = captured["request"]
+    assert req.prompt == "analyze rdb"
+    assert req.input_paths == [source]
+    assert req.output_path == Path("/tmp/out.docx")
+    assert req.config_path == "/etc/custom.yaml"
+    assert req.profile == "rcs"
+    assert req.report_format == "docx"
+
+
+def test_cli_ask_uses_cli_approval_handler(monkeypatch, capsys) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_handle_request(request, *, approval_handler):
+        captured["handler_type"] = type(approval_handler).__name__
+        return "done"
+
+    monkeypatch.setattr(cli, "handle_request", fake_handle_request)
+
+    cli.main(["ask", "test"])
+    assert captured["handler_type"] == "CliApprovalHandler"

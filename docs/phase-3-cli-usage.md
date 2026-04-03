@@ -1,6 +1,23 @@
 # Phase 3 CLI Usage
 
-Phase 3 is prompt-first. The user starts with a natural-language request, and the CLI turns that request into a normalized analysis job. The prompt carries the primary intent; the retained flags are only there to supply structured overrides, local paths, and deterministic configuration.
+Phase 3 is `prompt-first`, but the CLI is intentionally thin.
+
+The public surface is:
+
+```sh
+dba-assistant ask "<prompt>"
+```
+
+The CLI does not decide which phase path, skill, or tool should run. It only:
+
+1. accepts the prompt
+2. accepts a small set of optional structured overrides
+3. forwards one normalized request into the shared interface adapter
+4. lets the unified Deep Agent choose `skills` and `tools`
+
+The target architecture is:
+
+`CLI / API / WebUI -> interface adapter -> one Deep Agent -> skills/tools`
 
 ## Primary Command
 
@@ -13,102 +30,116 @@ Examples:
 ```sh
 dba-assistant ask "Analyze this RDB and give me a summary" --input /path/to/dump.rdb
 dba-assistant ask "按 rcs profile 分析这个 rdb，输出 docx，到 /tmp/rcs.docx" --input /path/to/dump.rdb
+dba-assistant ask "分析 redis.example:6379 的最新 rdb，按 rcs profile 输出 summary"
 ```
 
 ## Retained Parameters
 
-The following flags stay on the public surface because they are useful for local debugging, repeatable execution, and future structured callers.
+The retained flags exist for deterministic local execution and future API / WebUI reuse. They are not the primary UX.
 
 | Flag | Meaning | Notes |
 |------|---------|-------|
-| `--config` | Load an explicit repository config file. | Use this when you want to override the default runtime configuration, including provider and default output behavior. |
-| `--input` | Provide one or more local input paths. | Repeatable. In the current CLI, each path is treated as a local analysis source. |
-| `--profile` | Force the analysis profile. | Typical values are `generic` and `rcs`. This overrides any profile implied by the prompt. |
-| `--report-format` | Force the rendered output format. | The current CLI supports `summary` and `docx`. `docx` requires an output destination, either in the prompt or via `--output`. |
-| `--output` | Force the output target. | Use this for an explicit file path. It overrides any output path mentioned in the prompt and is required when the effective format is `docx`. |
+| `--config` | Load an explicit repository config file. | Overrides the default repository config path. |
+| `--input` | Provide one or more local input paths. | Repeatable. Used for local `RDB` files today. |
+| `--profile` | Force the analysis profile. | Typical values are `generic` and `rcs`. |
+| `--report-format` | Force the rendered output format. | Current public values are `summary` and `docx`. |
+| `--output` | Force the output destination. | Required for effective `docx` output. |
 
 ## Precedence
 
-The execution order is fixed:
+The precedence rule is fixed:
 
-1. Parse the prompt first.
-2. Apply explicit CLI parameters second.
-3. Let explicit parameters override any conflicting prompt-derived values.
-4. Execute only the final normalized request.
+1. parse the prompt first
+2. derive the normalized request
+3. apply explicit CLI overrides second
+4. let the unified Deep Agent operate on the final normalized request
 
-That means a user can say `rcs` or `docx` in the prompt, but an explicit `--profile generic` or `--report-format summary` still wins.
+That means prompt is the default control surface, but explicit CLI flags still win when both are present.
 
-## Usage Patterns
+## What the Unified Agent Sees
+
+The CLI hands the request to the interface adapter, which normalizes it into one shared application request:
+
+- cleaned prompt text
+- local input paths
+- prompt-derived Redis host / port / db
+- extracted secrets such as Redis password
+- prompt-derived `profile`, `top_n`, and prefix overrides
+- output intent such as `summary` or `docx`
+
+From that point on, the CLI is out of the business-routing path.
+
+The unified Deep Agent then decides whether to use:
+
+- `skills` under `src/dba_assistant/skills/`
+- local RDB analysis tools
+- live Redis inspection tools
+- remote RDB discovery and approval-gated acquisition tools
+
+## Local RDB Examples
 
 ### Generic Profile
 
-Use the generic profile when you want the default RDB analysis shape and do not need profile-specific overrides.
-
 ```sh
-dba-assistant ask "Analyze this RDB and give me a concise summary" --input ./dump.rdb
+dba-assistant ask "Analyze this RDB and focus on key types, expiration, and prefix top 30" \
+  --input ./dump.rdb
 ```
 
-What this means:
+Expected shape:
 
-- prompt is parsed for analysis intent
-- no profile override is supplied, so `generic` remains the effective profile
-- the local RDB path enters the normalized request through `--input`
+- prompt expresses the analysis goal
+- `--input` supplies the concrete local file
+- the unified Deep Agent can select local RDB analysis tools
+- the effective profile defaults to `generic`
 
-### `rcs` Profile
-
-Use `rcs` when you want the profile-specific section layout and profile defaults associated with that report style.
-
-```sh
-dba-assistant ask "按 rcs profile 分析这个 rdb，输出 docx，到 /tmp/rcs.docx" --input ./dump.rdb
-```
-
-What this means:
-
-- the prompt selects the `rcs` profile
-- the prompt also expresses docx output intent and the destination path
-- the local RDB file still comes from `--input`
-
-### Local RDB Input
-
-Use `--input` for local RDB files or local fixture paths that the CLI should analyze.
+### `rcs` Profile with DOCX Output
 
 ```sh
-dba-assistant ask "Analyze the local RDB and focus on TTL distribution" --input ./fixtures/dump.rdb
+dba-assistant ask "按 rcs profile 分析这个 rdb，输出 docx，到 /tmp/rcs.docx" \
+  --input ./dump.rdb
 ```
 
-What this means:
+Expected shape:
 
-- the prompt describes the analysis focus
-- the local file path is carried explicitly in the normalized request
-- the application layer can treat the request as a local-file analysis job
+- prompt selects `rcs`
+- prompt requests `docx`
+- prompt provides the output path
+- the unified Deep Agent selects the local-RDB analysis flow and the generic report renderer
 
-### Precomputed Input
-
-Phase 3 has a `precomputed_dataset` route, but the current `ask` CLI does not yet expose a separate input-kind flag for it.
+## Remote Redis Example
 
 ```sh
-dba-assistant ask "Use the precomputed dataset and generate the report"
+dba-assistant ask "分析 redis.example:6379 的最新 rdb，按 rcs profile 输出 summary"
 ```
 
-What this means:
+Expected shape:
 
-- the Phase 3 architecture reserves a `precomputed_dataset` route for already-exported analysis data
-- the current CLI debug shell does not yet wire `--input` into that route
-- today this path is exercised by lower-level service and tool callers rather than by the public `ask` surface
+- prompt provides the Redis target
+- the unified Deep Agent can choose live Redis inspection tools first
+- if it decides to fetch the remote `RDB`, the high-risk tool is protected by Deep Agents `interrupt_on`
+- the CLI then asks for approval before the tool call is resumed
 
-### Remote Redis Confirmation Flow
+The important boundary is this:
 
-Remote Redis requests are intentionally not fire-and-forget. Phase 3 defines a confirmation-gated remote flow, but the current prompt-first CLI does not yet expose a direct remote-input flag.
+- CLI does not reject remote-RDB prompts
+- application code does not hard-route remote-RDB prompts away
+- approval is a Deep Agent tool-call checkpoint, not a CLI-side business rule
+
+## Current Practical Limits
+
+- Local `.rdb` file paths still come most reliably from `--input`
+- The remote-RDB flow currently supports discovery plus approval-gated acquisition intent, but the actual SSH-based file fetch is still scaffold-only
+- `precomputed_dataset` remains a Phase 3 route, but the current public CLI does not expose a separate `input-kind` flag for it
+
+## Debugging Principle
+
+If you need exact reproducibility, keep using the prompt plus small explicit overrides:
 
 ```sh
-dba-assistant ask "Analyze the latest RDB from redis.example:6379 and confirm before fetching"
+dba-assistant ask "按 generic profile 分析这个 rdb，输出 summary" \
+  --input ./dump.rdb \
+  --profile generic \
+  --report-format summary
 ```
 
-Expected behavior:
-
-- the Phase 3 service contract supports remote discovery before any acquisition happens
-- if a real RDB acquisition is needed, the service returns a confirmation-required result
-- only after explicit confirmation does the flow proceed to fetch and analyze the RDB
-- the current CLI does not yet drive this branch directly; at the moment it rejects this prompt shape instead of silently falling through to Phase 2
-
-This confirmation gate is part of the public Phase 3 contract. It protects remote data acquisition from happening automatically just because a user asked a question in natural language.
+That preserves the prompt-first user shape while still leaving a stable structured boundary for future API and WebUI callers.

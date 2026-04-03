@@ -69,10 +69,12 @@ The prompt-first surface uses report-oriented terminology, but the currently wir
 
 - `dba-assistant ask "<prompt>"` is the primary user entry point.
 - The retained CLI flags are `--config`, `--input`, `--profile`, `--report-format`, and `--output`.
-- CLI input is normalized before application execution, so prompt-derived intent and explicit overrides converge into one request model.
-- The current CLI debug shell routes local file inputs through Phase 3. `precomputed_dataset` and remote confirmation flows remain part of the Phase 3 service contract but are not yet first-class CLI modes; remote-RDB prompt shapes are rejected rather than silently falling through to Phase 2.
-- `dba_assistant.tools.analyze_rdb.analyze_rdb_tool` remains the public local-RDB analysis entry point.
-- `dba_assistant.tools.generate_analysis_report.generate_analysis_report` remains the public generic report renderer export.
+- CLI input is normalized through the shared interface adapter, so prompt-derived intent and explicit overrides converge into one request model before Deep Agent execution.
+- Runtime shape is now `CLI / API / WebUI -> interface adapter -> one Deep Agent -> skills/tools`.
+- The unified Deep Agent explicitly loads repository `skills` from `src/dba_assistant/skills/` and chooses tools dynamically instead of relying on CLI or application-service business routing.
+- Remote Redis discovery and remote-RDB acquisition now belong to the unified Deep Agent flow. High-risk remote-RDB acquisition is guarded at the tool-call level through Deep Agents `interrupt_on`; it is no longer rejected at the CLI or application boundary.
+- `dba_assistant.tools.analyze_rdb.analyze_rdb_tool` remains the public local-RDB analysis tool entry point.
+- `dba_assistant.core.reporter.generate_analysis_report.generate_analysis_report` remains the public generic report renderer export.
 
 ## Dependency Notes
 

@@ -4,12 +4,12 @@
 
 This repository is developed phase by phase from the DBA Assistant master plan.
 
-DBA Assistant is a Deep Agent SDK-based project. Initialization creates repository scaffolding only. Functional delivery happens later, one phase at a time.
+DBA Assistant is a Deep Agents SDK-based project. Functional delivery happens phase by phase from the master plan.
 
 ## Non-Negotiable Rules
 
 - `AGENTS.md` is the repository policy source of truth.
-- DBA Assistant uses Deep Agent SDK as its runtime foundation.
+- DBA Assistant uses Deep Agents SDK as its runtime foundation.
 - Production code must live under `src/dba_assistant/`.
 - `src/claude-code-source-code/` and `src/docs/` are reference-only inputs for design and coding guidance.
 - Do not copy runtime implementation code from the reference layer into production modules.

@@ -6,14 +6,14 @@ Delivered
 
 ## Goal
 
-Assemble the repository-owned Deep Agent SDK layer, configure provider-capable model access, and implement one real read-only Redis remote collection path.
+Assemble the repository-owned Deep Agents SDK layer, configure provider-capable model access, and implement one real read-only Redis remote collection path.
 
 ## Delivered Scope
 
 1. Repository-owned `deep_agent_integration/` layer
    - Lives under `src/dba_assistant/deep_agent_integration/`.
    - Loads runtime configuration, builds provider-compatible model objects, registers model-visible tools, constructs the Phase 2 validation agent, and exposes a small run entry.
-   - Is glue code around Deep Agent SDK, not a custom runtime framework.
+   - Is glue code around Deep Agents SDK, not a custom runtime framework.
 
 2. Provider-capable model configuration
    - Uses repository-owned `config/config.yaml` instead of environment-variable-first loading.
@@ -44,7 +44,7 @@ Assemble the repository-owned Deep Agent SDK layer, configure provider-capable m
 
 ## Acceptance Criteria
 
-- The Deep Agent SDK assembly layer exists under `src/dba_assistant/deep_agent_integration/`.
+- The Deep Agents SDK assembly layer exists under `src/dba_assistant/deep_agent_integration/`.
 - The agent can invoke the registered read-only Redis tools.
 - The Redis direct adaptor and remote collector path are functional and read-only.
 - The runtime remains lightweight and does not introduce a custom framework.

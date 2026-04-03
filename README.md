@@ -4,22 +4,22 @@ DBA Assistant is a phase-oriented repository for building Redis-focused DBA anal
 
 ## Runtime Foundation
 
-DBA Assistant is intended to run on Deep Agent SDK.
+DBA Assistant runs on Deep Agents SDK.
 
-Initialization does not implement the SDK bootstrap yet, but the repository is not framework-neutral. Later phase work must wire skills, tools, and adaptors into a Deep Agent SDK application rather than inventing a separate runtime model.
+The repository-owned runtime glue lives under `src/dba_assistant/deep_agent_integration/` and is implemented with `deepagents`. The rest of the repository continues to evolve phase by phase on top of that runtime foundation.
 
 ## Current Status
 
-This repository is currently initialized as a scaffold. It contains:
+This repository now contains:
 
-- explicit documentation that the project is built on Deep Agent SDK
+- explicit documentation that the project is built on Deep Agents SDK
 - the master plan
 - reference materials under `src/`
 - phase documents under `docs/phases/`
-- production package placeholders under `src/dba_assistant/`
-- template and test scaffolding
+- production code under `src/dba_assistant/`
+- template and test assets
 
-It does not yet contain working collector, analyzer, reporter, adaptor, or runtime implementations.
+It includes working runtime assembly, Redis-oriented collection/reporting paths delivered so far, and the remaining later-phase work tracked in `docs/phases/`.
 
 ## Repository Boundaries
 
@@ -33,6 +33,6 @@ It does not yet contain working collector, analyzer, reporter, adaptor, or runti
 Work is expected to proceed phase by phase:
 
 1. establish shared foundations
-2. add Deep Agent SDK runtime and collection infrastructure
+2. add Deep Agents SDK runtime and collection infrastructure
 3. implement skills incrementally
 4. expand audit, templates, and future safety controls

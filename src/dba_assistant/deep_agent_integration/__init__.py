@@ -1,4 +1,4 @@
-"""Repository-owned Deep Agent SDK assembly layer for DBA Assistant."""
+"""Repository-owned Deep Agents SDK assembly layer for DBA Assistant."""
 
 from dba_assistant.deep_agent_integration.agent_factory import build_phase2_agent
 from dba_assistant.deep_agent_integration.config import (
@@ -13,7 +13,7 @@ from dba_assistant.deep_agent_integration.model_provider import build_model
 from dba_assistant.deep_agent_integration.tool_registry import build_redis_tools
 
 DEFAULT_PROMPT = (
-    "Validate the Phase 2 Deep Agent SDK assembly. "
+    "Validate the Phase 2 Deep Agents SDK assembly. "
     "Use only read-only Redis tools, summarize the structured findings, and stay within the Phase 2 scope."
 )
 

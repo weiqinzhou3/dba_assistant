@@ -4,20 +4,14 @@ from dba_assistant.deep_agent_integration.config import ModelConfig, ProviderKin
 from dba_assistant.deep_agent_integration import model_provider
 
 
-def test_build_model_uses_async_openai_and_chat_completions(monkeypatch) -> None:
+def test_build_model_uses_chat_openai_for_openai_compatible_provider(monkeypatch) -> None:
     calls: dict[str, object] = {}
 
-    class FakeClient:
-        def __init__(self, *, api_key: str, base_url: str) -> None:
-            calls["client"] = {"api_key": api_key, "base_url": base_url}
+    class FakeChatOpenAI:
+        def __init__(self, **kwargs) -> None:
+            calls["kwargs"] = kwargs
 
-    class FakeModel:
-        def __init__(self, *, model: str, openai_client: object) -> None:
-            calls["model"] = {"model": model, "openai_client": openai_client}
-
-    monkeypatch.setattr(model_provider, "AsyncOpenAI", FakeClient)
-    monkeypatch.setattr(model_provider, "OpenAIChatCompletionsModel", FakeModel)
-    monkeypatch.setattr(model_provider, "set_tracing_disabled", lambda disabled: calls.setdefault("tracing", disabled))
+    monkeypatch.setattr(model_provider, "ChatOpenAI", FakeChatOpenAI)
 
     config = ModelConfig(
         preset_name="dashscope_cn_qwen35_flash",
@@ -25,18 +19,20 @@ def test_build_model_uses_async_openai_and_chat_completions(monkeypatch) -> None
         model_name="qwen3.5-flash",
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         api_key="sk-cn",
+        temperature=0.2,
         tracing_disabled=True,
     )
 
     result = model_provider.build_model(config)
 
-    assert calls["client"] == {
+    assert calls["kwargs"] == {
+        "model": "qwen3.5-flash",
         "api_key": "sk-cn",
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "temperature": 0.2,
+        "stream_usage": False,
     }
-    assert calls["model"]["model"] == "qwen3.5-flash"
-    assert calls["tracing"] is True
-    assert isinstance(result, FakeModel)
+    assert isinstance(result, FakeChatOpenAI)
 
 
 def test_build_model_rejects_unknown_provider_kind() -> None:

@@ -3,8 +3,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from agents import function_tool
-
 from dba_assistant.adaptors.redis_adaptor import DEFAULT_CONFIG_PATTERN, DEFAULT_SLOWLOG_LENGTH, RedisAdaptor, RedisConnectionConfig
 
 
@@ -13,42 +11,41 @@ def build_redis_tools(
     adaptor: RedisAdaptor | None = None,
 ) -> list:
     redis_adaptor = adaptor or RedisAdaptor()
-
     return [
-        function_tool(
+        _named_tool(
             _make_ping_tool(redis_adaptor, connection),
-            name_override="redis_ping",
-            description_override="Ping Redis and return a structured availability payload.",
+            "redis_ping",
+            "Ping Redis and return a structured availability payload.",
         ),
-        function_tool(
+        _named_tool(
             _make_info_tool(redis_adaptor, connection),
-            name_override="redis_info",
-            description_override="Return read-only Redis INFO data in structured form.",
+            "redis_info",
+            "Return read-only Redis INFO data in structured form.",
         ),
-        function_tool(
+        _named_tool(
             _make_config_get_tool(redis_adaptor, connection),
-            name_override="redis_config_get",
-            description_override="Return the bounded Phase 2 Redis CONFIG GET probe.",
+            "redis_config_get",
+            "Return the bounded Phase 2 Redis CONFIG GET probe.",
         ),
-        function_tool(
+        _named_tool(
             _make_slowlog_get_tool(redis_adaptor, connection),
-            name_override="redis_slowlog_get",
-            description_override="Return the bounded Phase 2 Redis SLOWLOG GET probe.",
+            "redis_slowlog_get",
+            "Return the bounded Phase 2 Redis SLOWLOG GET probe.",
         ),
-        function_tool(
+        _named_tool(
             _make_client_list_tool(redis_adaptor, connection),
-            name_override="redis_client_list",
-            description_override="Return structured Redis client-list metadata.",
+            "redis_client_list",
+            "Return structured Redis client-list metadata.",
         ),
     ]
 
 
 def build_phase3_tools() -> list:
     return [
-        function_tool(
+        _named_tool(
             _make_analyze_rdb_tool(),
-            name_override="analyze_rdb",
-            description_override="Analyze local Redis RDB files and return structured Phase 3 results.",
+            "analyze_rdb",
+            "Analyze local Redis RDB files and return structured Phase 3 results.",
         )
     ]
 
@@ -110,3 +107,9 @@ def _make_analyze_rdb_tool() -> Callable[..., object]:
         return analyze_rdb_tool(prompt=prompt, input_paths=[Path(path) for path in input_paths])
 
     return analyze_rdb
+
+
+def _named_tool(func: Callable[..., object], name: str, description: str) -> Callable[..., object]:
+    func.__name__ = name
+    func.__doc__ = description
+    return func

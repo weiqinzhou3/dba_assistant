@@ -7,10 +7,10 @@ This note captures the model/provider assumptions that matter for Phase 2. The s
 - The checked-in default config uses `ollama_local` for safe local debugging, not a hosted free-tier model.
 - If you switch to DashScope China, that preset is not the free preset.
 - Any international free-tier assumption is vendor policy, not a repository guarantee, and it can change or expire.
-- Do not hardcode model configuration outside the Deep Agent SDK integration layer.
+- Do not hardcode model configuration outside the Deep Agents SDK integration layer.
 - `config/config.yaml` is the static source of truth for repository usage. Do not reintroduce environment-variable-only config loading as the normal path.
 - OpenAI-compatible does not mean behavior-identical across DashScope and Ollama.
-- Tracing may need provider-specific handling. Phase 2 defaults tracing to disabled.
+- Deep Agents SDK and provider behavior can differ by endpoint. Keep provider-specific handling isolated in the integration layer.
 - Dynamic targets and secrets do not belong in static config. Redis host/db/password should arrive through normalized runtime requests.
 
 ## What This Means in Practice

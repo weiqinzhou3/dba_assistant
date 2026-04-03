@@ -4,9 +4,9 @@
 
 This design defines the implementation boundary for `Phase 2` of the DBA Assistant project.
 
-`Phase 2` is the first phase that turns the repository from a shared-layer foundation into a working Deep Agent SDK-based application skeleton. The goal is not to deliver full Redis inspection or CVE analysis behavior. The goal is to assemble the repository into a minimal, real, agent-capable system with:
+`Phase 2` is the first phase that turns the repository from a shared-layer foundation into a working Deep Agents SDK-based application skeleton. The goal is not to deliver full Redis inspection or CVE analysis behavior. The goal is to assemble the repository into a minimal, real, agent-capable system with:
 
-- Deep Agent SDK wiring
+- Deep Agents SDK wiring
 - one real remote collection path
 - a provider-capable model configuration layer
 - clear documentation of model and provider pitfalls
@@ -17,10 +17,10 @@ As of April 1, 2026, this design is intentionally constrained to avoid leaking `
 
 ### In Scope
 
-- Create the repository-owned Deep Agent SDK integration layer under `src/dba_assistant/deep_agent_integration/`
+- Create the repository-owned Deep Agents SDK integration layer under `src/dba_assistant/deep_agent_integration/`
 - Implement configuration loading for provider presets and environment-variable overrides
 - Implement model/provider construction for OpenAI-compatible endpoints
-- Provide a minimal agent factory and tool registry using OpenAI Agents SDK
+- Provide a minimal agent factory and tool registry using Deep Agents SDK
 - Provide a minimal run entry for smoke validation
 - Implement a real read-only Redis direct-connection adaptor
 - Upgrade the remote collector layer from interface-only to a usable Phase 2 remote foundation
@@ -40,15 +40,15 @@ As of April 1, 2026, this design is intentionally constrained to avoid leaking `
 
 ## Design Principles
 
-### 1. Deep Agent SDK integration, not a custom runtime
+### 1. Deep Agents SDK integration, not a custom runtime
 
-The repository must remain explicit that Deep Agent SDK is the runtime foundation.
+The repository must remain explicit that Deep Agents SDK is the runtime foundation.
 
 However, the repository must not introduce a generic `runtime/` layer that can be confused with the SDK itself. The repository-owned composition layer should therefore be named `deep_agent_integration/`, which communicates that:
 
 - this is project glue code
 - this is not a custom agent framework
-- this is not a replacement for Deep Agent SDK internals
+- this is not a replacement for Deep Agents SDK internals
 
 ### 2. Strict phase isolation
 
@@ -111,11 +111,11 @@ No raw passthrough command surface should be exposed.
 
 ## External Constraints
 
-### OpenAI Agents SDK constraint
+### Deep Agents SDK constraint
 
-The OpenAI Agents SDK supports non-OpenAI providers through built-in provider integration points, including `AsyncOpenAI(base_url=..., api_key=...)` for OpenAI-compatible endpoints. The official docs also note that Chat Completions-based integration remains the safer default for many non-OpenAI providers.
+The Deep Agents SDK works with LangChain chat models that support tool calling. For OpenAI-compatible endpoints, the repository can build a provider-compatible LangChain chat model object and pass it into `create_deep_agent(...)`.
 
-This directly supports the design choice to keep `Phase 2` provider wiring OpenAI-compatible and provider-capable.
+This supports keeping `Phase 2` provider wiring centralized, OpenAI-compatible, and provider-capable without depending on OpenAI Agents SDK abstractions.
 
 ### DashScope constraint
 
@@ -170,7 +170,7 @@ The `skills/` tree remains phase-owned by later business phases, but one Redis-o
 
 Responsibilities:
 
-- load environment variables
+- load repository-owned config files
 - select provider presets
 - normalize provider configuration into a single internal shape
 - validate required fields
@@ -180,7 +180,7 @@ This file must be the only place that knows:
 
 - the default preset name
 - provider base URLs
-- API key env-var names
+- API key fields
 - default model identifiers
 
 No skill, collector, tool, or adaptor should hardcode these values.
@@ -189,7 +189,7 @@ No skill, collector, tool, or adaptor should hardcode these values.
 
 Responsibilities:
 
-- create the OpenAI-compatible client/model objects needed by Deep Agent SDK integration
+- create the provider-compatible model objects needed by Deep Agents SDK integration
 - branch on preset/provider kind
 - apply compatibility flags if needed
 - keep provider-specific setup isolated from business code
@@ -288,7 +288,7 @@ The intended Phase 2 flow is:
 7. tool outputs return structured results
 8. the model produces the final natural-language response
 
-This gives the repository one real, end-to-end Deep Agent SDK path without overcommitting to later business behavior.
+This gives the repository one real, end-to-end Deep Agents SDK path without overcommitting to later business behavior.
 
 ## Testing Strategy
 
@@ -391,4 +391,3 @@ This would introduce transport complexity that belongs to later phase work and w
 - the agent can call the registered Redis tools through the SDK
 - provider pitfalls and regional constraints are documented clearly
 - no SSH or MySQL live implementation has been accidentally pulled into the phase
-

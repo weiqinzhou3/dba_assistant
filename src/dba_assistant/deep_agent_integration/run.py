@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from agents import Runner
-
 from dba_assistant.adaptors.redis_adaptor import RedisConnectionConfig
 from dba_assistant.application.prompt_parser import normalize_raw_request
 from dba_assistant.deep_agent_integration import DEFAULT_PROMPT
 from dba_assistant.deep_agent_integration.agent_factory import build_phase2_agent
 from dba_assistant.deep_agent_integration.config import AppConfig, load_app_config
+from dba_assistant.deep_agent_integration.runtime_support import extract_agent_output
 
 
 def run_phase2_request(
@@ -16,8 +15,8 @@ def run_phase2_request(
     redis_connection: RedisConnectionConfig,
 ) -> str:
     agent = build_phase2_agent(config, redis_connection)
-    result = Runner.run_sync(agent, prompt, max_turns=config.model.max_turns)
-    return str(result.final_output)
+    result = agent.invoke({"messages": [{"role": "user", "content": prompt}]})
+    return extract_agent_output(result)
 
 
 def run_phase2(prompt: str = DEFAULT_PROMPT) -> str:

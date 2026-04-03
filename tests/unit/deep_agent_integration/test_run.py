@@ -3,7 +3,7 @@ from dba_assistant.deep_agent_integration import run as run_module
 from dba_assistant.deep_agent_integration.config import AppConfig, ModelConfig, ProviderKind, RuntimeConfig
 
 
-def test_run_phase2_request_uses_runner_and_returns_final_output(monkeypatch) -> None:
+def test_run_phase2_request_invokes_deep_agent_and_returns_final_output(monkeypatch) -> None:
     config = AppConfig(
         model=ModelConfig(
             preset_name="ollama_local",
@@ -24,23 +24,17 @@ def test_run_phase2_request_uses_runner_and_returns_final_output(monkeypatch) ->
         lambda cfg, conn, redis_adaptor=None: ("agent", cfg, conn, redis_adaptor),
     )
 
-    def fake_run_sync(starting_agent, input, *, max_turns=10, **kwargs):
-        calls["starting_agent"] = starting_agent
-        calls["input"] = input
-        calls["max_turns"] = max_turns
+    class FakeAgent:
+        def invoke(self, payload):
+            calls["payload"] = payload
+            return {"messages": [{"role": "assistant", "content": "phase2 ok"}]}
 
-        class Result:
-            final_output = {"summary": "phase2 ok"}
-
-        return Result()
-
-    monkeypatch.setattr(run_module.Runner, "run_sync", fake_run_sync)
+    monkeypatch.setattr(run_module, "build_phase2_agent", lambda cfg, conn: FakeAgent())
 
     result = run_module.run_phase2_request("inspect redis", config=config, redis_connection=connection)
 
-    assert result == "{'summary': 'phase2 ok'}"
-    assert calls["input"] == "inspect redis"
-    assert calls["max_turns"] == 4
+    assert result == "phase2 ok"
+    assert calls["payload"] == {"messages": [{"role": "user", "content": "inspect redis"}]}
 
 
 def test_main_prints_run_phase2_output(monkeypatch, capsys) -> None:

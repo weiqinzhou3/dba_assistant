@@ -1,10 +1,6 @@
-import asyncio
 from pathlib import Path
 
-from agents.tool import ToolContext
-
 from dba_assistant.adaptors.redis_adaptor import RedisConnectionConfig
-from dba_assistant.deep_agent_integration import tool_registry
 from dba_assistant.deep_agent_integration.tool_registry import build_phase3_tools, build_redis_tools
 
 
@@ -33,18 +29,13 @@ class FakeRedisAdaptor:
         return {"available": True, "count": 1}
 
 
-async def _invoke(tool, payload: str) -> object:
-    ctx = ToolContext(context=None, tool_name=tool.name, tool_call_id="call-1", tool_arguments=payload)
-    return await tool.on_invoke_tool(ctx, payload)
-
-
 def test_build_redis_tools_exposes_phase2_safe_tools_and_structured_outputs() -> None:
     connection = RedisConnectionConfig(host="redis.example", port=6380, db=7)
     adaptor = FakeRedisAdaptor()
 
     tools = build_redis_tools(connection, adaptor=adaptor)
 
-    assert [tool.name for tool in tools] == [
+    assert [tool.__name__ for tool in tools] == [
         "redis_ping",
         "redis_info",
         "redis_config_get",
@@ -52,20 +43,20 @@ def test_build_redis_tools_exposes_phase2_safe_tools_and_structured_outputs() ->
         "redis_client_list",
     ]
 
-    assert asyncio.run(_invoke(tools[0], "{}")) == {"ok": True}
-    assert asyncio.run(_invoke(tools[1], '{"section": "memory"}')) == {"role": "master", "section": "memory"}
-    assert asyncio.run(_invoke(tools[2], '{"pattern": "*"}')) == {
+    assert tools[0]() == {"ok": True}
+    assert tools[1](section="memory") == {"role": "master", "section": "memory"}
+    assert tools[2]() == {
         "available": True,
         "pattern": "maxmemory*",
         "data": {"maxmemory": "0"},
     }
-    assert asyncio.run(_invoke(tools[3], '{"length": 999}')) == {
+    assert tools[3]() == {
         "available": True,
         "requested_length": 5,
         "count": 1,
         "entries": [{"id": 1}],
     }
-    assert asyncio.run(_invoke(tools[4], "{}")) == {"available": True, "count": 1}
+    assert tools[4]() == {"available": True, "count": 1}
 
     assert adaptor.calls == [
         ("ping", connection, {}),
@@ -89,8 +80,8 @@ def test_build_phase3_tools_exposes_local_rdb_analyze_tool(monkeypatch) -> None:
 
     tools = build_phase3_tools()
 
-    assert [tool.name for tool in tools] == ["analyze_rdb"]
-    assert asyncio.run(_invoke(tools[0], '{"prompt": "analyze this rdb", "input_paths": ["/tmp/a.rdb"]}')) == {
+    assert [tool.__name__ for tool in tools] == ["analyze_rdb"]
+    assert tools[0](prompt="analyze this rdb", input_paths=["/tmp/a.rdb"]) == {
         "path": "3c",
         "profile": "generic",
     }

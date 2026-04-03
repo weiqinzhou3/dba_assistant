@@ -9,4 +9,4 @@ CLI, future GUI surfaces, and future API endpoints should share these modules fo
 - secret separation
 - prompt cleaning before model execution
 
-The package intentionally stays independent from CLI wiring and Deep Agent SDK assembly.
+The package intentionally stays independent from CLI wiring and Deep Agents SDK assembly.

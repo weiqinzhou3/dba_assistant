@@ -55,7 +55,7 @@ The prompt-first surface uses report-oriented terminology, but the currently wir
 
 | User-facing intent | Normalized mode | Result |
 |--------------------|-----------------|--------|
-| `summary` | prompt says `summary`, or `--report-format summary` | Rendered summary text from the assembled `AnalysisReport`, printed to stdout by default or written to `--output` when a file target is provided. |
+| `summary` | prompt says `summary`, or `--report-format summary` | Rendered summary text from the assembled `AnalysisReport`, printed to stdout by default and also written to `--output` when a file target is provided. |
 | `report` + `docx` | prompt says `docx`, or `--report-format docx` | Full Word report. |
 | `report` + `pdf` | future extension | Reserved for later Phase 3 extension work. |
 | `report` + `html` | future extension | Reserved for later Phase 3 extension work. |

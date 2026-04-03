@@ -12,13 +12,22 @@ At a minimum, it carries:
 |------|---------|
 | `raw_prompt` | The original user prompt before cleanup or extraction. |
 | `prompt` | The normalized prompt text after secret stripping and whitespace cleanup. |
-| `runtime_inputs` | Structured runtime inputs such as `redis_host`, `redis_port`, `redis_db`, `output_mode`, and `input_paths`. |
+| `runtime_inputs` | Structured runtime inputs such as `redis_host`, `redis_port`, `redis_db`, `output_mode`, `report_format`, `output_path`, and `input_paths`. |
 | `secrets` | Secret material extracted from the prompt, such as the Redis password. |
 | `rdb_overrides` | Prompt-derived RDB preferences such as `profile_name`, `focus_prefixes`, and `top_n` overrides. |
-| `path_mode` | The route selector when a caller needs to force `legacy_sql_pipeline`, `precomputed_dataset`, or `direct_memory_analysis`. |
-| `merge_multiple_inputs` | Whether multiple local inputs should be analyzed as one combined request. |
 
 The CLI should not execute business logic directly. It should only build this normalized shape and pass it forward.
+
+The downstream Phase 3 skill uses a second request type, `RdbAnalysisRequest`, for route-oriented execution details such as:
+
+- `path_mode`
+- `merge_multiple_inputs`
+- typed `inputs` such as local RDB, precomputed data, or remote Redis
+
+That split is intentional:
+
+- `NormalizedRequest` belongs to the application boundary shared by CLI, GUI, and API surfaces
+- `RdbAnalysisRequest` belongs to the Redis RDB analysis domain
 
 ## 2. Route Resolution
 
@@ -38,10 +47,11 @@ The mapping back to the phase labels is:
 
 Route selection follows the normalized request:
 
-1. If a caller already set `path_mode`, that route wins.
-2. If the request contains precomputed inputs, the resolver chooses `precomputed_dataset`.
-3. If the prompt includes an SQL-style hint, the resolver chooses `legacy_sql_pipeline`.
-4. Otherwise, the request falls through to `direct_memory_analysis`.
+1. The application layer first converts the CLI-oriented `NormalizedRequest` into a Phase 3 `RdbAnalysisRequest`.
+2. If a caller already set `path_mode`, that route wins.
+3. If the request contains precomputed inputs, the resolver chooses `precomputed_dataset`.
+4. If the prompt includes an SQL-style hint, the resolver chooses `legacy_sql_pipeline`.
+5. Otherwise, the request falls through to `direct_memory_analysis`.
 
 That ordering keeps the route selection deterministic while still letting the prompt express intent.
 
@@ -83,6 +93,8 @@ The safe sequence is:
 
 This keeps the remote path read-only until a human explicitly approves acquisition.
 
+Today this remote confirmation branch exists at the Phase 3 service-contract level. The current public `ask` CLI is still a thin local-debug shell and does not yet expose a first-class remote input mode.
+
 ## 6. Exact Example Flow
 
 For the request:
@@ -97,15 +109,15 @@ the flow is:
 2. Prompt parsing extracts `rcs` as the profile intent and records the docx/report intent plus the destination path.
 3. Explicit CLI parameters, if present, override any conflicting prompt-derived values.
 4. The CLI builds the normalized request and passes it to the application layer.
-5. The application layer treats the request as an RDB analysis job and calls `analyze_rdb`.
-6. `analyze_rdb` resolves the route from the normalized request:
+5. The application layer treats the request as a local RDB analysis job because the current CLI supplies local file inputs through `--input`.
+6. `analyze_rdb_tool` converts those paths into a Phase 3 `RdbAnalysisRequest` with `LOCAL_RDB` inputs.
+7. `analyze_rdb` resolves the route from that Phase 3 request:
    - local RDB input with no SQL-style hint falls through to `direct_memory_analysis`
-   - precomputed input chooses `precomputed_dataset`
    - SQL-style hints choose `legacy_sql_pipeline`
-7. `profile_resolver` loads `rcs` and merges any prompt overrides into the profile defaults.
-8. The collector produces a normalized dataset from the chosen input path.
-9. The analyzer and report assembler produce the `AnalysisReport`.
-10. `generate_analysis_report` renders the final artifact.
-11. The artifact is written to `/tmp/rcs.docx` when the request asks for a file-backed report, or emitted as summary output when the request selects summary mode.
+8. `profile_resolver` loads `rcs` and merges any prompt overrides into the profile defaults.
+9. The collector produces a normalized dataset from the chosen input path.
+10. The analyzer and report assembler produce the `AnalysisReport`.
+11. `generate_analysis_report` renders the final artifact.
+12. The artifact is written to `/tmp/rcs.docx` when the request asks for a file-backed docx report, or emitted as summary output when the request selects summary mode.
 
 That sequence is the core Phase 3 architecture: prompt first, normalized request second, route/profile resolution third, report rendering last.

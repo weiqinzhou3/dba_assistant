@@ -49,14 +49,14 @@ Implement the full pipeline for RDB memory analysis, supporting multiple input p
 
 ## Output Modes
 
-The prompt-first surface uses report-oriented terminology, but the rendered artifact still depends on the selected output mode and format.
+The prompt-first surface uses report-oriented terminology, but the currently wired CLI surface is narrower than the full Phase 3 route design.
 
 | User-facing intent | Normalized mode | Result |
 |--------------------|-----------------|--------|
-| `summary` | `--output=summary` | Stdout summary with risk items, Top Key list, and remediation recommendations. |
-| `report` + `docx` | `--output=report --format=docx` | Full Word report. |
-| `report` + `pdf` | `--output=report --format=pdf` | Full PDF report. |
-| `report` + `html` | `--output=report --format=html` | Full HTML report. |
+| `summary` | prompt says `summary`, or `--report-format summary` | Stdout summary with risk items, Top Key list, and remediation recommendations. |
+| `report` + `docx` | prompt says `docx`, or `--report-format docx` | Full Word report. |
+| `report` + `pdf` | future extension | Reserved for later Phase 3 extension work. |
+| `report` + `html` | future extension | Reserved for later Phase 3 extension work. |
 
 ## Acceptance Criteria
 
@@ -68,6 +68,7 @@ The prompt-first surface uses report-oriented terminology, but the rendered arti
 - `dba-assistant ask "<prompt>"` is the primary user entry point.
 - The retained CLI flags are `--config`, `--input`, `--profile`, `--report-format`, and `--output`.
 - CLI input is normalized before application execution, so prompt-derived intent and explicit overrides converge into one request model.
+- The current CLI debug shell routes local file inputs through Phase 3. `precomputed_dataset` and remote confirmation flows remain part of the Phase 3 service contract but are not yet first-class CLI modes.
 - `dba_assistant.tools.analyze_rdb.analyze_rdb_tool` remains the public local-RDB analysis entry point.
 - `dba_assistant.tools.generate_analysis_report.generate_analysis_report` remains the public generic report renderer export.
 

@@ -22,10 +22,10 @@ The following flags stay on the public surface because they are useful for local
 | Flag | Meaning | Notes |
 |------|---------|-------|
 | `--config` | Load an explicit repository config file. | Use this when you want to override the default runtime configuration, including provider and default output behavior. |
-| `--input` | Provide one or more local input paths. | Repeatable. Each path becomes part of the normalized request and can point to an RDB file or to precomputed analysis data. |
+| `--input` | Provide one or more local input paths. | Repeatable. In the current CLI, each path is treated as a local analysis source. |
 | `--profile` | Force the analysis profile. | Typical values are `generic` and `rcs`. This overrides any profile implied by the prompt. |
-| `--report-format` | Force the rendered output format. | This is the explicit rendering choice, such as `summary`, `docx`, `pdf`, or `html`. |
-| `--output` | Force the output target. | Use this for an explicit file path or summary destination. It overrides any output path mentioned in the prompt. |
+| `--report-format` | Force the rendered output format. | The current CLI supports `summary` and `docx`. This overrides any output-format intent implied by the prompt. |
+| `--output` | Force the output target. | Use this for an explicit file path. It overrides any output path mentioned in the prompt. |
 
 ## Precedence
 
@@ -84,21 +84,21 @@ What this means:
 
 ### Precomputed Input
 
-Use `--input` with precomputed analysis data when the RDB parsing step has already been done.
+Phase 3 has a `precomputed_dataset` route, but the current `ask` CLI does not yet expose a separate input-kind flag for it.
 
 ```sh
-dba-assistant ask "Use the precomputed dataset and generate the report" --input ./precomputed/analysis.json
+dba-assistant ask "Use the precomputed dataset and generate the report"
 ```
 
 What this means:
 
-- the request is still prompt-first
-- the caller is telling Phase 3 that the input is already normalized data
-- the route resolver can choose the precomputed dataset path instead of parsing raw RDB bytes again
+- the Phase 3 architecture reserves a `precomputed_dataset` route for already-exported analysis data
+- the current CLI debug shell does not yet wire `--input` into that route
+- today this path is exercised by lower-level service and tool callers rather than by the public `ask` surface
 
 ### Remote Redis Confirmation Flow
 
-Remote Redis requests are intentionally not fire-and-forget. If the prompt refers to the latest RDB on a remote Redis instance, the flow pauses before acquisition.
+Remote Redis requests are intentionally not fire-and-forget. Phase 3 defines a confirmation-gated remote flow, but the current prompt-first CLI does not yet expose a direct remote-input flag.
 
 ```sh
 dba-assistant ask "Analyze the latest RDB from redis.example:6379 and confirm before fetching"
@@ -106,10 +106,9 @@ dba-assistant ask "Analyze the latest RDB from redis.example:6379 and confirm be
 
 Expected behavior:
 
-- the prompt identifies a remote Redis target
-- the analysis layer performs read-only discovery first
-- if a real RDB acquisition is needed, the request returns a confirmation-required result
+- the Phase 3 service contract supports remote discovery before any acquisition happens
+- if a real RDB acquisition is needed, the service returns a confirmation-required result
 - only after explicit confirmation does the flow proceed to fetch and analyze the RDB
+- the current CLI does not yet drive this branch directly; it is documented here so the service contract and future GUI/API behavior are explicit
 
 This confirmation gate is part of the public Phase 3 contract. It protects remote data acquisition from happening automatically just because a user asked a question in natural language.
-

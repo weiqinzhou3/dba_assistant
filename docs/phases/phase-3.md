@@ -16,6 +16,8 @@ Implement the full pipeline for RDB memory analysis, supporting multiple input p
 | `3b` | `precomputed_dataset` | Analysis data already exists in MySQL or another precomputed form, so the report can be generated without re-parsing the RDB. | Deliver after `3a` |
 | `3c` | `direct_memory_analysis` | No external tool or database dependency: parse the RDB directly and analyze it in memory. | Deliver after `3a` |
 
+The table above defines the intended semantics of each formal route name. In the current local debug wiring, `legacy_sql_pipeline` still falls back to the default direct-parser collector unless a dedicated path-A collector is injected.
+
 ## Implementation Breakdown
 
 ### Phase 3a: `legacy_sql_pipeline`

@@ -45,7 +45,7 @@ The mapping back to the phase labels is:
 | `3b` | `precomputed_dataset` | Already-normalized analysis data is rendered directly into a report. |
 | `3c` | `direct_memory_analysis` | Local RDB parsing and in-memory analysis without the SQL staging path. |
 
-Route selection follows the normalized request:
+At the Phase 3 domain level, route selection follows the `RdbAnalysisRequest`:
 
 1. The application layer first converts the CLI-oriented `NormalizedRequest` into a Phase 3 `RdbAnalysisRequest`.
 2. If a caller already set `path_mode`, that route wins.
@@ -54,6 +54,12 @@ Route selection follows the normalized request:
 5. Otherwise, the request falls through to `direct_memory_analysis`.
 
 That ordering keeps the route selection deterministic while still letting the prompt express intent.
+
+Current CLI note:
+
+- the current `ask` command does not expose a first-class route override flag
+- the current CLI wiring forwards prompt, local input paths, profile name, and profile overrides into `analyze_rdb_tool`
+- that means route choice currently comes from the prompt hints and the downstream request construction, not from a public CLI `path_mode` option
 
 ## 3. Profile Resolution
 
@@ -83,7 +89,7 @@ The renderer is intentionally generic. Phase 3 should not have a separate report
 
 Remote Redis is special because the request may need to inspect a live host before it can acquire an RDB file.
 
-The safe sequence is:
+The service-contract sequence is:
 
 1. The request identifies a remote Redis input.
 2. The analysis layer performs read-only discovery, such as calling persistence metadata plus `dir` and `dbfilename` lookups to determine the expected RDB path.
@@ -121,3 +127,5 @@ the flow is:
 12. The artifact is written to `/tmp/rcs.docx` when the request asks for a file-backed docx report, or emitted as summary output when the request selects summary mode.
 
 That sequence is the core Phase 3 architecture: prompt first, normalized request second, route/profile resolution third, report rendering last.
+
+One important implementation detail: the formal route names describe the intended pipeline semantics. In the current local-debug wiring, `legacy_sql_pipeline` still reuses the default direct-parser collector unless a dedicated path-A collector is injected. The route name is already stable; the specialized collector stack can still evolve behind it.

@@ -70,7 +70,7 @@ What this means:
 
 ### Local RDB Input
 
-Use `--input` for local RDB files, fixtures, or local directories that the CLI should analyze.
+Use `--input` for local RDB files or local fixture paths that the CLI should analyze.
 
 ```sh
 dba-assistant ask "Analyze the local RDB and focus on TTL distribution" --input ./fixtures/dump.rdb

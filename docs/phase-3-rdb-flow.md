@@ -101,7 +101,7 @@ The service-contract sequence is:
 
 This keeps the remote path read-only until a human explicitly approves acquisition.
 
-Today this remote confirmation branch exists at the Phase 3 service-contract level. The current public `ask` CLI is still a thin local-debug shell and does not yet expose a first-class remote input mode.
+Today this remote confirmation branch exists at the Phase 3 service-contract level. The current public `ask` CLI is still a thin local-debug shell and does not yet expose a first-class remote input mode. Remote-RDB prompt shapes are rejected at the application boundary instead of being silently rerouted into Phase 2.
 
 ## 6. Exact Example Flow
 
@@ -126,7 +126,7 @@ the flow is:
 9. The collector produces a normalized dataset from the chosen input path.
 10. The analyzer and report assembler produce the `AnalysisReport`.
 11. `generate_analysis_report` renders the final artifact.
-12. The artifact is written to `/tmp/rcs.docx` when the request asks for a file-backed docx report, or emitted as summary output when the request selects summary mode.
+12. The artifact is written to `/tmp/rcs.docx` when the request asks for a file-backed docx report. If the request selects `docx`, the output destination must be present either in the prompt or via `--output`.
 
 That sequence is the core Phase 3 architecture: prompt first, normalized request second, route/profile resolution third, report rendering last.
 

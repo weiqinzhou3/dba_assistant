@@ -12,6 +12,7 @@ def analyze_rdb_tool(
     input_paths: list[Path],
     *,
     profile_name: str = "generic",
+    path_mode: str = "auto",
     profile_overrides: dict[str, object] | None = None,
     service: Callable[[RdbAnalysisRequest], object] | None = None,
 ):
@@ -19,6 +20,7 @@ def analyze_rdb_tool(
         prompt=prompt,
         inputs=[SampleInput(source=path, kind=InputSourceKind.LOCAL_RDB) for path in input_paths],
         profile_name=profile_name,
+        path_mode=path_mode,
         profile_overrides=dict(profile_overrides or {}),
     )
     runner = service or _run_phase3_analysis

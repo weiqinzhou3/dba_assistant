@@ -53,6 +53,26 @@ def test_analyze_rdb_tool_handles_explicit_mysql_local_prompt(monkeypatch, tmp_p
     assert any(section.id == "top_big_keys" for section in result.sections)
 
 
+def test_analyze_rdb_tool_passes_explicit_path_mode_to_request(tmp_path: Path) -> None:
+    source = tmp_path / "dump.rdb"
+    source.write_text("fixture", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def fake_service(request):
+        captured["request"] = request
+        return "ok"
+
+    result = analyze_rdb_tool(
+        prompt="analyze this rdb",
+        input_paths=[source],
+        path_mode="legacy_sql_pipeline",
+        service=fake_service,
+    )
+
+    assert result == "ok"
+    assert captured["request"].path_mode == "legacy_sql_pipeline"
+
+
 def test_tools_package_exports_phase3_entry_points() -> None:
     assert tools.analyze_rdb_tool is analyze_rdb_tool
     assert tools.generate_analysis_report is generate_analysis_report

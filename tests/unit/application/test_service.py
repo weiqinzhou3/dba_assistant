@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from dba_assistant.application.request_models import NormalizedRequest, RdbOverrides, RuntimeInputs, Secrets
 from dba_assistant.core.reporter.report_model import AnalysisReport, ReportSectionModel, TextBlock
 from dba_assistant.application.service import execute_request
@@ -83,12 +85,14 @@ def test_execute_request_runs_phase3_tool_and_renders_summary(monkeypatch) -> No
         input_paths,
         *,
         profile_name="generic",
+        path_mode="auto",
         profile_overrides=None,
         service=None,
     ):
         captured["prompt"] = prompt
         captured["input_paths"] = input_paths
         captured["profile_name"] = profile_name
+        captured["path_mode"] = path_mode
         captured["profile_overrides"] = profile_overrides
         captured["service"] = service
         return analysis_report
@@ -112,6 +116,7 @@ def test_execute_request_runs_phase3_tool_and_renders_summary(monkeypatch) -> No
     assert captured["prompt"] == "analyze this rdb with the rcs profile"
     assert captured["input_paths"] == [Path("/tmp/dump.rdb")]
     assert captured["profile_name"] == "rcs"
+    assert captured["path_mode"] == "auto"
     assert captured["profile_overrides"] == {
         "focus_prefixes": ("loan:*",),
         "top_n": {"top_big_keys": 5},
@@ -163,12 +168,14 @@ def test_execute_request_runs_phase3_tool_and_returns_output_path_for_docx(monke
         input_paths,
         *,
         profile_name="generic",
+        path_mode="auto",
         profile_overrides=None,
         service=None,
     ):
         captured["prompt"] = prompt
         captured["input_paths"] = input_paths
         captured["profile_name"] = profile_name
+        captured["path_mode"] = path_mode
         captured["profile_overrides"] = profile_overrides
         captured["service"] = service
         return analysis_report
@@ -192,6 +199,7 @@ def test_execute_request_runs_phase3_tool_and_returns_output_path_for_docx(monke
     assert captured["prompt"] == "analyze this rdb with the rcs profile"
     assert captured["input_paths"] == [Path("/tmp/dump.rdb")]
     assert captured["profile_name"] == "rcs"
+    assert captured["path_mode"] == "auto"
     assert captured["profile_overrides"] == {
         "focus_prefixes": ("loan:*",),
         "top_n": {"top_big_keys": 5},
@@ -201,3 +209,131 @@ def test_execute_request_runs_phase3_tool_and_returns_output_path_for_docx(monke
     assert captured["report_config"].mode is OutputMode.REPORT
     assert captured["report_config"].output_path == output_path
     assert captured["report_config"].template_name == "rdb-analysis"
+
+
+def test_execute_request_passes_route_name_to_phase3_tool(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    analysis_report = AnalysisReport(
+        title="Redis RDB Analysis",
+        sections=[ReportSectionModel(id="summary", title="Summary", blocks=[TextBlock(text="ok")])],
+    )
+
+    config = AppConfig(
+        model=ModelConfig(
+            preset_name="ollama_local",
+            provider_kind=ProviderKind.OPENAI_COMPATIBLE,
+            model_name="qwen3:8b",
+            base_url="http://127.0.0.1:11434/v1",
+            api_key="ollama",
+        ),
+        runtime=RuntimeConfig(default_output_mode="summary", redis_socket_timeout=6.0),
+    )
+
+    request = NormalizedRequest(
+        raw_prompt="analyze this rdb via mysql",
+        prompt="analyze this rdb via mysql",
+        runtime_inputs=RuntimeInputs(
+            output_mode="summary",
+            input_paths=(Path("/tmp/dump.rdb"),),
+        ),
+        secrets=Secrets(),
+        rdb_overrides=RdbOverrides(
+            profile_name="generic",
+            route_name="legacy_sql_pipeline",
+        ),
+    )
+
+    def fake_analyze_rdb_tool(
+        prompt,
+        input_paths,
+        *,
+        profile_name="generic",
+        path_mode="auto",
+        profile_overrides=None,
+        service=None,
+    ):
+        captured["path_mode"] = path_mode
+        return analysis_report
+
+    def fake_generate_analysis_report(report, report_config):
+        return ReportArtifact(
+            format=ReportFormat.SUMMARY,
+            output_path=None,
+            content="Redis RDB Analysis\n\nSummary\nok",
+        )
+
+    monkeypatch.setattr("dba_assistant.application.service.analyze_rdb_tool", fake_analyze_rdb_tool)
+    monkeypatch.setattr(
+        "dba_assistant.application.service.generate_analysis_report",
+        fake_generate_analysis_report,
+    )
+
+    assert execute_request(request, config=config) == "Redis RDB Analysis\n\nSummary\nok"
+    assert captured["path_mode"] == "legacy_sql_pipeline"
+
+
+def test_execute_request_rejects_remote_rdb_prompt_in_phase2_boundary(monkeypatch) -> None:
+    config = AppConfig(
+        model=ModelConfig(
+            preset_name="ollama_local",
+            provider_kind=ProviderKind.OPENAI_COMPATIBLE,
+            model_name="qwen3:8b",
+            base_url="http://127.0.0.1:11434/v1",
+            api_key="ollama",
+        ),
+        runtime=RuntimeConfig(default_output_mode="summary", redis_socket_timeout=6.0),
+    )
+
+    request = NormalizedRequest(
+        raw_prompt="Analyze the latest RDB from redis.example:6379 and confirm before fetching",
+        prompt="Analyze the latest RDB from redis.example:6379 and confirm before fetching",
+        runtime_inputs=RuntimeInputs(redis_host="redis.example", redis_port=6379, output_mode="summary"),
+        secrets=Secrets(),
+    )
+
+    monkeypatch.setattr(
+        "dba_assistant.application.service.run_phase2_request",
+        lambda *args, **kwargs: pytest.fail("remote RDB prompts must not fall through to Phase 2"),
+    )
+
+    with pytest.raises(ValueError, match="Remote RDB acquisition"):
+        execute_request(request, config=config)
+
+
+def test_execute_request_requires_output_path_for_docx(monkeypatch) -> None:
+    analysis_report = AnalysisReport(
+        title="Redis RDB Analysis",
+        sections=[ReportSectionModel(id="summary", title="Summary", blocks=[TextBlock(text="ok")])],
+    )
+
+    config = AppConfig(
+        model=ModelConfig(
+            preset_name="ollama_local",
+            provider_kind=ProviderKind.OPENAI_COMPATIBLE,
+            model_name="qwen3:8b",
+            base_url="http://127.0.0.1:11434/v1",
+            api_key="ollama",
+        ),
+        runtime=RuntimeConfig(default_output_mode="summary", redis_socket_timeout=6.0),
+    )
+
+    request = NormalizedRequest(
+        raw_prompt="analyze this rdb and output docx",
+        prompt="analyze this rdb and output docx",
+        runtime_inputs=RuntimeInputs(
+            output_mode="report",
+            report_format="docx",
+            input_paths=(Path("/tmp/dump.rdb"),),
+        ),
+        secrets=Secrets(),
+        rdb_overrides=RdbOverrides(profile_name="generic"),
+    )
+
+    monkeypatch.setattr("dba_assistant.application.service.analyze_rdb_tool", lambda *args, **kwargs: analysis_report)
+    monkeypatch.setattr(
+        "dba_assistant.application.service.generate_analysis_report",
+        lambda *args, **kwargs: pytest.fail("docx rendering should not start without an output path"),
+    )
+
+    with pytest.raises(ValueError, match="requires an output path"):
+        execute_request(request, config=config)

@@ -56,7 +56,7 @@ The prompt-first surface uses report-oriented terminology, but the currently wir
 | User-facing intent | Normalized mode | Result |
 |--------------------|-----------------|--------|
 | `summary` | prompt says `summary`, or `--report-format summary` | Rendered summary text from the assembled `AnalysisReport`, printed to stdout by default and also written to `--output` when a file target is provided. |
-| `report` + `docx` | prompt says `docx`, or `--report-format docx` | Full Word report. |
+| `report` + `docx` | prompt says `docx`, or `--report-format docx` | Full Word report. A destination path is required in the prompt or via `--output`. |
 | `report` + `pdf` | future extension | Reserved for later Phase 3 extension work. |
 | `report` + `html` | future extension | Reserved for later Phase 3 extension work. |
 
@@ -70,7 +70,7 @@ The prompt-first surface uses report-oriented terminology, but the currently wir
 - `dba-assistant ask "<prompt>"` is the primary user entry point.
 - The retained CLI flags are `--config`, `--input`, `--profile`, `--report-format`, and `--output`.
 - CLI input is normalized before application execution, so prompt-derived intent and explicit overrides converge into one request model.
-- The current CLI debug shell routes local file inputs through Phase 3. `precomputed_dataset` and remote confirmation flows remain part of the Phase 3 service contract but are not yet first-class CLI modes.
+- The current CLI debug shell routes local file inputs through Phase 3. `precomputed_dataset` and remote confirmation flows remain part of the Phase 3 service contract but are not yet first-class CLI modes; remote-RDB prompt shapes are rejected rather than silently falling through to Phase 2.
 - `dba_assistant.tools.analyze_rdb.analyze_rdb_tool` remains the public local-RDB analysis entry point.
 - `dba_assistant.tools.generate_analysis_report.generate_analysis_report` remains the public generic report renderer export.
 

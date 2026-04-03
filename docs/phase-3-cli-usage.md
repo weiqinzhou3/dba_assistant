@@ -24,8 +24,8 @@ The following flags stay on the public surface because they are useful for local
 | `--config` | Load an explicit repository config file. | Use this when you want to override the default runtime configuration, including provider and default output behavior. |
 | `--input` | Provide one or more local input paths. | Repeatable. In the current CLI, each path is treated as a local analysis source. |
 | `--profile` | Force the analysis profile. | Typical values are `generic` and `rcs`. This overrides any profile implied by the prompt. |
-| `--report-format` | Force the rendered output format. | The current CLI supports `summary` and `docx`. This overrides any output-format intent implied by the prompt. |
-| `--output` | Force the output target. | Use this for an explicit file path. It overrides any output path mentioned in the prompt. |
+| `--report-format` | Force the rendered output format. | The current CLI supports `summary` and `docx`. `docx` requires an output destination, either in the prompt or via `--output`. |
+| `--output` | Force the output target. | Use this for an explicit file path. It overrides any output path mentioned in the prompt and is required when the effective format is `docx`. |
 
 ## Precedence
 
@@ -109,6 +109,6 @@ Expected behavior:
 - the Phase 3 service contract supports remote discovery before any acquisition happens
 - if a real RDB acquisition is needed, the service returns a confirmation-required result
 - only after explicit confirmation does the flow proceed to fetch and analyze the RDB
-- the current CLI does not yet drive this branch directly; it is documented here so the service contract and future GUI/API behavior are explicit
+- the current CLI does not yet drive this branch directly; at the moment it rejects this prompt shape instead of silently falling through to Phase 2
 
 This confirmation gate is part of the public Phase 3 contract. It protects remote data acquisition from happening automatically just because a user asked a question in natural language.

@@ -58,13 +58,17 @@ _REPORT_OUTPUT_PATTERN = re.compile(
 )
 _REPORT_DESTINATION_PATTERN = re.compile(
     r"(?is)^\s*[\s,，、]*"
-    r"(?:to|到|输出到|导出到|write\s+to|output\s+to|save\s+to|保存到|保存至)\s*(?P<path>.+?)\s*$"
+    r"(?:to|到|输出到|导出到|write\s+to|output\s+to|save\s+to|保存到|保存至)\s*(?P<path>.+?)"
+    r"(?=\s*(?:and|but|then|also|plus|email|send|and\s+email|and\s+send|并且|并|然后|再|同时|此外|另外|但|但是|不过|然而|可是|而是|却)\b|[。!?，,;；]|$)"
 )
 _MYSQL_ROUTE_HINT_PATTERN = re.compile(
     r"(?i)mysql\s*(?:路径|路由|路线|route|path|pipeline)|(?:路径|路由|路线|route|path|pipeline)\s*mysql"
 )
 _NEGATION_PREFIX_PATTERN = re.compile(
     r"(?i)(?:不要|别|勿|禁止|禁用|\bdo\s+not\b|\bdon't\b|\bnever\b|\bnot\b)"
+)
+_CLAUSE_BREAK_PATTERN = re.compile(
+    r"(?i)[,，。;；!?]|(?:\bbut\b|\bhowever\b|\bthough\b|\balthough\b|\binstead\b|\byet\b|\bexcept\b)|(?:但是|但|不过|然而|可是|而是|却|只是)"
 )
 _WHITESPACE_PATTERN = re.compile(r"\s+")
 _MAX_TOP_N = 100
@@ -179,20 +183,25 @@ def _extract_report_output_intent(
     prompt: str,
     default_output_mode: str,
 ) -> tuple[str, str | None, Path | None]:
-    format_match = _REPORT_OUTPUT_PATTERN.search(prompt)
-    output_token = format_match.group("format").lower() if format_match else None
+    output_mode = default_output_mode
+    report_format = None
+    output_path = None
 
-    if output_token in {"docx", "pdf", "html"}:
-        output_mode = "report"
-        report_format = output_token
-    elif output_token == "summary":
-        output_mode = "summary"
-        report_format = None
-    else:
-        output_mode = default_output_mode
-        report_format = None
+    for match in _REPORT_OUTPUT_PATTERN.finditer(prompt):
+        if _has_negation_prefix(prompt, match.start()):
+            continue
 
-    output_path = _extract_report_output_path(prompt)
+        output_token = match.group("format").lower()
+        if output_token in {"docx", "pdf", "html"}:
+            output_mode = "report"
+            report_format = output_token
+        elif output_token == "summary":
+            output_mode = "summary"
+            report_format = None
+
+        path = _extract_report_output_path(prompt, match.end())
+        if path is not None:
+            output_path = path
 
     return output_mode, report_format, output_path
 
@@ -227,20 +236,27 @@ def _clean_output_path(value: str) -> str:
 
 
 def _has_negation_prefix(prompt: str, match_start: int) -> bool:
-    prefix = prompt[max(0, match_start - 120) : match_start]
+    segment = _current_clause_segment(prompt, match_start)
     overlap = prompt[max(0, match_start - 1) : min(len(prompt), match_start + 1)]
     return (
-        _NEGATION_PREFIX_PATTERN.search(prefix) is not None
+        _NEGATION_PREFIX_PATTERN.search(segment) is not None
         or _NEGATION_PREFIX_PATTERN.search(overlap) is not None
     )
 
 
-def _extract_report_output_path(prompt: str) -> Path | None:
-    output_match = _REPORT_OUTPUT_PATTERN.search(prompt)
-    if output_match is None:
-        return None
+def _current_clause_segment(prompt: str, match_start: int) -> str:
+    prefix = prompt[:match_start]
+    last_break = None
+    for break_match in _CLAUSE_BREAK_PATTERN.finditer(prefix):
+        last_break = break_match.end()
 
-    tail = prompt[output_match.end() :]
+    if last_break is None:
+        return prefix
+    return prefix[last_break:]
+
+
+def _extract_report_output_path(prompt: str, start: int) -> Path | None:
+    tail = prompt[start:]
     destination_match = _REPORT_DESTINATION_PATTERN.match(tail)
     if destination_match is None:
         return None

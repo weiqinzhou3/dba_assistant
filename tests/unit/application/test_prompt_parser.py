@@ -147,6 +147,15 @@ def test_normalize_raw_request_ignores_long_distance_negated_profile_phrases() -
     assert request.rdb_overrides.profile_name is None
 
 
+def test_normalize_raw_request_honors_later_profile_correction() -> None:
+    request = normalize_raw_request(
+        "do not use the generic profile, but use the rcs profile",
+        default_output_mode="summary",
+    )
+
+    assert request.rdb_overrides.profile_name == "rcs"
+
+
 def test_normalize_raw_request_ignores_profile_false_positives() -> None:
     for prompt in (
         "analyze the nongeneric profile for this RDB",
@@ -229,6 +238,26 @@ def test_normalize_raw_request_extracts_docx_report_request() -> None:
     assert request.runtime_inputs.output_path == Path("/tmp/rcs.docx")
 
 
+def test_normalize_raw_request_does_not_enable_report_mode_for_negated_output_request() -> None:
+    request = normalize_raw_request(
+        "do not output docx",
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.output_mode == "summary"
+    assert request.runtime_inputs.report_format is None
+
+
+def test_normalize_raw_request_honors_later_output_correction() -> None:
+    request = normalize_raw_request(
+        "output summary, actually output docx",
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.output_mode == "report"
+    assert request.runtime_inputs.report_format == "docx"
+
+
 def test_normalize_raw_request_does_not_treat_connection_path_as_output_destination() -> None:
     request = normalize_raw_request(
         "连接到 /tmp/redis.sock 并输出 summary",
@@ -285,6 +314,15 @@ def test_normalize_raw_request_extracts_quoted_output_path() -> None:
     assert request.runtime_inputs.output_path == Path("report final.docx")
 
 
+def test_normalize_raw_request_extracts_output_path_from_trailing_instruction_text() -> None:
+    request = normalize_raw_request(
+        "output docx to /tmp/a.docx and email it",
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.output_path == Path("/tmp/a.docx")
+
+
 def test_normalize_raw_request_extracts_mysql_routing_hint() -> None:
     request = normalize_raw_request(
         "按 generic profile 分析这个 rdb，使用 mysql 路径并输出 summary",
@@ -323,3 +361,12 @@ def test_normalize_raw_request_ignores_long_distance_negated_mysql_route_phrases
     )
 
     assert request.rdb_overrides.route_name is None
+
+
+def test_normalize_raw_request_honors_later_mysql_route_correction() -> None:
+    request = normalize_raw_request(
+        "do not use the mysql route, but use the mysql route now",
+        default_output_mode="summary",
+    )
+
+    assert request.rdb_overrides.route_name == "legacy_sql_pipeline"

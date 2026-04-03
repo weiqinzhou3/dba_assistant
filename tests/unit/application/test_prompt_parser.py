@@ -128,6 +128,16 @@ def test_normalize_raw_request_extracts_profile_from_explicit_with_form() -> Non
     assert request.rdb_overrides.profile_name == "generic"
 
 
+def test_normalize_raw_request_ignores_negated_profile_phrases() -> None:
+    for prompt in (
+        "请不要按 generic profile 分析这个rdb",
+        "不要用 generic profile 分析这个rdb",
+        "禁用 generic profile",
+    ):
+        request = normalize_raw_request(prompt, default_output_mode="summary")
+        assert request.rdb_overrides.profile_name is None
+
+
 def test_normalize_raw_request_ignores_profile_false_positives() -> None:
     for prompt in (
         "analyze the nongeneric profile for this RDB",
@@ -263,6 +273,8 @@ def test_normalize_raw_request_ignores_negated_mysql_route_phrases() -> None:
         "不要 mysql route",
         "do not use mysql route",
         "不要走 mysql 路径",
+        "do not use the mysql route",
+        "don't use the mysql route",
     ):
         request = normalize_raw_request(prompt, default_output_mode="summary")
         assert request.rdb_overrides.route_name is None

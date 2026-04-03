@@ -62,8 +62,8 @@ _REPORT_PATH_PATTERN = re.compile(
 _MYSQL_ROUTE_HINT_PATTERN = re.compile(
     r"(?i)mysql\s*(?:路径|路由|路线|route|path|pipeline)|(?:路径|路由|路线|route|path|pipeline)\s*mysql"
 )
-_NEGATED_MYSQL_ROUTE_PATTERN = re.compile(
-    r"(?i)(?:不要|别|勿|禁止|do\s+not|don't|never|not)\s*(?:走|用|使用|use)?\s*(?:mysql\s*(?:路径|路由|路线|route|path|pipeline)|(?:路径|路由|路线|route|path|pipeline)\s*mysql)"
+_NEGATION_PREFIX_PATTERN = re.compile(
+    r"(?i)(?:不要|别|勿|禁止|禁用|\bdo\s+not\b|\bdon't\b|\bnever\b|\bnot\b)"
 )
 _WHITESPACE_PATTERN = re.compile(r"\s+")
 _MAX_TOP_N = 100
@@ -129,9 +129,13 @@ def _extract_profile_name(prompt: str) -> str | None:
 
     for pattern in (_WITH_PROFILE_PATTERN, _USE_PROFILE_PATTERN, _BY_PROFILE_PATTERN):
         for match in pattern.finditer(prompt):
+            if _has_negation_prefix(prompt, match.start()):
+                continue
             matches.append((match.start(), match.group("profile").lower()))
 
     for match in _CHINESE_GENERIC_PROFILE_PATTERN.finditer(prompt):
+        if _has_negation_prefix(prompt, match.start()):
+            continue
         matches.append((match.start(), "generic"))
 
     if not matches:
@@ -196,9 +200,9 @@ def _extract_report_output_intent(
 
 
 def _extract_route_name(prompt: str) -> str | None:
-    if _NEGATED_MYSQL_ROUTE_PATTERN.search(prompt):
-        return None
-    if _MYSQL_ROUTE_HINT_PATTERN.search(prompt):
+    for match in _MYSQL_ROUTE_HINT_PATTERN.finditer(prompt):
+        if _has_negation_prefix(prompt, match.start()):
+            continue
         return "legacy_sql_pipeline"
     return None
 
@@ -222,3 +226,12 @@ def _clean_secret(value: str) -> str:
 
 def _clean_output_path(value: str) -> str:
     return value.strip().rstrip("，。,.；;:：")
+
+
+def _has_negation_prefix(prompt: str, match_start: int) -> bool:
+    prefix = prompt[max(0, match_start - 24) : match_start]
+    overlap = prompt[max(0, match_start - 1) : min(len(prompt), match_start + 1)]
+    return (
+        _NEGATION_PREFIX_PATTERN.search(prefix) is not None
+        or _NEGATION_PREFIX_PATTERN.search(overlap) is not None
+    )

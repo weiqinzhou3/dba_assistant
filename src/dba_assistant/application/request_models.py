@@ -10,6 +10,8 @@ class RuntimeInputs:
     redis_port: int = 6379
     redis_db: int = 0
     output_mode: str = "summary"
+    report_format: str | None = None
+    output_path: Path | None = None
     input_paths: tuple[Path, ...] = field(default_factory=tuple)
 
 
@@ -21,6 +23,7 @@ class Secrets:
 @dataclass(frozen=True)
 class RdbOverrides:
     profile_name: str | None = None
+    route_name: str | None = None
     focus_prefixes: tuple[str, ...] = ()
     top_n: dict[str, int] = field(default_factory=dict)
 

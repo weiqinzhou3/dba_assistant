@@ -196,3 +196,24 @@ def test_normalize_raw_request_ignores_out_of_range_top_n_overrides() -> None:
     )
 
     assert request.rdb_overrides.top_n == {}
+
+
+def test_normalize_raw_request_extracts_docx_report_request() -> None:
+    request = normalize_raw_request(
+        "按 rcs profile 分析这个 rdb，输出 docx，到 /tmp/rcs.docx",
+        default_output_mode="summary",
+    )
+
+    assert request.rdb_overrides.profile_name == "rcs"
+    assert request.runtime_inputs.output_mode == "report"
+    assert request.runtime_inputs.report_format == "docx"
+    assert request.runtime_inputs.output_path == Path("/tmp/rcs.docx")
+
+
+def test_normalize_raw_request_extracts_mysql_routing_hint() -> None:
+    request = normalize_raw_request(
+        "按 generic profile 分析这个 rdb，使用 mysql 路径并输出 summary",
+        default_output_mode="summary",
+    )
+
+    assert request.rdb_overrides.route_name == "legacy_sql_pipeline"

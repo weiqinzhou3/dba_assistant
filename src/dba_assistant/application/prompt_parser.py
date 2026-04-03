@@ -37,10 +37,10 @@ _USE_PROFILE_PATTERN = re.compile(
     r"(?i)\b(?:use|using|choose|select)\s+(?:the\s+)?(?P<profile>generic|rcs)\s+profile(?![a-z0-9_])"
 )
 _BY_PROFILE_PATTERN = re.compile(
-    r"(?i)(?:(?<=按)|(?<=用))(?P<profile>generic|rcs)\s+profile(?![a-z0-9_])"
+    r"(?i)(?:按|用)\s*(?P<profile>generic|rcs)\s+profile(?![a-z0-9_])"
 )
 _CHINESE_GENERIC_PROFILE_PATTERN = re.compile(
-    r"(?i)(?:(?<=按)|(?<=用))(?P<profile_cn>通用)\s*profile(?![a-z0-9_])"
+    r"(?i)(?:按|用)\s*(?P<profile_cn>通用)\s*profile(?![a-z0-9_])"
 )
 _PREFIX_OVERRIDE_PATTERNS = (
     re.compile(
@@ -53,6 +53,13 @@ _SECTION_TOP_PATTERN = re.compile(
 _GENERIC_TOP_PATTERN = re.compile(
     r"(?i)(?<!prefix\s)(?<!hash\s)(?<!list\s)(?<!set\s)\btop\s+(?P<count>\d{1,4})(?=\s*(?:[,;，。]|$))"
 )
+_REPORT_FORMAT_PATTERN = re.compile(
+    r"(?i)(?:输出|导出|export|output|write|save)\s*(?:为|成|as|to|到|:|：)?\s*(?P<format>docx|pdf|html|summary)\b"
+)
+_REPORT_PATH_PATTERN = re.compile(
+    r"(?i)(?:到|to|path(?:\s+is)?|output(?:\s+path)?(?:\s+is)?|保存到|保存至)\s*(?P<path>(?:~?/|\.{1,2}/|/)[^\s,;，。]+)"
+)
+_MYSQL_ROUTE_HINT_PATTERN = re.compile(r"(?i)\bmysql\b|mysql\s*路径|mysql\s*route|mysql\s*path")
 _WHITESPACE_PATTERN = re.compile(r"\s+")
 _MAX_TOP_N = 100
 
@@ -72,6 +79,8 @@ def normalize_raw_request(
 
     host_match = _HOST_PORT_PATTERN.search(prompt)
     db_match = _DB_PATTERN.search(prompt)
+    report_format, output_path = _extract_report_output_intent(prompt)
+    route_name = _extract_route_name(prompt)
 
     return NormalizedRequest(
         raw_prompt=raw_prompt,
@@ -80,11 +89,13 @@ def normalize_raw_request(
             redis_host=host_match.group("host") if host_match else None,
             redis_port=int(host_match.group("port")) if host_match else 6379,
             redis_db=int(db_match.group("db")) if db_match else 0,
-            output_mode=default_output_mode,
+            output_mode="report" if report_format is not None else default_output_mode,
+            report_format=report_format,
+            output_path=output_path,
             input_paths=tuple(input_paths or ()),
         ),
         secrets=Secrets(redis_password=_clean_secret(password_match.group("password")) if password_match else None),
-        rdb_overrides=_extract_rdb_overrides(prompt),
+        rdb_overrides=_extract_rdb_overrides(prompt, route_name=route_name),
     )
 
 
@@ -96,11 +107,16 @@ def _extract_password(raw_prompt: str) -> tuple[re.Match[str] | None, re.Pattern
     return None, None
 
 
-def _extract_rdb_overrides(prompt: str) -> RdbOverrides:
+def _extract_rdb_overrides(prompt: str, *, route_name: str | None = None) -> RdbOverrides:
     profile_name = _extract_profile_name(prompt)
     focus_prefixes = _extract_focus_prefixes(prompt)
     top_n = _extract_top_n_overrides(prompt)
-    return RdbOverrides(profile_name=profile_name, focus_prefixes=focus_prefixes, top_n=top_n)
+    return RdbOverrides(
+        profile_name=profile_name,
+        route_name=route_name,
+        focus_prefixes=focus_prefixes,
+        top_n=top_n,
+    )
 
 
 def _extract_profile_name(prompt: str) -> str | None:
@@ -149,6 +165,22 @@ def _extract_top_n_overrides(prompt: str) -> dict[str, int]:
     return top_n
 
 
+def _extract_report_output_intent(prompt: str) -> tuple[str | None, Path | None]:
+    format_match = _REPORT_FORMAT_PATTERN.search(prompt)
+    report_format = format_match.group("format").lower() if format_match else None
+
+    path_match = _REPORT_PATH_PATTERN.search(prompt)
+    output_path = Path(_clean_output_path(path_match.group("path"))) if path_match else None
+
+    return report_format, output_path
+
+
+def _extract_route_name(prompt: str) -> str | None:
+    if _MYSQL_ROUTE_HINT_PATTERN.search(prompt):
+        return "legacy_sql_pipeline"
+    return None
+
+
 def _map_section_to_top_key(section: str) -> str:
     return {
         "prefix": "prefix_top",
@@ -164,3 +196,7 @@ def _is_valid_top_n(count: int) -> bool:
 
 def _clean_secret(value: str) -> str:
     return value.strip().strip("\"'")
+
+
+def _clean_output_path(value: str) -> str:
+    return value.strip().rstrip("，。,.；;:：")

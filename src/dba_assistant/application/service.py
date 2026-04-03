@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dba_assistant.adaptors.redis_adaptor import RedisConnectionConfig
 from dba_assistant.application.request_models import NormalizedRequest
-from dba_assistant.core.reporter.types import ReportFormat, ReportOutputConfig
+from dba_assistant.core.reporter.types import OutputMode, ReportFormat, ReportOutputConfig
 from dba_assistant.deep_agent_integration.config import AppConfig
 from dba_assistant.deep_agent_integration.run import run_phase2_request
 from dba_assistant.tools.analyze_rdb import analyze_rdb_tool
@@ -19,9 +19,13 @@ def execute_request(request: NormalizedRequest, *, config: AppConfig) -> str:
         )
         artifact = generate_analysis_report(
             analysis_result,
-            ReportOutputConfig(format=ReportFormat.SUMMARY),
+            _build_report_output_config(request),
         )
-        return artifact.content or ""
+        if artifact.content is not None:
+            return artifact.content
+        if artifact.output_path is None:
+            raise ValueError("Report rendering did not produce content or an output path.")
+        return str(artifact.output_path)
 
     if not request.runtime_inputs.redis_host:
         raise ValueError("Phase 2 requires a Redis host in the normalized request.")
@@ -47,3 +51,19 @@ def _build_profile_overrides(request: NormalizedRequest) -> dict[str, object]:
     if request.rdb_overrides.top_n:
         overrides["top_n"] = dict(request.rdb_overrides.top_n)
     return overrides
+
+
+def _build_report_output_config(request: NormalizedRequest) -> ReportOutputConfig:
+    report_format = _resolve_report_format(request)
+    return ReportOutputConfig(
+        mode=OutputMode.SUMMARY if report_format is ReportFormat.SUMMARY else OutputMode.REPORT,
+        format=report_format,
+        output_path=request.runtime_inputs.output_path,
+        template_name="rdb-analysis",
+    )
+
+
+def _resolve_report_format(request: NormalizedRequest) -> ReportFormat:
+    if request.runtime_inputs.output_mode == "summary" or request.runtime_inputs.report_format == "summary":
+        return ReportFormat.SUMMARY
+    return ReportFormat.DOCX

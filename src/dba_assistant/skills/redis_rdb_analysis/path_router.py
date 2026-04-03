@@ -27,7 +27,6 @@ def choose_path(request: RdbAnalysisRequest) -> str:
         normalized_path = normalize_route_name(request.path_mode)
         if normalized_path in _EXPLICIT_PATHS:
             return normalized_path
-        return normalized_path
 
     if any(sample.kind is InputSourceKind.PRECOMPUTED for sample in request.inputs):
         return PRECOMPUTED_DATASET_ROUTE_NAME

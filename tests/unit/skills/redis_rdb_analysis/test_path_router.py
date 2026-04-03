@@ -58,3 +58,13 @@ def test_choose_path_honors_explicit_formal_route_override() -> None:
     )
 
     assert choose_path(request) == "legacy_sql_pipeline"
+
+
+def test_choose_path_ignores_unsupported_path_mode_and_falls_back() -> None:
+    request = RdbAnalysisRequest(
+        prompt="analyze this rdb",
+        inputs=[SampleInput(source=Path("/tmp/dump.rdb"), kind=InputSourceKind.LOCAL_RDB)],
+        path_mode="unsupported_mode",
+    )
+
+    assert choose_path(request) == "direct_memory_analysis"

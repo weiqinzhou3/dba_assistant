@@ -44,7 +44,7 @@ _CHINESE_GENERIC_PROFILE_PATTERN = re.compile(
 )
 _PREFIX_OVERRIDE_PATTERNS = (
     re.compile(
-        r"(?i)(?:重点看|重点关注|关注|看|inspect|focus(?:\s+on)?)\s*(?P<body>[^,;，。]*)"
+        r"(?i)(?:重点看|重点关注|关注|看|focus(?:\s+on)?)\s*(?P<body>[^,;，。]*)"
     ),
 )
 _SECTION_TOP_PATTERN = re.compile(
@@ -209,8 +209,7 @@ def _extract_report_output_intent(
             report_format = None
 
         path = _extract_report_output_path(prompt, match.end())
-        if path is not None:
-            output_path = path
+        output_path = path
 
     return output_mode, report_format, output_path
 

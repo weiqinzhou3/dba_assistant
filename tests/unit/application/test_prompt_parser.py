@@ -253,6 +253,15 @@ def test_normalize_raw_request_does_not_treat_incidental_prefix_mention_as_focus
     assert request.rdb_overrides.focus_prefixes == ()
 
 
+def test_normalize_raw_request_does_not_treat_inspect_narration_as_focus_override() -> None:
+    request = normalize_raw_request(
+        "inspect this rdb and mention order:* is common",
+        default_output_mode="summary",
+    )
+
+    assert request.rdb_overrides.focus_prefixes == ()
+
+
 def test_normalize_raw_request_does_not_switch_output_mode_from_standalone_tokens() -> None:
     request = normalize_raw_request(
         "Please give me a report and a summary of this Redis analysis",
@@ -426,7 +435,20 @@ def test_normalize_raw_request_strips_trailing_comma_before_followup_clause_from
         default_output_mode="summary",
     )
 
-    assert request.runtime_inputs.output_path == Path("/tmp/a.docx")
+    assert request.runtime_inputs.output_mode == "summary"
+    assert request.runtime_inputs.report_format is None
+    assert request.runtime_inputs.output_path is None
+
+
+def test_normalize_raw_request_resets_output_path_when_later_output_format_has_no_destination() -> None:
+    request = normalize_raw_request(
+        "output pdf to /tmp/a.pdf, then output docx",
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.output_mode == "report"
+    assert request.runtime_inputs.report_format == "docx"
+    assert request.runtime_inputs.output_path is None
 
 
 def test_normalize_raw_request_extracts_mysql_routing_hint() -> None:

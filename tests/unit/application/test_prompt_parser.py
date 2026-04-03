@@ -210,6 +210,26 @@ def test_normalize_raw_request_extracts_docx_report_request() -> None:
     assert request.runtime_inputs.output_path == Path("/tmp/rcs.docx")
 
 
+def test_normalize_raw_request_keeps_summary_output_mode_for_summary_intent() -> None:
+    request = normalize_raw_request(
+        "按 generic profile 分析这个 rdb，输出 summary，到 /tmp/rcs.txt",
+        default_output_mode="report",
+    )
+
+    assert request.runtime_inputs.output_mode == "summary"
+    assert request.runtime_inputs.report_format is None
+    assert request.runtime_inputs.output_path == Path("/tmp/rcs.txt")
+
+
+def test_normalize_raw_request_expands_home_tilde_output_path() -> None:
+    request = normalize_raw_request(
+        "按 rcs profile 分析这个 rdb，输出 docx，到 ~/rcs.docx",
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.output_path == Path("~/rcs.docx").expanduser()
+
+
 def test_normalize_raw_request_extracts_mysql_routing_hint() -> None:
     request = normalize_raw_request(
         "按 generic profile 分析这个 rdb，使用 mysql 路径并输出 summary",
@@ -217,3 +237,13 @@ def test_normalize_raw_request_extracts_mysql_routing_hint() -> None:
     )
 
     assert request.rdb_overrides.route_name == "legacy_sql_pipeline"
+
+
+def test_normalize_raw_request_does_not_route_on_bare_mysql_token() -> None:
+    for prompt in (
+        "按 generic profile 分析这个 rdb，连接 mysql 数据库并输出 summary",
+        "按 generic profile 分析这个 rdb，mysql host 是 127.0.0.1",
+        "按 generic profile 分析这个 rdb，mysql 用户名是 root",
+    ):
+        request = normalize_raw_request(prompt, default_output_mode="summary")
+        assert request.rdb_overrides.route_name is None

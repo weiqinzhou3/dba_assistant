@@ -47,6 +47,7 @@ def test_analyze_rdb_tool_handles_explicit_mysql_local_prompt(monkeypatch, tmp_p
     )
 
     assert result.title == "Redis RDB Analysis"
+    assert result.metadata["route"] == "legacy_sql_pipeline"
     assert result.metadata["path"] == "3a"
     assert result.metadata["profile"] == "generic"
     assert any(section.id == "top_big_keys" for section in result.sections)

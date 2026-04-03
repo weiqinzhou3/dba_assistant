@@ -3,8 +3,6 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from rdbtools import MemoryCallback, RdbParser
-
 from dba_assistant.application.request_models import RdbOverrides
 from dba_assistant.core.reporter.report_model import AnalysisReport
 from dba_assistant.skills.redis_rdb_analysis.analyzers.overall import analyze_overall
@@ -19,10 +17,14 @@ from dba_assistant.skills.redis_rdb_analysis.profile_resolver import resolve_pro
 from dba_assistant.skills.redis_rdb_analysis.reports.assembler import assemble_report
 from dba_assistant.skills.redis_rdb_analysis.types import (
     AnalysisStatus,
+    DIRECT_MEMORY_ANALYSIS_ROUTE_NAME,
     ConfirmationRequest,
     InputSourceKind,
+    LEGACY_SQL_PIPELINE_ROUTE_NAME,
     NormalizedRdbDataset,
+    PRECOMPUTED_DATASET_ROUTE_NAME,
     RdbAnalysisRequest,
+    phase_label_for_route_name,
 )
 
 
@@ -43,14 +45,14 @@ def analyze_rdb(
             required_action="fetch_existing",
         )
 
-    selected_path = choose_path(request)
+    selected_route = choose_path(request)
     effective_profile = profile or resolve_profile(
         request.profile_name,
         RdbOverrides(**request.profile_overrides),
     )
     dataset = _collect_dataset(
         request,
-        selected_path=selected_path,
+        selected_route=selected_route,
         path_a_collector=path_a_collector,
         path_b_collector=path_b_collector,
         path_c_collector=path_c_collector,
@@ -64,8 +66,11 @@ def analyze_rdb(
     metadata = {
         **report.metadata,
         "input_count": str(len(dataset.samples)),
-        "path": selected_path,
+        "route": selected_route,
     }
+    legacy_path_label = phase_label_for_route_name(selected_route)
+    if legacy_path_label is not None:
+        metadata["path"] = legacy_path_label
     return AnalysisReport(
         title=report.title,
         summary=report.summary,
@@ -77,29 +82,31 @@ def analyze_rdb(
 def _collect_dataset(
     request: RdbAnalysisRequest,
     *,
-    selected_path: str,
+    selected_route: str,
     path_a_collector,
     path_b_collector,
     path_c_collector,
 ) -> NormalizedRdbDataset:
     paths = [Path(sample.source) for sample in request.inputs if sample.kind is not InputSourceKind.REMOTE_REDIS]
 
-    if selected_path == "3b":
+    if selected_route == PRECOMPUTED_DATASET_ROUTE_NAME:
         collector = path_b_collector or PathBPrecomputedCollector()
         return collector.collect(paths)
 
-    if selected_path == "3c":
+    if selected_route == DIRECT_MEMORY_ANALYSIS_ROUTE_NAME:
         collector = path_c_collector or PathCDirectParserCollector(parser=_parse_rdb_rows)
         return collector.collect(paths)
 
-    if selected_path == "3a":
+    if selected_route == LEGACY_SQL_PIPELINE_ROUTE_NAME:
         collector = path_a_collector or PathCDirectParserCollector(parser=_parse_rdb_rows)
         return collector.collect(paths)
 
-    raise ValueError(f"Unsupported analysis path: {selected_path}")
+    raise ValueError(f"Unsupported analysis route: {selected_route}")
 
 
 def _parse_rdb_rows(path: Path) -> list[dict[str, object]]:
+    from rdbtools import MemoryCallback, RdbParser
+
     stream = _MemoryRecordStream()
     parser = RdbParser(MemoryCallback(stream, 64))
     parser.parse(str(path))

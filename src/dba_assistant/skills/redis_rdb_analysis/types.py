@@ -5,6 +5,18 @@ from enum import Enum
 from pathlib import Path
 
 
+LEGACY_SQL_PIPELINE_ROUTE_NAME = "legacy_sql_pipeline"
+PRECOMPUTED_DATASET_ROUTE_NAME = "precomputed_dataset"
+DIRECT_MEMORY_ANALYSIS_ROUTE_NAME = "direct_memory_analysis"
+
+ROUTE_NAME_BY_PHASE_LABEL = {
+    "3a": LEGACY_SQL_PIPELINE_ROUTE_NAME,
+    "3b": PRECOMPUTED_DATASET_ROUTE_NAME,
+    "3c": DIRECT_MEMORY_ANALYSIS_ROUTE_NAME,
+}
+PHASE_LABEL_BY_ROUTE_NAME = {route_name: phase_label for phase_label, route_name in ROUTE_NAME_BY_PHASE_LABEL.items()}
+
+
 class InputSourceKind(str, Enum):
     LOCAL_RDB = "local_rdb"
     REMOTE_REDIS = "remote_redis"
@@ -63,3 +75,11 @@ class ConfirmationRequest:
     status: AnalysisStatus
     message: str
     required_action: str
+
+
+def normalize_route_name(route_name: str) -> str:
+    return ROUTE_NAME_BY_PHASE_LABEL.get(route_name, route_name)
+
+
+def phase_label_for_route_name(route_name: str) -> str | None:
+    return PHASE_LABEL_BY_ROUTE_NAME.get(route_name)

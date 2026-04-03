@@ -47,6 +47,8 @@ def test_analyze_rdb_returns_analysis_report_for_local_inputs(monkeypatch) -> No
     assert isinstance(result, AnalysisReport)
     assert result.title == "Redis RDB Analysis"
     assert result.metadata["profile"] == "generic"
+    assert result.metadata["route"] == "direct_memory_analysis"
+    assert result.metadata["path"] == "3c"
     assert any(section.id == "top_big_keys" for section in result.sections)
 
 
@@ -70,4 +72,6 @@ def test_analyze_rdb_returns_analysis_report_for_precomputed_inputs() -> None:
     assert isinstance(result, AnalysisReport)
     assert result.title == "Redis RDB Analysis"
     assert result.metadata["profile"] == "generic"
+    assert result.metadata["route"] == "precomputed_dataset"
+    assert result.metadata["path"] == "3b"
     assert any(section.id == "sample_overview" for section in result.sections)

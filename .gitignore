@@ -11,3 +11,8 @@ dist/
 src/claude-code-source-code/
 src/docs/
 config/config.yaml
+references/**
+!references/
+!references/README.md
+!references/report-samples/
+!references/report-samples/README.md

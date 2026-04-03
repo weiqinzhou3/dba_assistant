@@ -58,8 +58,7 @@ _REPORT_OUTPUT_PATTERN = re.compile(
 )
 _REPORT_DESTINATION_PATTERN = re.compile(
     r"(?is)^\s*[\s,，、]*"
-    r"(?:to|到|输出到|导出到|write\s+to|output\s+to|save\s+to|保存到|保存至)\s*(?P<path>.+?)"
-    r"(?=\s*(?:and|but|then|also|plus|email|send|and\s+email|and\s+send|并且|并|然后|再|同时|此外|另外|但|但是|不过|然而|可是|而是|却)\b|[。!?，,;；]|$)"
+    r"(?:to|到|输出到|导出到|write\s+to|output\s+to|save\s+to|保存到|保存至)\s*(?P<path>.+?)\s*$"
 )
 _MYSQL_ROUTE_HINT_PATTERN = re.compile(
     r"(?i)mysql\s*(?:路径|路由|路线|route|path|pipeline)|(?:路径|路由|路线|route|path|pipeline)\s*mysql"
@@ -134,19 +133,19 @@ def _extract_profile_name(prompt: str) -> str | None:
 
     for pattern in (_WITH_PROFILE_PATTERN, _USE_PROFILE_PATTERN, _BY_PROFILE_PATTERN):
         for match in pattern.finditer(prompt):
-            if _has_negation_prefix(prompt, match.start()):
-                continue
-            matches.append((match.start(), match.group("profile").lower()))
+            profile = match.group("profile").lower()
+            matches.append((match.start(), profile if not _has_negation_prefix(prompt, match.start()) else ""))
 
     for match in _CHINESE_GENERIC_PROFILE_PATTERN.finditer(prompt):
-        if _has_negation_prefix(prompt, match.start()):
-            continue
-        matches.append((match.start(), "generic"))
+        matches.append((match.start(), "generic" if not _has_negation_prefix(prompt, match.start()) else ""))
 
     if not matches:
         return None
 
-    return max(matches, key=lambda item: item[0])[1]
+    value = None
+    for _, profile in matches:
+        value = profile or None
+    return value
 
 
 def _extract_focus_prefixes(prompt: str) -> tuple[str, ...]:
@@ -188,11 +187,11 @@ def _extract_report_output_intent(
     output_path = None
 
     for match in _REPORT_OUTPUT_PATTERN.finditer(prompt):
-        if _has_negation_prefix(prompt, match.start()):
-            continue
-
         output_token = match.group("format").lower()
-        if output_token in {"docx", "pdf", "html"}:
+        if _has_negation_prefix(prompt, match.start()):
+            output_mode = default_output_mode
+            report_format = None
+        elif output_token in {"docx", "pdf", "html"}:
             output_mode = "report"
             report_format = output_token
         elif output_token == "summary":
@@ -207,11 +206,10 @@ def _extract_report_output_intent(
 
 
 def _extract_route_name(prompt: str) -> str | None:
+    route_name = None
     for match in _MYSQL_ROUTE_HINT_PATTERN.finditer(prompt):
-        if _has_negation_prefix(prompt, match.start()):
-            continue
-        return "legacy_sql_pipeline"
-    return None
+        route_name = None if _has_negation_prefix(prompt, match.start()) else "legacy_sql_pipeline"
+    return route_name
 
 
 def _map_section_to_top_key(section: str) -> str:
@@ -265,10 +263,19 @@ def _extract_report_output_path(prompt: str, start: int) -> Path | None:
     if not raw_path:
         return None
 
-    if (raw_path.startswith('"') and raw_path.endswith('"')) or (
-        raw_path.startswith("'") and raw_path.endswith("'")
-    ):
-        raw_path = raw_path[1:-1].strip()
+    if raw_path.startswith('"') or raw_path.startswith("'"):
+        quote = raw_path[0]
+        end_quote = raw_path.rfind(quote)
+        if end_quote > 0:
+            raw_path = raw_path[1:end_quote].strip()
+    else:
+        trailing = re.search(
+            r"\s+(?:and|but|then|also|plus|email|send|and\s+email|and\s+send|并且|并|然后|再|同时|此外|另外|但|但是|不过|然而|可是|而是|却)\b.*$",
+            raw_path,
+            flags=re.IGNORECASE,
+        )
+        if trailing is not None:
+            raw_path = raw_path[: trailing.start()].rstrip()
 
     if not raw_path:
         return None

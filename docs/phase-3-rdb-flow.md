@@ -11,12 +11,12 @@ The important point is that the CLI no longer performs business routing. It only
 For a request such as:
 
 ```text
-按 rcs profile 分析这个 rdb，输出 docx，到 /tmp/rcs.docx
+分析 /data/a.rdb 和 /data/b.rdb，按 rcs profile 输出 docx，到 /tmp/rcs.docx
 ```
 
 the runtime flow is:
 
-1. `dba-assistant ask "<prompt>"` receives the prompt and any retained flags such as `--input`.
+1. `dba-assistant ask "<prompt>"` receives the prompt and any retained override flags.
 2. `src/dba_assistant/interface/adapter.py` loads config and normalizes the raw request.
 3. The interface adapter applies explicit overrides such as `--profile`, `--report-format`, or `--output`.
 4. `src/dba_assistant/orchestrator/agent.py` builds one unified Deep Agent with:
@@ -43,14 +43,16 @@ The normalized request carries:
 |------|---------|
 | `raw_prompt` | Original prompt text |
 | `prompt` | Normalized prompt after secret stripping and cleanup |
-| `runtime_inputs` | Structured runtime values such as `redis_host`, `redis_port`, `input_paths`, `output_mode`, `report_format`, and `output_path` |
-| `secrets` | Extracted secrets such as Redis password |
+| `runtime_inputs` | Structured runtime values such as `redis_host`, `redis_port`, `input_paths`, `input_kind`, `mysql_host`, `mysql_database`, `mysql_table`, `mysql_query`, `output_mode`, `report_format`, and `output_path` |
+| `secrets` | Extracted secrets such as Redis or MySQL password |
 | `rdb_overrides` | Prompt-derived Phase 3 hints such as `profile_name`, `focus_prefixes`, `top_n`, and route hints |
 
 This object exists so that:
 
 - CLI can stay thin
+- prompt parsing can remain the main source of structured context
 - API / WebUI can reuse the same boundary
+- explicit interface overrides can stay secondary without breaking the shared contract
 - the Deep Agent receives consistent context regardless of caller surface
 
 ## 3. Unified Agent Assembly
@@ -144,19 +146,13 @@ That mixed tool set is intentional. It supports the target architecture:
 Request:
 
 ```text
-按 rcs profile 分析这个 rdb，输出 docx，到 /tmp/rcs.docx
-```
-
-With:
-
-```text
---input ./dump.rdb
+按 rcs profile 分析 /data/a.rdb 和 /data/b.rdb，输出 docx，到 /tmp/rcs.docx
 ```
 
 the actual flow is:
 
-1. prompt parser extracts `rcs`, `docx`, and `/tmp/rcs.docx`
-2. `--input` provides the concrete local file path
+1. prompt parser extracts `rcs`, `docx`, `/tmp/rcs.docx`, and both local `.rdb` paths
+2. the normalized request writes those values into `runtime_inputs.input_paths`, `runtime_inputs.output_mode`, and `rdb_overrides.profile_name`
 3. interface adapter merges prompt intent and any explicit CLI overrides
 4. unified Deep Agent receives one final user message with the normalized context
 5. the agent selects the local-RDB analysis tool
@@ -165,3 +161,20 @@ the actual flow is:
 8. `/tmp/rcs.docx` is written as the final result
 
 That is the current architectural contract for Phase 3.
+
+## 8. Prompt-First Source Extraction
+
+Prompt parsing is now expected to extract the most common source descriptions directly into the shared contract:
+
+- local `.rdb` paths, including multiple file paths in one prompt
+- remote Redis targets such as `redis.example:6379`
+- MySQL connection fields such as host, port, user, password, database, table, and quoted query text
+- prompt-derived `input_kind` such as `local_rdb`, `remote_redis`, or `preparsed_mysql`
+
+Retained CLI flags remain useful, but only as:
+
+- explicit overrides
+- debugging fallbacks
+- deterministic reproduction of a previous run
+
+That keeps the user-facing entry prompt-first while preserving the structured request boundary required for future API and WebUI callers.

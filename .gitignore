@@ -11,6 +11,8 @@ dist/
 src/claude-code-source-code/
 src/docs/
 config/config.yaml
+.env
+ls_probe.py
 references/**
 !references/
 !references/README.md

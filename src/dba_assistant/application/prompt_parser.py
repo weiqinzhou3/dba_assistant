@@ -11,7 +11,12 @@ from dba_assistant.application.request_models import (
 )
 
 
-_SECRET_TOKEN_PATTERN = r"(?P<password>\"[^\"]+\"|'[^']+'|[^\s,;]+)"
+_HOST_PATTERN = (
+    r"(?:localhost)|(?:\d{1,3}(?:\.\d{1,3}){3})|"
+    r"(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?"
+    r"(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*)"
+)
+_SECRET_TOKEN_PATTERN = r"(?P<password>\"[^\"]+\"|'[^']+'|[^\s,;，。；]+)"
 _PASSWORD_PATTERNS = (
     re.compile(
         rf"(?i)\buse\s+{_SECRET_TOKEN_PATTERN}\s+as\s+(?:the\s+)?redis\s+password\b"
@@ -27,9 +32,29 @@ _PASSWORD_PATTERNS = (
     ),
 )
 _HOST_PORT_PATTERN = re.compile(
-    r"(?i)\b(?:redis\s+)?(?P<host>(?:localhost)|(?:\d{1,3}(?:\.\d{1,3}){3})|(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*)):(?P<port>\d{1,5})\b"
+    rf"(?i)\b(?P<host>{_HOST_PATTERN}):(?P<port>\d{{1,5}})\b"
+)
+_MYSQL_HOST_PORT_PATTERN = re.compile(
+    rf"(?i)\bmysql\b(?:\s+(?:host|server|地址|from|at|on|从))?\s*(?P<host>{_HOST_PATTERN}):(?P<port>\d{{1,5}})\b"
 )
 _DB_PATTERN = re.compile(r"(?i)\bdb(?:\s+(?:index\s+)?)?(?P<db>\d+)\b")
+_RDB_PATH_PATTERN = re.compile(
+    r"(?P<path>(?:~|\.{1,2}|/)[^\s,;，。\"']*\.rdb\b)"
+)
+_MYSQL_USER_PATTERN = re.compile(
+    r"(?i)(?:用户名|username|user)\s*(?:是|为|：|:)?\s*(?P<user>[^\s,;，。\"']+)"
+)
+_MYSQL_DATABASE_PATTERN = re.compile(
+    r"(?i)(?:数据库|database)\s*(?:是|为|：|:)?\s*(?P<database>[^\s,;，。\"']+)"
+)
+_MYSQL_TABLE_PATTERN = re.compile(
+    r"(?i)(?:表|table)\s*(?:是|为|：|:)?\s*(?P<table>[A-Za-z_][A-Za-z0-9_$.]*)"
+)
+_MYSQL_QUERY_PATTERN = re.compile(
+    r"(?is)(?:查询|query)\s*(?P<quote>\"|')(?P<query>.+?)(?P=quote)"
+)
+_MYSQL_TOKEN_PATTERN = re.compile(r"(?i)\bmysql\b")
+_REDIS_TOKEN_PATTERN = re.compile(r"(?i)\bredis\b")
 
 
 def _build_profile_alternation() -> str:
@@ -96,17 +121,31 @@ def normalize_raw_request(
     default_output_mode: str,
     input_paths: list[Path] | tuple[Path, ...] | None = None,
 ) -> NormalizedRequest:
-    password_match, password_pattern = _extract_password(raw_prompt)
+    redis_password_match, redis_password_pattern = _extract_password(raw_prompt, scope="redis")
+    mysql_password_match, mysql_password_pattern = _extract_password(raw_prompt, scope="mysql")
 
     prompt = raw_prompt
-    if password_match is not None and password_pattern is not None:
-        prompt = password_pattern.sub(" ", prompt, count=1)
+    prompt = _strip_password_match(prompt, mysql_password_match, mysql_password_pattern)
+    prompt = _strip_password_match(prompt, redis_password_match, redis_password_pattern)
     prompt = _WHITESPACE_PATTERN.sub(" ", prompt).strip()
 
-    host_match = _HOST_PORT_PATTERN.search(prompt)
+    mysql_host, mysql_port, mysql_context_span = _extract_mysql_target(prompt)
+    host_match = _extract_redis_target(prompt, excluded_span=mysql_context_span)
     db_match = _DB_PATTERN.search(prompt)
     output_mode, report_format, output_path = _extract_report_output_intent(prompt, default_output_mode)
     route_name = _extract_route_name(prompt)
+    prompt_input_paths = _extract_prompt_input_paths(prompt)
+    effective_input_paths = tuple(input_paths or prompt_input_paths)
+    mysql_user = _extract_mysql_field(prompt, _MYSQL_USER_PATTERN, "user")
+    mysql_database = _extract_mysql_field(prompt, _MYSQL_DATABASE_PATTERN, "database")
+    mysql_table = _extract_mysql_field(prompt, _MYSQL_TABLE_PATTERN, "table")
+    mysql_query = _extract_mysql_query(prompt)
+    input_kind = _infer_input_kind(
+        input_paths=effective_input_paths,
+        redis_host=host_match.group("host") if host_match else None,
+        mysql_table=mysql_table,
+        mysql_query=mysql_query,
+    )
 
     return NormalizedRequest(
         raw_prompt=raw_prompt,
@@ -118,19 +157,43 @@ def normalize_raw_request(
             output_mode=output_mode,
             report_format=report_format,
             output_path=output_path,
-            input_paths=tuple(input_paths or ()),
+            input_paths=effective_input_paths,
+            input_kind=input_kind,
+            mysql_host=mysql_host,
+            mysql_port=mysql_port or 3306,
+            mysql_user=mysql_user,
+            mysql_database=mysql_database,
+            mysql_table=mysql_table,
+            mysql_query=mysql_query,
         ),
-        secrets=Secrets(redis_password=_clean_secret(password_match.group("password")) if password_match else None),
+        secrets=Secrets(
+            redis_password=_clean_secret(redis_password_match.group("password")) if redis_password_match else None,
+            mysql_password=_clean_secret(mysql_password_match.group("password")) if mysql_password_match else None,
+        ),
         rdb_overrides=_extract_rdb_overrides(prompt, route_name=route_name),
     )
 
 
-def _extract_password(raw_prompt: str) -> tuple[re.Match[str] | None, re.Pattern[str] | None]:
+def _extract_password(
+    raw_prompt: str,
+    *,
+    scope: str,
+) -> tuple[re.Match[str] | None, re.Pattern[str] | None]:
     for pattern in _PASSWORD_PATTERNS:
-        match = pattern.search(raw_prompt)
-        if match:
-            return match, pattern
+        for match in pattern.finditer(raw_prompt):
+            if _classify_secret_scope(raw_prompt, match.start()) == scope:
+                return match, pattern
     return None, None
+
+
+def _strip_password_match(
+    prompt: str,
+    match: re.Match[str] | None,
+    pattern: re.Pattern[str] | None,
+) -> str:
+    if match is None or pattern is None:
+        return prompt
+    return pattern.sub(" ", prompt, count=1)
 
 
 def _extract_rdb_overrides(prompt: str, *, route_name: str | None = None) -> RdbOverrides:
@@ -236,6 +299,93 @@ def _extract_route_name(prompt: str) -> str | None:
     for match in sorted(_MYSQL_ROUTE_HINT_PATTERN.finditer(prompt), key=lambda match: match.start()):
         route_name = None if _has_negation_prefix(prompt, match.start()) else "database_backed_analysis"
     return route_name
+
+
+def _extract_prompt_input_paths(prompt: str) -> tuple[Path, ...]:
+    seen: set[Path] = set()
+    paths: list[Path] = []
+    for match in _RDB_PATH_PATTERN.finditer(prompt):
+        path = Path(match.group("path")).expanduser()
+        if path not in seen:
+            seen.add(path)
+            paths.append(path)
+    return tuple(paths)
+
+
+def _extract_mysql_target(prompt: str) -> tuple[str | None, int | None, tuple[int, int] | None]:
+    match = _MYSQL_HOST_PORT_PATTERN.search(prompt)
+    if match is None:
+        return None, None, None
+    return match.group("host"), int(match.group("port")), match.span()
+
+
+def _extract_redis_target(
+    prompt: str,
+    *,
+    excluded_span: tuple[int, int] | None,
+) -> re.Match[str] | None:
+    for match in _HOST_PORT_PATTERN.finditer(prompt):
+        if excluded_span is not None:
+            start, end = match.span()
+            if start >= excluded_span[0] and end <= excluded_span[1]:
+                continue
+        return match
+    return None
+
+
+def _extract_mysql_field(
+    prompt: str,
+    pattern: re.Pattern[str],
+    group_name: str,
+) -> str | None:
+    if not _MYSQL_TOKEN_PATTERN.search(prompt):
+        return None
+    match = pattern.search(prompt)
+    if match is None:
+        return None
+    return match.group(group_name)
+
+
+def _extract_mysql_query(prompt: str) -> str | None:
+    if not _MYSQL_TOKEN_PATTERN.search(prompt):
+        return None
+    match = _MYSQL_QUERY_PATTERN.search(prompt)
+    if match is None:
+        return None
+    return match.group("query").strip()
+
+
+def _infer_input_kind(
+    *,
+    input_paths: tuple[Path, ...],
+    redis_host: str | None,
+    mysql_table: str | None,
+    mysql_query: str | None,
+) -> str | None:
+    if input_paths:
+        return "local_rdb"
+    if redis_host:
+        return "remote_redis"
+    if mysql_table or mysql_query:
+        return "preparsed_mysql"
+    return None
+
+
+def _classify_secret_scope(prompt: str, match_start: int) -> str | None:
+    redis_distance = _nearest_scope_distance(prompt, _REDIS_TOKEN_PATTERN, match_start)
+    mysql_distance = _nearest_scope_distance(prompt, _MYSQL_TOKEN_PATTERN, match_start)
+    if redis_distance is None and mysql_distance is None:
+        return None
+    if redis_distance is None:
+        return "mysql"
+    if mysql_distance is None:
+        return "redis"
+    return "redis" if redis_distance <= mysql_distance else "mysql"
+
+
+def _nearest_scope_distance(prompt: str, pattern: re.Pattern[str], match_start: int) -> int | None:
+    distances = [abs(scope_match.start() - match_start) for scope_match in pattern.finditer(prompt)]
+    return min(distances) if distances else None
 
 
 def _map_section_to_top_key(section: str) -> str:

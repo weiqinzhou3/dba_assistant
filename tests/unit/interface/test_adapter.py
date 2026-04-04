@@ -131,3 +131,62 @@ def test_handle_request_applies_mysql_overrides(monkeypatch) -> None:
     assert n.runtime_inputs.mysql_table == "preparsed_keys"
     assert n.runtime_inputs.mysql_query == "SELECT * FROM preparsed_keys"
     assert n.secrets.mysql_password == "secret"
+
+
+def test_handle_request_keeps_prompt_first_but_allows_explicit_overrides(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    config = SimpleNamespace(runtime=SimpleNamespace(default_output_mode="summary"), model=None)
+
+    monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
+    monkeypatch.setattr(
+        adapter_module,
+        "normalize_raw_request",
+        lambda raw_prompt, *, default_output_mode, input_paths=(): NormalizedRequest(
+            raw_prompt=raw_prompt,
+            prompt=raw_prompt,
+            runtime_inputs=RuntimeInputs(
+                output_mode="summary",
+                input_paths=(Path("/prompt/source.rdb"),),
+                input_kind="local_rdb",
+                mysql_host="prompt-db",
+                mysql_port=3306,
+                mysql_user="prompt-user",
+                mysql_database="prompt-db-name",
+                mysql_table="prompt_rows",
+            ),
+            secrets=Secrets(mysql_password="prompt-secret"),
+            rdb_overrides=RdbOverrides(profile_name="generic"),
+        ),
+    )
+
+    def fake_run_orchestrated(normalized, *, config, approval_handler):
+        captured["normalized"] = normalized
+        return "ok"
+
+    monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
+
+    request = InterfaceRequest(
+        prompt="analyze /prompt/source.rdb",
+        input_paths=[Path("/explicit/source.rdb")],
+        profile="rcs",
+        input_kind="preparsed_mysql",
+        mysql_host="explicit-db",
+        mysql_port=3307,
+        mysql_user="explicit-user",
+        mysql_database="explicit-db-name",
+        mysql_password="explicit-secret",
+        mysql_query="SELECT 1",
+    )
+    handle_request(request, approval_handler=AutoApproveHandler())
+
+    n = captured["normalized"]
+    assert n.runtime_inputs.input_paths == (Path("/explicit/source.rdb"),)
+    assert n.runtime_inputs.input_kind == "preparsed_mysql"
+    assert n.runtime_inputs.mysql_host == "explicit-db"
+    assert n.runtime_inputs.mysql_port == 3307
+    assert n.runtime_inputs.mysql_user == "explicit-user"
+    assert n.runtime_inputs.mysql_database == "explicit-db-name"
+    assert n.runtime_inputs.mysql_table == "prompt_rows"
+    assert n.runtime_inputs.mysql_query == "SELECT 1"
+    assert n.secrets.mysql_password == "explicit-secret"
+    assert n.rdb_overrides.profile_name == "rcs"

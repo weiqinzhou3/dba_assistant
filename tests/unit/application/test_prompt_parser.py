@@ -16,6 +16,7 @@ def test_normalize_raw_request_extracts_runtime_inputs_and_secrets() -> None:
     assert request.runtime_inputs.redis_host == "10.0.0.8"
     assert request.runtime_inputs.redis_port == 6380
     assert request.runtime_inputs.redis_db == 2
+    assert request.runtime_inputs.input_kind == "remote_redis"
     assert request.runtime_inputs.output_mode == "summary"
     assert request.secrets.redis_password == "abc123"
 
@@ -28,6 +29,7 @@ def test_normalize_raw_request_uses_default_output_mode_when_unspecified() -> No
 
     assert request.runtime_inputs.redis_host == "10.0.0.9"
     assert request.runtime_inputs.redis_port == 6379
+    assert request.runtime_inputs.input_kind == "remote_redis"
     assert request.runtime_inputs.output_mode == "summary"
     assert request.secrets.redis_password is None
     assert request.prompt == "Inspect Redis 10.0.0.9:6379"
@@ -43,6 +45,41 @@ def test_normalize_raw_request_threads_explicit_input_paths() -> None:
     )
 
     assert request.runtime_inputs.input_paths == (source,)
+
+
+def test_normalize_raw_request_extracts_single_local_rdb_path_from_prompt() -> None:
+    request = normalize_raw_request(
+        "分析 /data/dump.rdb，重点看 TTL 和大 key",
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.input_paths == (Path("/data/dump.rdb"),)
+    assert request.runtime_inputs.input_kind == "local_rdb"
+
+
+def test_normalize_raw_request_extracts_multiple_local_rdb_paths_from_prompt() -> None:
+    request = normalize_raw_request(
+        "分析 /data/a.rdb 和 /data/b.rdb，重点看 TTL 和大 key",
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.input_paths == (
+        Path("/data/a.rdb"),
+        Path("/data/b.rdb"),
+    )
+    assert request.runtime_inputs.input_kind == "local_rdb"
+
+
+def test_normalize_raw_request_prefers_explicit_input_paths_over_prompt_paths() -> None:
+    explicit = Path("/tmp/explicit.rdb")
+    request = normalize_raw_request(
+        "分析 /data/a.rdb 和 /data/b.rdb",
+        default_output_mode="summary",
+        input_paths=[explicit],
+    )
+
+    assert request.runtime_inputs.input_paths == (explicit,)
+    assert request.runtime_inputs.input_kind == "local_rdb"
 
 
 def test_normalize_raw_request_prefers_explicit_use_as_password_form() -> None:
@@ -458,6 +495,56 @@ def test_normalize_raw_request_extracts_mysql_routing_hint() -> None:
     )
 
     assert request.rdb_overrides.route_name == "database_backed_analysis"
+
+
+def test_normalize_raw_request_extracts_mysql_connection_and_table_from_prompt() -> None:
+    request = normalize_raw_request(
+        "从 MySQL 192.168.0.10:3306，用户名 root，密码 secret123，数据库 dba，表 redis_rows 读取预处理数据并分析",
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.mysql_host == "192.168.0.10"
+    assert request.runtime_inputs.mysql_port == 3306
+    assert request.runtime_inputs.mysql_user == "root"
+    assert request.runtime_inputs.mysql_database == "dba"
+    assert request.runtime_inputs.mysql_table == "redis_rows"
+    assert request.runtime_inputs.mysql_query is None
+    assert request.runtime_inputs.input_kind == "preparsed_mysql"
+    assert request.secrets.mysql_password == "secret123"
+    assert request.secrets.redis_password is None
+    assert request.runtime_inputs.redis_host is None
+
+
+def test_normalize_raw_request_extracts_mysql_query_from_prompt() -> None:
+    request = normalize_raw_request(
+        '从 MySQL 192.168.0.10:3306 用户名 root 密码 secret123 数据库 dba，查询 "SELECT * FROM redis_rows LIMIT 10" 并分析',
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.mysql_host == "192.168.0.10"
+    assert request.runtime_inputs.mysql_port == 3306
+    assert request.runtime_inputs.mysql_user == "root"
+    assert request.runtime_inputs.mysql_database == "dba"
+    assert request.runtime_inputs.mysql_table is None
+    assert request.runtime_inputs.mysql_query == "SELECT * FROM redis_rows LIMIT 10"
+    assert request.runtime_inputs.input_kind == "preparsed_mysql"
+    assert request.secrets.mysql_password == "secret123"
+
+
+def test_normalize_raw_request_extracts_both_redis_and_mysql_targets_from_prompt() -> None:
+    request = normalize_raw_request(
+        "分析 redis.example:6379 的最新 rdb，并写入 MySQL 192.168.0.10:3306 用户名 root 密码 secret123 数据库 dba",
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.redis_host == "redis.example"
+    assert request.runtime_inputs.redis_port == 6379
+    assert request.runtime_inputs.input_kind == "remote_redis"
+    assert request.runtime_inputs.mysql_host == "192.168.0.10"
+    assert request.runtime_inputs.mysql_port == 3306
+    assert request.runtime_inputs.mysql_user == "root"
+    assert request.runtime_inputs.mysql_database == "dba"
+    assert request.secrets.mysql_password == "secret123"
 
 
 def test_normalize_raw_request_does_not_route_on_bare_mysql_token() -> None:

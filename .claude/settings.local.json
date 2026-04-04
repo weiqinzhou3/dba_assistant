@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install:*)",
+      "Bash(pip list:*)",
+      "Bash(python3.11 -m pytest tests/ -x -v)",
+      "Bash(python3.11 -m pytest tests/ -v)"
+    ]
+  }
+}

@@ -47,11 +47,17 @@ _MYSQL_USER_PATTERN = re.compile(
 _MYSQL_DATABASE_PATTERN = re.compile(
     r"(?i)(?:数据库|database)\s*(?:是|为|：|:)?\s*(?P<database>[^\s,;，。\"']+)"
 )
+_MYSQL_DATABASE_ALIAS_PATTERN = re.compile(
+    r"(?i)(?:的\s*)?(?P<database>[A-Za-z_][A-Za-z0-9_$]*)\s*库(?:里|中)?"
+)
 _MYSQL_TABLE_PATTERN = re.compile(
     r"(?i)(?:表|table)\s*(?:是|为|：|:)?\s*(?P<table>[A-Za-z_][A-Za-z0-9_$.]*)"
 )
 _MYSQL_QUERY_PATTERN = re.compile(
     r"(?is)(?:查询|query)\s*(?P<quote>\"|')(?P<query>.+?)(?P=quote)"
+)
+_MYSQL_UNQUOTED_QUERY_PATTERN = re.compile(
+    r"(?is)(?:执行|execute|run|query)\s+(?P<query>(?:select|with)\b.+?)(?=\s*(?:[,，。;；]|$))"
 )
 _MYSQL_TOKEN_PATTERN = re.compile(r"(?i)\bmysql\b")
 _REDIS_TOKEN_PATTERN = re.compile(r"(?i)\bredis\b")
@@ -136,10 +142,11 @@ def normalize_raw_request(
     route_name = _extract_route_name(prompt)
     prompt_input_paths = _extract_prompt_input_paths(prompt)
     effective_input_paths = tuple(input_paths or prompt_input_paths)
-    mysql_user = _extract_mysql_field(prompt, _MYSQL_USER_PATTERN, "user")
-    mysql_database = _extract_mysql_field(prompt, _MYSQL_DATABASE_PATTERN, "database")
-    mysql_table = _extract_mysql_field(prompt, _MYSQL_TABLE_PATTERN, "table")
-    mysql_query = _extract_mysql_query(prompt)
+    mysql_query, mysql_query_span = _extract_mysql_query(prompt)
+    mysql_context = _mysql_connection_context(prompt, mysql_query_span)
+    mysql_user = _extract_mysql_field(mysql_context, _MYSQL_USER_PATTERN, "user")
+    mysql_database = _extract_mysql_database(mysql_context)
+    mysql_table = _extract_mysql_field(mysql_context, _MYSQL_TABLE_PATTERN, "table")
     input_kind = _infer_input_kind(
         input_paths=effective_input_paths,
         redis_host=host_match.group("host") if host_match else None,
@@ -348,11 +355,35 @@ def _extract_mysql_field(
 
 def _extract_mysql_query(prompt: str) -> str | None:
     if not _MYSQL_TOKEN_PATTERN.search(prompt):
-        return None
+        return None, None
     match = _MYSQL_QUERY_PATTERN.search(prompt)
+    if match is not None:
+        return match.group("query").strip(), match.span("query")
+    match = _MYSQL_UNQUOTED_QUERY_PATTERN.search(prompt)
+    if match is None:
+        return None, None
+    return match.group("query").strip(), match.span("query")
+
+
+def _extract_mysql_database(prompt: str) -> str | None:
+    if not _MYSQL_TOKEN_PATTERN.search(prompt):
+        return None
+    match = _MYSQL_DATABASE_PATTERN.search(prompt)
+    if match is not None:
+        return match.group("database")
+    match = _MYSQL_DATABASE_ALIAS_PATTERN.search(prompt)
     if match is None:
         return None
-    return match.group("query").strip()
+    return match.group("database")
+
+
+def _mysql_connection_context(
+    prompt: str,
+    mysql_query_span: tuple[int, int] | None,
+) -> str:
+    if mysql_query_span is None:
+        return prompt
+    return prompt[: mysql_query_span[0]]
 
 
 def _infer_input_kind(

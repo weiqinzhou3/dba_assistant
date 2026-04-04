@@ -70,6 +70,19 @@ def test_normalize_raw_request_extracts_multiple_local_rdb_paths_from_prompt() -
     assert request.runtime_inputs.input_kind == "local_rdb"
 
 
+def test_normalize_raw_request_extracts_multiple_local_rdb_paths_from_english_prompt() -> None:
+    request = normalize_raw_request(
+        "Analyze /tmp/one.rdb and /tmp/two.rdb, focus on TTL distribution",
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.input_paths == (
+        Path("/tmp/one.rdb"),
+        Path("/tmp/two.rdb"),
+    )
+    assert request.runtime_inputs.input_kind == "local_rdb"
+
+
 def test_normalize_raw_request_prefers_explicit_input_paths_over_prompt_paths() -> None:
     explicit = Path("/tmp/explicit.rdb")
     request = normalize_raw_request(
@@ -529,6 +542,36 @@ def test_normalize_raw_request_extracts_mysql_query_from_prompt() -> None:
     assert request.runtime_inputs.mysql_query == "SELECT * FROM redis_rows LIMIT 10"
     assert request.runtime_inputs.input_kind == "preparsed_mysql"
     assert request.secrets.mysql_password == "secret123"
+
+
+def test_normalize_raw_request_extracts_mysql_connection_and_table_from_english_prompt() -> None:
+    request = normalize_raw_request(
+        "Use MySQL 10.0.0.8:3306 user root password secret123 database dba table redis_rows to analyze preparsed dataset",
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.mysql_host == "10.0.0.8"
+    assert request.runtime_inputs.mysql_port == 3306
+    assert request.runtime_inputs.mysql_user == "root"
+    assert request.runtime_inputs.mysql_database == "dba"
+    assert request.runtime_inputs.mysql_table == "redis_rows"
+    assert request.runtime_inputs.mysql_query is None
+    assert request.runtime_inputs.input_kind == "preparsed_mysql"
+    assert request.secrets.mysql_password == "secret123"
+
+
+def test_normalize_raw_request_extracts_unquoted_mysql_query_and_database_alias() -> None:
+    request = normalize_raw_request(
+        "从 MySQL 192.168.1.10:3306 的 dba 库里执行 select * from redis_rows where key_name like 'user:%'，并做分析",
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.mysql_host == "192.168.1.10"
+    assert request.runtime_inputs.mysql_port == 3306
+    assert request.runtime_inputs.mysql_database == "dba"
+    assert request.runtime_inputs.mysql_table is None
+    assert request.runtime_inputs.mysql_query == "select * from redis_rows where key_name like 'user:%'"
+    assert request.runtime_inputs.input_kind == "preparsed_mysql"
 
 
 def test_normalize_raw_request_extracts_both_redis_and_mysql_targets_from_prompt() -> None:

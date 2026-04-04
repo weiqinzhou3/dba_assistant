@@ -6,18 +6,27 @@ are captured at construction time — the LLM never sees raw secrets.
 """
 from __future__ import annotations
 
+import json
+import tempfile
 from pathlib import Path
 
+from dba_assistant.adaptors.mysql_adaptor import MySQLAdaptor, MySQLConnectionConfig
 from dba_assistant.adaptors.redis_adaptor import (
     DEFAULT_CONFIG_PATTERN,
     DEFAULT_SLOWLOG_LENGTH,
     RedisAdaptor,
     RedisConnectionConfig,
 )
+from dba_assistant.adaptors.ssh_adaptor import SSHAdaptor, SSHConnectionConfig
 from dba_assistant.application.request_models import NormalizedRequest, RdbOverrides
 from dba_assistant.core.reporter.types import OutputMode, ReportFormat, ReportOutputConfig
 from dba_assistant.skills.redis_rdb_analysis.remote_input import discover_remote_rdb
 from dba_assistant.tools.analyze_rdb import analyze_rdb_tool
+from dba_assistant.tools.mysql_tools import (
+    load_preparsed_dataset_from_mysql as _load_dataset,
+    mysql_read_query as _mysql_read,
+    stage_rdb_rows_to_mysql as _stage_rows,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -28,19 +37,47 @@ def build_all_tools(
     request: NormalizedRequest,
     *,
     connection: RedisConnectionConfig | None = None,
+    mysql_connection: MySQLConnectionConfig | None = None,
 ) -> list:
     """Build the complete tool list available to the unified agent."""
     tools: list = []
+    mysql_adaptor = MySQLAdaptor() if mysql_connection is not None else None
 
     # Local RDB analysis (always available)
-    tools.append(_make_analyze_local_rdb_tool(request))
+    tools.append(
+        _make_analyze_local_rdb_tool(
+            request,
+            mysql_adaptor=mysql_adaptor,
+            mysql_connection=mysql_connection,
+        )
+    )
+    tools.append(
+        _make_analyze_preparsed_dataset_tool(
+            request,
+            mysql_adaptor=mysql_adaptor,
+            mysql_connection=mysql_connection,
+        )
+    )
 
     # Redis inspection & remote-RDB tools (only when connection info is present)
     if connection is not None:
         adaptor = RedisAdaptor()
         tools.extend(_make_redis_inspection_tools(adaptor, connection))
         tools.append(_make_discover_remote_rdb_tool(adaptor, connection))
-        tools.append(_make_fetch_and_analyze_remote_rdb_tool(adaptor, connection))
+        tools.append(
+            _make_fetch_and_analyze_remote_rdb_tool(
+                request,
+                adaptor,
+                connection,
+                mysql_adaptor=mysql_adaptor,
+                mysql_connection=mysql_connection,
+            )
+        )
+
+    # MySQL tools (only when MySQL connection info is present)
+    if mysql_connection is not None:
+        assert mysql_adaptor is not None
+        tools.extend(_make_mysql_tools(mysql_adaptor, mysql_connection))
 
     return tools
 
@@ -49,8 +86,18 @@ def build_all_tools(
 # Local RDB analysis (Phase 3)
 # ---------------------------------------------------------------------------
 
-def _make_analyze_local_rdb_tool(request: NormalizedRequest):
+def _make_analyze_local_rdb_tool(
+    request: NormalizedRequest,
+    *,
+    mysql_adaptor: MySQLAdaptor | None = None,
+    mysql_connection: MySQLConnectionConfig | None = None,
+):
     """Combined analyze + report tool for local RDB files."""
+
+    analysis_service = _make_phase3_analysis_service(
+        mysql_adaptor=mysql_adaptor,
+        mysql_connection=mysql_connection,
+    )
 
     def analyze_local_rdb(
         input_paths: str,
@@ -72,13 +119,18 @@ def _make_analyze_local_rdb_tool(request: NormalizedRequest):
         if request.rdb_overrides.top_n:
             overrides["top_n"] = dict(request.rdb_overrides.top_n)
 
-        analysis = analyze_rdb_tool(
-            prompt=request.prompt,
-            input_paths=paths,
-            profile_name=profile_name,
-            path_mode=request.rdb_overrides.route_name or "auto",
-            profile_overrides=overrides,
-        )
+        try:
+            analysis = analyze_rdb_tool(
+                prompt=request.prompt,
+                input_paths=paths,
+                input_kind=request.runtime_inputs.input_kind or "local_rdb",
+                profile_name=profile_name,
+                path_mode=request.runtime_inputs.path_mode or request.rdb_overrides.route_name or "auto",
+                profile_overrides=overrides,
+                service=analysis_service,
+            )
+        except ValueError as exc:
+            return f"Error: {exc}"
 
         from dba_assistant.core.reporter.generate_analysis_report import (
             generate_analysis_report as _generate,
@@ -113,6 +165,83 @@ def _make_analyze_local_rdb_tool(request: NormalizedRequest):
             "report_format ('summary' or 'docx'), "
             "output_path (file path, required for docx), "
             "focus_prefixes (optional, comma-separated key prefixes like 'cache:*,session:*')."
+        ),
+    )
+
+
+def _make_analyze_preparsed_dataset_tool(
+    request: NormalizedRequest,
+    *,
+    mysql_adaptor: MySQLAdaptor | None = None,
+    mysql_connection: MySQLConnectionConfig | None = None,
+):
+    """Analyze preparsed datasets from local files or MySQL-backed sources."""
+
+    analysis_service = _make_phase3_analysis_service(
+        mysql_adaptor=mysql_adaptor,
+        mysql_connection=mysql_connection,
+    )
+
+    def analyze_preparsed_dataset(
+        input_paths: str = "",
+        mysql_table: str = "",
+        mysql_query: str = "",
+        profile_name: str = "generic",
+        output_mode: str = "summary",
+        report_format: str = "summary",
+        output_path: str = "",
+        focus_prefixes: str = "",
+    ) -> str:
+        overrides: dict[str, object] = {}
+        if focus_prefixes:
+            overrides["focus_prefixes"] = tuple(
+                p.strip() for p in focus_prefixes.split(",") if p.strip()
+            )
+        if request.rdb_overrides.top_n:
+            overrides["top_n"] = dict(request.rdb_overrides.top_n)
+
+        effective_mysql_table = mysql_table or request.runtime_inputs.mysql_table
+        effective_mysql_query = mysql_query or request.runtime_inputs.mysql_query
+
+        if effective_mysql_table or effective_mysql_query or request.runtime_inputs.input_kind == "preparsed_mysql":
+            sources = [effective_mysql_table or effective_mysql_query or "mysql:dataset"]
+            input_kind = "preparsed_mysql"
+        else:
+            sources = [Path(p.strip()) for p in input_paths.split(",") if p.strip()]
+            input_kind = request.runtime_inputs.input_kind or "precomputed"
+            if not sources:
+                return "Error: no preparsed dataset source provided."
+
+        try:
+            analysis = analyze_rdb_tool(
+                prompt=request.prompt,
+                input_paths=sources,
+                input_kind=input_kind,
+                profile_name=profile_name,
+                path_mode=request.runtime_inputs.path_mode or request.rdb_overrides.route_name or "auto",
+                profile_overrides=overrides,
+                mysql_table=effective_mysql_table,
+                mysql_query=effective_mysql_query,
+                service=analysis_service,
+            )
+        except ValueError as exc:
+            return f"Error: {exc}"
+
+        return _render_analysis_output(
+            analysis,
+            output_mode=output_mode,
+            report_format=report_format,
+            output_path=Path(output_path) if output_path else request.runtime_inputs.output_path,
+        )
+
+    return _named_tool(
+        analyze_preparsed_dataset,
+        "analyze_preparsed_dataset",
+        (
+            "Analyze a preparsed dataset and generate a report. "
+            "Supports local JSON datasets or MySQL-backed preparsed datasets. "
+            "Parameters: input_paths (comma-separated local dataset paths), mysql_table, mysql_query, "
+            "profile_name, output_mode, report_format, output_path, focus_prefixes."
         ),
     )
 
@@ -158,27 +287,76 @@ def _make_discover_remote_rdb_tool(
 
 
 def _make_fetch_and_analyze_remote_rdb_tool(
+    request: NormalizedRequest,
     adaptor: RedisAdaptor,
     connection: RedisConnectionConfig,
+    *,
+    mysql_adaptor: MySQLAdaptor | None = None,
+    mysql_connection: MySQLConnectionConfig | None = None,
 ):
     """Remote RDB fetch + analysis tool protected by Deep Agent interrupt_on."""
+
+    analysis_service = _make_phase3_analysis_service(
+        mysql_adaptor=mysql_adaptor,
+        mysql_connection=mysql_connection,
+    )
 
     def fetch_and_analyze_remote_rdb(
         profile_name: str = "generic",
         output_mode: str = "summary",
         report_format: str = "summary",
         output_path: str = "",
+        local_rdb_path: str = "",
+        ssh_host: str = "",
+        ssh_port: str = "22",
+        ssh_username: str = "",
+        ssh_password: str = "",
+        remote_rdb_path: str = "",
     ) -> str:
+        # If a local path was supplied (manual retrieval or future SSH fetch),
+        # close the loop by routing directly into analyze_rdb_tool.
+        if local_rdb_path:
+            local_path = Path(local_rdb_path)
+            if not local_path.exists():
+                return f"Error: local RDB path does not exist: {local_rdb_path}"
+
+            return _render_remote_rdb_analysis(
+                request=request,
+                local_path=local_path,
+                connection=connection,
+                profile_name=profile_name,
+                output_mode=output_mode,
+                report_format=report_format,
+                output_path=output_path,
+                analysis_service=analysis_service,
+            )
+
         try:
             discovery = discover_remote_rdb(adaptor, connection)
         except Exception as exc:  # noqa: BLE001
             return f"Remote RDB discovery failed: {exc}"
 
-        rdb_path = discovery.get("rdb_path", "unknown")
-        return (
-            f"Remote RDB is at {rdb_path} on {connection.host}. "
-            "SSH-based fetch is not yet implemented. "
-            "Please manually retrieve the file and re-run with --input <local_path>."
+        fetched_path = _fetch_remote_rdb_via_ssh(
+            connection=connection,
+            discovery=discovery,
+            ssh_host=ssh_host,
+            ssh_port=ssh_port,
+            ssh_username=ssh_username,
+            ssh_password=ssh_password,
+            remote_rdb_path=remote_rdb_path,
+        )
+        if isinstance(fetched_path, str):
+            return fetched_path
+
+        return _render_remote_rdb_analysis(
+            request=request,
+            local_path=fetched_path,
+            connection=connection,
+            profile_name=profile_name,
+            output_mode=output_mode,
+            report_format=report_format,
+            output_path=output_path,
+            analysis_service=analysis_service,
         )
 
     return _named_tool(
@@ -188,7 +366,9 @@ def _make_fetch_and_analyze_remote_rdb_tool(
             "Fetch and analyze an RDB file from a remote Redis server. "
             "REQUIRES HUMAN APPROVAL before proceeding. "
             "Use after discover_remote_rdb to fetch the actual RDB file. "
-            "Parameters: profile_name, output_mode, report_format, output_path."
+            "Parameters: profile_name, output_mode, report_format, output_path, "
+            "local_rdb_path (optional — if set, analyze this local file instead of SSH fetch), "
+            "ssh_host, ssh_port, ssh_username, ssh_password, remote_rdb_path."
         ),
     )
 
@@ -225,6 +405,189 @@ def _make_redis_inspection_tools(
         _named_tool(redis_slowlog_get, "redis_slowlog_get", "Return bounded Redis SLOWLOG GET entries."),
         _named_tool(redis_client_list, "redis_client_list", "Return Redis client-list count."),
     ]
+
+
+# ---------------------------------------------------------------------------
+# MySQL tools (Phase 3.2)
+# ---------------------------------------------------------------------------
+
+def _make_mysql_tools(
+    adaptor: MySQLAdaptor,
+    config: MySQLConnectionConfig,
+) -> list:
+    """Build the MySQL capability tools."""
+
+    def mysql_read_query(sql: str) -> str:
+        return _mysql_read(adaptor, config, sql)
+
+    def load_preparsed_dataset_from_mysql(table_name: str, limit: str = "100000") -> str:
+        return _load_dataset(adaptor, config, table_name, limit=int(limit))
+
+    def stage_rdb_rows_to_mysql(table_name: str, rows_json: str) -> str:
+        rows = json.loads(rows_json)
+        return _stage_rows(adaptor, config, table_name, rows)
+
+    return [
+        _named_tool(
+            mysql_read_query,
+            "mysql_read_query",
+            "Execute a bounded read-only SQL query against MySQL and return the result as JSON. "
+            "Parameter: sql (the SQL query string).",
+        ),
+        _named_tool(
+            load_preparsed_dataset_from_mysql,
+            "load_preparsed_dataset_from_mysql",
+            "Load a preparsed dataset from a MySQL table and return it as JSON. "
+            "Parameters: table_name (the table to read), limit (max rows, default 100000).",
+        ),
+        _named_tool(
+            stage_rdb_rows_to_mysql,
+            "stage_rdb_rows_to_mysql",
+            "Stage parsed RDB rows into a MySQL table for database-backed aggregation. "
+            "REQUIRES HUMAN APPROVAL — this is a write operation. "
+            "Parameters: table_name (staging table name), rows_json (JSON array of row objects).",
+        ),
+    ]
+
+
+def _make_phase3_analysis_service(
+    *,
+    mysql_adaptor: MySQLAdaptor | None,
+    mysql_connection: MySQLConnectionConfig | None,
+):
+    if mysql_adaptor is None or mysql_connection is None:
+        return None
+
+    def run_analysis(request):
+        from dba_assistant.skills.redis_rdb_analysis.service import analyze_rdb as _analyze_rdb
+
+        return _analyze_rdb(
+            request,
+            profile=None,
+            remote_discovery=lambda *_args, **_kwargs: {},
+            mysql_read_query=lambda sql: json.loads(
+                _mysql_read(mysql_adaptor, mysql_connection, sql)
+            ),
+            stage_rdb_rows_to_mysql=lambda table_name, rows: json.loads(
+                _stage_rows(mysql_adaptor, mysql_connection, table_name, rows)
+            ),
+            load_preparsed_dataset_from_mysql=lambda table_name: json.loads(
+                _load_dataset(mysql_adaptor, mysql_connection, table_name)
+            ),
+        )
+
+    return run_analysis
+
+
+def _fetch_remote_rdb_via_ssh(
+    *,
+    connection: RedisConnectionConfig,
+    discovery: dict[str, object],
+    ssh_host: str,
+    ssh_port: str,
+    ssh_username: str,
+    ssh_password: str,
+    remote_rdb_path: str,
+) -> Path | str:
+    target_path = str(remote_rdb_path or discovery.get("rdb_path") or "").strip()
+    if not target_path:
+        return "Remote RDB discovery did not return a usable rdb_path."
+
+    ssh_config = SSHConnectionConfig(
+        host=ssh_host or connection.host,
+        port=int(ssh_port or 22),
+        username=ssh_username or None,
+        password=ssh_password or None,
+    )
+    local_dir = Path(tempfile.mkdtemp(prefix="dba-assistant-remote-rdb-"))
+    local_path = local_dir / Path(target_path).name
+
+    try:
+        return SSHAdaptor().fetch_file(ssh_config, target_path, local_path)
+    except Exception as exc:  # noqa: BLE001
+        return f"Remote RDB fetch failed: {exc}"
+
+
+def _render_remote_rdb_analysis(
+    *,
+    request: NormalizedRequest,
+    local_path: Path,
+    connection: RedisConnectionConfig,
+    profile_name: str,
+    output_mode: str,
+    report_format: str,
+    output_path: str,
+    analysis_service,
+) -> str:
+    overrides: dict[str, object] = {}
+    if request.rdb_overrides.focus_prefixes:
+        overrides["focus_prefixes"] = request.rdb_overrides.focus_prefixes
+    if request.rdb_overrides.top_n:
+        overrides["top_n"] = dict(request.rdb_overrides.top_n)
+
+    try:
+        analysis = analyze_rdb_tool(
+            prompt=request.prompt,
+            input_paths=[local_path],
+            input_kind="local_rdb",
+            profile_name=profile_name,
+            path_mode=request.runtime_inputs.path_mode or request.rdb_overrides.route_name or "auto",
+            profile_overrides=overrides,
+            service=analysis_service,
+        )
+    except ValueError as exc:
+        return f"Error: {exc}"
+
+    from dba_assistant.core.reporter.generate_analysis_report import (
+        generate_analysis_report as _generate,
+    )
+
+    fmt = ReportFormat.SUMMARY if report_format == "summary" else ReportFormat.DOCX
+    out = Path(output_path) if output_path else None
+    if fmt is ReportFormat.DOCX and out is None:
+        return "Error: DOCX output requires an output path."
+
+    config = ReportOutputConfig(
+        mode=OutputMode.SUMMARY if output_mode == "summary" else OutputMode.REPORT,
+        format=fmt,
+        output_path=out,
+        template_name="rdb-analysis",
+    )
+    artifact = _generate(analysis, config)
+    if artifact.content is not None:
+        return artifact.content
+    if artifact.output_path is not None:
+        return str(artifact.output_path)
+    return "Analysis complete but no output generated."
+
+
+def _render_analysis_output(
+    analysis,
+    *,
+    output_mode: str,
+    report_format: str,
+    output_path: Path | None,
+) -> str:
+    from dba_assistant.core.reporter.generate_analysis_report import (
+        generate_analysis_report as _generate,
+    )
+
+    fmt = ReportFormat.SUMMARY if report_format == "summary" else ReportFormat.DOCX
+    if fmt is ReportFormat.DOCX and output_path is None:
+        return "Error: DOCX output requires an output path."
+
+    config = ReportOutputConfig(
+        mode=OutputMode.SUMMARY if output_mode == "summary" else OutputMode.REPORT,
+        format=fmt,
+        output_path=output_path,
+        template_name="rdb-analysis",
+    )
+    artifact = _generate(analysis, config)
+    if artifact.content is not None:
+        return artifact.content
+    if artifact.output_path is not None:
+        return str(artifact.output_path)
+    return "Analysis complete but no output generated."
 
 
 # ---------------------------------------------------------------------------

@@ -64,4 +64,32 @@ def _apply_overrides(
     if request.profile is not None:
         rdb_overrides = replace(rdb_overrides, profile_name=request.profile)
 
+    if request.input_kind is not None:
+        runtime_inputs = replace(runtime_inputs, input_kind=request.input_kind)
+
+    if request.path_mode is not None:
+        runtime_inputs = replace(runtime_inputs, path_mode=request.path_mode)
+
+    if request.mysql_host is not None:
+        runtime_inputs = replace(runtime_inputs, mysql_host=request.mysql_host)
+
+    if request.mysql_port is not None:
+        runtime_inputs = replace(runtime_inputs, mysql_port=request.mysql_port)
+
+    if request.mysql_user is not None:
+        runtime_inputs = replace(runtime_inputs, mysql_user=request.mysql_user)
+
+    if request.mysql_database is not None:
+        runtime_inputs = replace(runtime_inputs, mysql_database=request.mysql_database)
+
+    if request.mysql_table is not None:
+        runtime_inputs = replace(runtime_inputs, mysql_table=request.mysql_table)
+
+    if request.mysql_query is not None:
+        runtime_inputs = replace(runtime_inputs, mysql_query=request.mysql_query)
+
+    if request.mysql_password is not None:
+        secrets = replace(normalized.secrets, mysql_password=request.mysql_password)
+        normalized = replace(normalized, secrets=secrets)
+
     return replace(normalized, runtime_inputs=runtime_inputs, rdb_overrides=rdb_overrides)

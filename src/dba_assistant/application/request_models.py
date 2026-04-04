@@ -13,11 +13,20 @@ class RuntimeInputs:
     report_format: str | None = None
     output_path: Path | None = None
     input_paths: tuple[Path, ...] = field(default_factory=tuple)
+    input_kind: str | None = None
+    path_mode: str | None = None
+    mysql_host: str | None = None
+    mysql_port: int = 3306
+    mysql_user: str | None = None
+    mysql_database: str | None = None
+    mysql_table: str | None = None
+    mysql_query: str | None = None
 
 
 @dataclass(frozen=True)
 class Secrets:
     redis_password: str | None = None
+    mysql_password: str | None = None
 
 
 @dataclass(frozen=True)

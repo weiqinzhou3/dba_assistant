@@ -69,6 +69,14 @@ def test_build_user_message_includes_context() -> None:
         runtime_inputs=RuntimeInputs(
             redis_host="redis.example",
             redis_port=6379,
+            input_kind="preparsed_mysql",
+            path_mode="preparsed_dataset_analysis",
+            mysql_host="db.example",
+            mysql_port=3306,
+            mysql_user="analyst",
+            mysql_database="analysis_db",
+            mysql_table="preparsed_keys",
+            mysql_query="SELECT * FROM preparsed_keys",
             output_mode="report",
             report_format="docx",
             output_path=Path("/tmp/out.docx"),
@@ -84,7 +92,12 @@ def test_build_user_message_includes_context() -> None:
 
     assert "analyze rdb" in msg
     assert "/tmp/dump.rdb" in msg
+    assert "preparsed_mysql" in msg
+    assert "preparsed_dataset_analysis" in msg
     assert "redis.example:6379" in msg
+    assert "db.example:3306" in msg
+    assert "preparsed_keys" in msg
+    assert "SELECT * FROM preparsed_keys" in msg
     assert "rcs" in msg
     assert "report / docx" in msg
     assert "/tmp/out.docx" in msg
@@ -102,7 +115,7 @@ def test_build_unified_agent_wires_tools_and_model(monkeypatch) -> None:
     monkeypatch.setattr(
         agent_module,
         "build_all_tools",
-        lambda req, connection=None: ["tool1", "tool2"],
+        lambda req, connection=None, mysql_connection=None: ["tool1", "tool2"],
     )
 
     def fake_create_deep_agent(**kwargs):

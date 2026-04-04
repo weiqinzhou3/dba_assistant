@@ -72,13 +72,22 @@ That means the runtime is no longer “CLI routes to Phase 2 or Phase 3.” The 
 
 ## 4. Phase 3 Route Semantics
 
-Phase 3 still keeps the formal route semantics:
+Phase 3 now uses these canonical route names:
 
-- `legacy_sql_pipeline`
-- `precomputed_dataset`
-- `direct_memory_analysis`
+- `database_backed_analysis`
+- `preparsed_dataset_analysis`
+- `direct_rdb_analysis`
 
-These remain Phase 3 domain route names, not public CLI commands.
+These are Phase 3 domain route names, not public CLI commands.
+
+Compatibility aliases still normalize correctly:
+
+- `legacy_sql_pipeline` -> `database_backed_analysis`
+- `precomputed_dataset` -> `preparsed_dataset_analysis`
+- `direct_memory_analysis` -> `direct_rdb_analysis`
+- `3a` -> `database_backed_analysis`
+- `3b` -> `preparsed_dataset_analysis`
+- `3c` -> `direct_rdb_analysis`
 
 They are consumed inside the RDB-analysis domain, mainly through:
 
@@ -86,7 +95,7 @@ They are consumed inside the RDB-analysis domain, mainly through:
 - input type
 - downstream Phase 3 request construction
 
-The user should not have to think in “3a / 3b / 3c” terms when using the main CLI.
+The user should not have to think in stage labels or legacy route names when using the main CLI.
 
 ## 5. Remote Redis Approval Flow
 
@@ -116,7 +125,7 @@ At the unified-agent level, the relevant Phase 3 tools are:
 - `discover_remote_rdb`
   - read-only remote Redis persistence discovery
 - `fetch_and_analyze_remote_rdb`
-  - approval-gated remote RDB acquisition intent
+  - approval-gated remote RDB acquisition, SSH fetch, then continued analysis
 
 And the Phase 2 live inspection tools remain available alongside them:
 

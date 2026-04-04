@@ -41,9 +41,13 @@ The retained flags exist for deterministic local execution and future API / WebU
 |------|---------|-------|
 | `--config` | Load an explicit repository config file. | Overrides the default repository config path. |
 | `--input` | Provide one or more local input paths. | Repeatable. Used for local `RDB` files today. |
+| `--input-kind` | Force the input source category. | Public values now include `local_rdb`, `precomputed`, `preparsed_mysql`, and `remote_redis`. |
+| `--path-mode` | Force the canonical route name. | Canonical values are `database_backed_analysis`, `preparsed_dataset_analysis`, and `direct_rdb_analysis`. |
 | `--profile` | Force the analysis profile. | Typical values are `generic` and `rcs`. |
 | `--report-format` | Force the rendered output format. | Current public values are `summary` and `docx`. |
 | `--output` | Force the output destination. | Required for effective `docx` output. |
+| `--mysql-host` / `--mysql-port` / `--mysql-user` / `--mysql-password` / `--mysql-database` | Provide MySQL connection context. | Shared contract fields, not CLI-only business logic. |
+| `--mysql-table` / `--mysql-query` | Point to a MySQL-backed preparsed dataset. | Lets the unified agent or analysis layer enter `preparsed_dataset_analysis`. |
 
 ## Precedence
 
@@ -64,7 +68,7 @@ The CLI hands the request to the interface adapter, which normalizes it into one
 - local input paths
 - prompt-derived Redis host / port / db
 - extracted secrets such as Redis password
-- prompt-derived `profile`, `top_n`, and prefix overrides
+- prompt-derived `profile`, `top_n`, prefix overrides, and canonical route hints
 - output intent such as `summary` or `docx`
 
 From that point on, the CLI is out of the business-routing path.
@@ -128,8 +132,8 @@ The important boundary is this:
 ## Current Practical Limits
 
 - Local `.rdb` file paths still come most reliably from `--input`
-- The remote-RDB flow currently supports discovery plus approval-gated acquisition intent, but the actual SSH-based file fetch is still scaffold-only
-- `precomputed_dataset` remains a Phase 3 route, but the current public CLI does not expose a separate `input-kind` flag for it
+- Remote RDB acquisition now stays inside the unified agent flow, but SSH credential policy is still intentionally narrow
+- MySQL-backed preparsed datasets now enter through shared contract fields such as `input_kind=preparsed_mysql` plus `mysql_table` or `mysql_query`
 
 ## Debugging Principle
 

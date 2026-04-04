@@ -11,6 +11,7 @@ from uuid import uuid4
 from deepagents import create_deep_agent
 from langgraph.types import Command
 
+from dba_assistant.adaptors.mysql_adaptor import MySQLConnectionConfig
 from dba_assistant.adaptors.redis_adaptor import RedisConnectionConfig
 from dba_assistant.application.request_models import NormalizedRequest
 from dba_assistant.deep_agent_integration.config import AppConfig
@@ -31,14 +32,21 @@ You are DBA Assistant, a specialized database administration assistant focused o
 
 Available capabilities (use the corresponding tool):
 1. **analyze_local_rdb** — Analyze local Redis RDB dump files. Use when local .rdb file paths are provided.
-2. **discover_remote_rdb** — Read-only discovery of remote Redis RDB location and persistence info.
-3. **fetch_and_analyze_remote_rdb** — Fetch a remote RDB (requires human approval) then analyze it.
-4. **redis_ping / redis_info / redis_config_get / redis_slowlog_get / redis_client_list** — \
+2. **analyze_preparsed_dataset** — Analyze a preparsed dataset from local JSON or MySQL-backed source.
+3. **discover_remote_rdb** — Read-only discovery of remote Redis RDB location and persistence info.
+4. **fetch_and_analyze_remote_rdb** — Fetch a remote RDB (requires human approval) then analyze it.
+5. **redis_ping / redis_info / redis_config_get / redis_slowlog_get / redis_client_list** — \
 Live read-only Redis inspection.
+6. **mysql_read_query** — Execute a bounded read-only SQL query against MySQL.
+7. **load_preparsed_dataset_from_mysql** — Load a preparsed dataset from a MySQL table.
+8. **stage_rdb_rows_to_mysql** — Stage parsed RDB rows into MySQL for database-backed analysis \
+(requires human approval).
 
 Rules:
 - All Redis operations are strictly read-only.
 - For remote RDB: call discover_remote_rdb first, then fetch_and_analyze_remote_rdb.
+- MySQL read operations (mysql_read_query, load_preparsed_dataset_from_mysql) are lower-risk.
+- MySQL write operations (stage_rdb_rows_to_mysql) require human approval before execution.
 - Use the profile the user requests (generic, rcs). Default to generic.
 - Generate reports in the requested format (summary / docx). Default to summary.
 - Be concise. Return tool output directly when it already answers the user's question.
@@ -52,12 +60,27 @@ def build_unified_agent(
 ) -> object:
     """Build the unified Deep Agent with all available tools."""
     connection = _build_connection(request, config)
+    mysql_connection = _build_mysql_connection(request)
 
-    tools = build_all_tools(request, connection=connection)
+    tools = build_all_tools(
+        request, connection=connection, mysql_connection=mysql_connection,
+    )
 
     model = build_model(config.model)
     backend = build_runtime_backend()
     checkpointer = build_runtime_checkpointer()
+
+    interrupt_on: dict[str, Any] = {
+        "fetch_and_analyze_remote_rdb": {
+            "allowed_decisions": ["approve", "reject"],
+            "description": _build_remote_rdb_interrupt_description(request),
+        },
+    }
+    if mysql_connection is not None:
+        interrupt_on["stage_rdb_rows_to_mysql"] = {
+            "allowed_decisions": ["approve", "reject"],
+            "description": _build_mysql_staging_interrupt_description(request),
+        }
 
     return create_deep_agent(
         name="dba-assistant",
@@ -67,12 +90,7 @@ def build_unified_agent(
         checkpointer=checkpointer,
         skills=get_skill_sources(),
         memory=get_memory_sources(),
-        interrupt_on={
-            "fetch_and_analyze_remote_rdb": {
-                "allowed_decisions": ["approve", "reject"],
-                "description": _build_remote_rdb_interrupt_description(request),
-            }
-        },
+        interrupt_on=interrupt_on,
         system_prompt=SYSTEM_PROMPT,
     )
 
@@ -95,7 +113,7 @@ def run_orchestrated(
     while interrupts := _extract_interrupts(result):
         resume_payload = _handle_interrupts(interrupts, approval_handler)
         if resume_payload is None:
-            return "Operation denied by user. Remote RDB fetch was not performed."
+            return "Operation denied by user."
         result = agent.invoke(Command(resume=resume_payload), config=run_config)
 
     return extract_agent_output(result)
@@ -121,6 +139,21 @@ def _build_connection(
     )
 
 
+def _build_mysql_connection(
+    request: NormalizedRequest,
+) -> MySQLConnectionConfig | None:
+    """Build a MySQL connection config from the normalized request, or None."""
+    if not request.runtime_inputs.mysql_host:
+        return None
+    return MySQLConnectionConfig(
+        host=request.runtime_inputs.mysql_host,
+        port=request.runtime_inputs.mysql_port,
+        user=request.runtime_inputs.mysql_user or "root",
+        password=request.secrets.mysql_password or "",
+        database=request.runtime_inputs.mysql_database or "",
+    )
+
+
 def _build_user_message(request: NormalizedRequest) -> str:
     """Build the user message including structured context."""
     parts: list[str] = [request.prompt]
@@ -130,11 +163,27 @@ def _build_user_message(request: NormalizedRequest) -> str:
         paths = ", ".join(str(p) for p in request.runtime_inputs.input_paths)
         context_lines.append(f"Local RDB files: {paths}")
 
+    if request.runtime_inputs.input_kind:
+        context_lines.append(f"Input kind: {request.runtime_inputs.input_kind}")
+
+    if request.runtime_inputs.path_mode:
+        context_lines.append(f"Path mode: {request.runtime_inputs.path_mode}")
+
     if request.runtime_inputs.redis_host:
         context_lines.append(
             f"Redis connection: {request.runtime_inputs.redis_host}:"
             f"{request.runtime_inputs.redis_port}"
         )
+
+    if request.runtime_inputs.mysql_host:
+        context_lines.append(
+            f"MySQL connection: {request.runtime_inputs.mysql_host}:"
+            f"{request.runtime_inputs.mysql_port}"
+        )
+    if request.runtime_inputs.mysql_table:
+        context_lines.append(f"MySQL table: {request.runtime_inputs.mysql_table}")
+    if request.runtime_inputs.mysql_query:
+        context_lines.append(f"MySQL query: {request.runtime_inputs.mysql_query}")
 
     if request.rdb_overrides.profile_name:
         context_lines.append(f"Profile: {request.rdb_overrides.profile_name}")
@@ -224,3 +273,28 @@ def _build_remote_rdb_interrupt_description(request: NormalizedRequest):
         )
 
     return describe_remote_rdb_fetch_interrupt
+
+
+def _build_mysql_staging_interrupt_description(request: NormalizedRequest):
+    mysql_target = (
+        f"{request.runtime_inputs.mysql_host}:{request.runtime_inputs.mysql_port}"
+        if request.runtime_inputs.mysql_host
+        else "unknown MySQL target"
+    )
+
+    def describe_mysql_staging_interrupt(
+        tool_call: dict[str, Any],
+        state: Any,
+        runtime: Any,
+    ) -> str:
+        args = tool_call.get("args", {})
+        table_name = args.get("table_name", "unknown")
+        return (
+            "MySQL staging write requires human approval.\n\n"
+            f"Target MySQL: {mysql_target}\n"
+            f"Staging table: {table_name}\n"
+            "The agent wants to write parsed RDB rows into MySQL.\n"
+            "Approve only if MySQL write access is allowed for this target."
+        )
+
+    return describe_mysql_staging_interrupt

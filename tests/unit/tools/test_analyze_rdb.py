@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 import dba_assistant.tools as tools
 from dba_assistant.core.reporter.generate_analysis_report import (
     generate_analysis_report as core_generate_analysis_report,
@@ -35,22 +37,20 @@ def test_analyze_rdb_tool_uses_generic_profile_by_default(tmp_path: Path) -> Non
     assert captured["request"].inputs[0].kind is InputSourceKind.LOCAL_RDB
 
 
-def test_analyze_rdb_tool_handles_explicit_mysql_local_prompt(monkeypatch, tmp_path: Path) -> None:
+def test_analyze_rdb_tool_requires_mysql_backend_for_database_backed_route(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
     source = tmp_path / "dump.rdb"
     source.write_text("fixture", encoding="utf-8")
     rows = json.loads(Path("tests/fixtures/rdb/direct/sample_key_records.json").read_text(encoding="utf-8"))
     monkeypatch.setattr("dba_assistant.skills.redis_rdb_analysis.service._parse_rdb_rows", lambda _path: rows)
 
-    result = analyze_rdb_tool(
-        prompt="analyze this rdb via mysql",
-        input_paths=[source],
-    )
-
-    assert result.title == "Redis RDB Analysis"
-    assert result.metadata["route"] == "legacy_sql_pipeline"
-    assert result.metadata["path"] == "3a"
-    assert result.metadata["profile"] == "generic"
-    assert any(section.id == "top_big_keys" for section in result.sections)
+    with pytest.raises(ValueError, match="database_backed_analysis requires MySQL staging"):
+        analyze_rdb_tool(
+            prompt="analyze this rdb via mysql",
+            input_paths=[source],
+        )
 
 
 def test_analyze_rdb_tool_passes_explicit_path_mode_to_request(tmp_path: Path) -> None:
@@ -65,12 +65,12 @@ def test_analyze_rdb_tool_passes_explicit_path_mode_to_request(tmp_path: Path) -
     result = analyze_rdb_tool(
         prompt="analyze this rdb",
         input_paths=[source],
-        path_mode="legacy_sql_pipeline",
+        path_mode="database_backed_analysis",
         service=fake_service,
     )
 
     assert result == "ok"
-    assert captured["request"].path_mode == "legacy_sql_pipeline"
+    assert captured["request"].path_mode == "database_backed_analysis"
 
 
 def test_tools_package_exports_phase3_entry_points() -> None:

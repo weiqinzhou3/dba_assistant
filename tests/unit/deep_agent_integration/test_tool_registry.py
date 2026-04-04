@@ -74,7 +74,7 @@ def test_build_phase3_tools_exposes_local_rdb_analyze_tool(monkeypatch) -> None:
         captured["prompt"] = prompt
         captured["input_paths"] = input_paths
         captured["kwargs"] = kwargs
-        return {"path": "3c", "profile": "generic"}
+        return {"route": "direct_rdb_analysis", "profile": "generic"}
 
     monkeypatch.setattr("dba_assistant.tools.analyze_rdb.analyze_rdb_tool", fake_analyze_rdb_tool)
 
@@ -82,7 +82,7 @@ def test_build_phase3_tools_exposes_local_rdb_analyze_tool(monkeypatch) -> None:
 
     assert [tool.__name__ for tool in tools] == ["analyze_rdb"]
     assert tools[0](prompt="analyze this rdb", input_paths=["/tmp/a.rdb"]) == {
-        "path": "3c",
+        "route": "direct_rdb_analysis",
         "profile": "generic",
     }
     assert captured["prompt"] == "analyze this rdb"

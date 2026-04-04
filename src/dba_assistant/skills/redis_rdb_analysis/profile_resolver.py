@@ -18,6 +18,11 @@ _DEFAULT_TOP_N = {
 }
 
 
+def available_profile_names() -> list[str]:
+    """Return sorted list of available profile names from profiles/*.yaml."""
+    return sorted(p.stem for p in _PROFILE_DIR.glob("*.yaml"))
+
+
 def resolve_profile(profile_name: str, overrides: RdbOverrides) -> EffectiveProfile:
     profile_data = _load_profile(profile_name)
 

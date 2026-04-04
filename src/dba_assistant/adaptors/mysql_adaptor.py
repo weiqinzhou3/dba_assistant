@@ -25,8 +25,8 @@ class MySQLAdaptor:
             return dict
         return pymysql.cursors.DictCursor
 
-    def execute_query(self, config: MySQLConnectionConfig, sql: str) -> list[dict[str, Any]]:
-        connection = self._connect(
+    def _open(self, config: MySQLConnectionConfig) -> Any:
+        return self._connect(
             host=config.host,
             port=config.port,
             user=config.user,
@@ -34,10 +34,40 @@ class MySQLAdaptor:
             database=config.database,
             cursorclass=self.dict_cursor_class(),
         )
+
+    # --- Read path ---
+
+    def execute_query(self, config: MySQLConnectionConfig, sql: str) -> list[dict[str, Any]]:
+        connection = self._open(config)
         try:
             with connection.cursor() as cursor:
                 cursor.execute(sql)
                 return list(cursor.fetchall())
+        finally:
+            connection.close()
+
+    def read_query(self, config: MySQLConnectionConfig, sql: str) -> list[dict[str, Any]]:
+        """Execute a bounded read-only SQL query and return the result set."""
+        return self.execute_query(config, sql)
+
+    # --- Write path ---
+
+    def execute_write(
+        self,
+        config: MySQLConnectionConfig,
+        sql: str,
+        params: list[tuple[Any, ...]] | None = None,
+    ) -> int:
+        """Execute a write statement (INSERT/CREATE/etc.) and return affected row count."""
+        connection = self._open(config)
+        try:
+            with connection.cursor() as cursor:
+                if params:
+                    cursor.executemany(sql, params)
+                else:
+                    cursor.execute(sql)
+                connection.commit()
+                return cursor.rowcount
         finally:
             connection.close()
 

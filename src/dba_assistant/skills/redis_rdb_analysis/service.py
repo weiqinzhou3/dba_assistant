@@ -6,8 +6,14 @@ from pathlib import Path
 from dba_assistant.application.request_models import RdbOverrides
 from dba_assistant.core.reporter.report_model import AnalysisReport
 from dba_assistant.skills.redis_rdb_analysis.analyzers.overall import analyze_overall
+from dba_assistant.skills.redis_rdb_analysis.collectors.path_a_mysql_backed_collector import (
+    PathAMySQLBackedCollector,
+)
 from dba_assistant.skills.redis_rdb_analysis.collectors.path_b_precomputed_collector import (
     PathBPrecomputedCollector,
+)
+from dba_assistant.skills.redis_rdb_analysis.collectors.path_b_mysql_preparsed_collector import (
+    PathBMySQLPreparsedCollector,
 )
 from dba_assistant.skills.redis_rdb_analysis.collectors.path_c_direct_parser_collector import (
     PathCDirectParserCollector,
@@ -17,12 +23,12 @@ from dba_assistant.skills.redis_rdb_analysis.profile_resolver import resolve_pro
 from dba_assistant.skills.redis_rdb_analysis.reports.assembler import assemble_report
 from dba_assistant.skills.redis_rdb_analysis.types import (
     AnalysisStatus,
-    DIRECT_MEMORY_ANALYSIS_ROUTE_NAME,
+    DATABASE_BACKED_ANALYSIS,
+    DIRECT_RDB_ANALYSIS,
     ConfirmationRequest,
     InputSourceKind,
-    LEGACY_SQL_PIPELINE_ROUTE_NAME,
     NormalizedRdbDataset,
-    PRECOMPUTED_DATASET_ROUTE_NAME,
+    PREPARSED_DATASET_ANALYSIS,
     RdbAnalysisRequest,
     phase_label_for_route_name,
 )
@@ -34,6 +40,9 @@ def analyze_rdb(
     profile,
     remote_discovery,
     path_a_collector=None,
+    stage_rdb_rows_to_mysql=None,
+    load_preparsed_dataset_from_mysql=None,
+    mysql_read_query=None,
     path_b_collector=None,
     path_c_collector=None,
 ) -> ConfirmationRequest | AnalysisReport:
@@ -54,6 +63,9 @@ def analyze_rdb(
         request,
         selected_route=selected_route,
         path_a_collector=path_a_collector,
+        stage_rdb_rows_to_mysql=stage_rdb_rows_to_mysql,
+        load_preparsed_dataset_from_mysql=load_preparsed_dataset_from_mysql,
+        mysql_read_query=mysql_read_query,
         path_b_collector=path_b_collector,
         path_c_collector=path_c_collector,
     )
@@ -84,21 +96,40 @@ def _collect_dataset(
     *,
     selected_route: str,
     path_a_collector,
+    stage_rdb_rows_to_mysql,
+    load_preparsed_dataset_from_mysql,
+    mysql_read_query,
     path_b_collector,
     path_c_collector,
 ) -> NormalizedRdbDataset:
     paths = [Path(sample.source) for sample in request.inputs if sample.kind is not InputSourceKind.REMOTE_REDIS]
 
-    if selected_route == PRECOMPUTED_DATASET_ROUTE_NAME:
+    if selected_route == PREPARSED_DATASET_ANALYSIS:
+        if any(sample.kind is InputSourceKind.PREPARSED_MYSQL for sample in request.inputs):
+            collector = path_b_collector or PathBMySQLPreparsedCollector(
+                load_preparsed_dataset_from_mysql=load_preparsed_dataset_from_mysql,
+                mysql_read_query=mysql_read_query,
+            )
+            return collector.collect(request)
         collector = path_b_collector or PathBPrecomputedCollector()
         return collector.collect(paths)
 
-    if selected_route == DIRECT_MEMORY_ANALYSIS_ROUTE_NAME:
+    if selected_route == DIRECT_RDB_ANALYSIS:
         collector = path_c_collector or PathCDirectParserCollector(parser=_parse_rdb_rows)
         return collector.collect(paths)
 
-    if selected_route == LEGACY_SQL_PIPELINE_ROUTE_NAME:
-        collector = path_a_collector or PathCDirectParserCollector(parser=_parse_rdb_rows)
+    if selected_route == DATABASE_BACKED_ANALYSIS:
+        collector = path_a_collector
+        if collector is None:
+            if stage_rdb_rows_to_mysql is None or load_preparsed_dataset_from_mysql is None:
+                raise ValueError(
+                    "database_backed_analysis requires MySQL staging and dataset loading support."
+                )
+            collector = PathAMySQLBackedCollector(
+                parser=_parse_rdb_rows,
+                stage_rows_to_mysql=stage_rdb_rows_to_mysql,
+                load_preparsed_dataset_from_mysql=load_preparsed_dataset_from_mysql,
+            )
         return collector.collect(paths)
 
     raise ValueError(f"Unsupported analysis route: {selected_route}")

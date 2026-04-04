@@ -57,6 +57,37 @@ def test_cli_ask_threads_all_flags_to_interface_request(monkeypatch, tmp_path, c
     assert req.report_format == "docx"
 
 
+def test_cli_ask_threads_mysql_flags_to_interface_request(monkeypatch, capsys) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_handle_request(request, *, approval_handler):
+        captured["request"] = request
+        return "ok"
+
+    monkeypatch.setattr(cli, "handle_request", fake_handle_request)
+
+    exit_code = cli.main([
+        "ask", "analyze rdb via mysql",
+        "--mysql-host", "db.example",
+        "--mysql-port", "3307",
+        "--mysql-user", "analyst",
+        "--mysql-database", "analysis_db",
+        "--mysql-password", "secret",
+        "--mysql-table", "preparsed_keys",
+        "--mysql-query", "SELECT * FROM preparsed_keys",
+    ])
+
+    assert exit_code == 0
+    req = captured["request"]
+    assert req.mysql_host == "db.example"
+    assert req.mysql_port == 3307
+    assert req.mysql_user == "analyst"
+    assert req.mysql_database == "analysis_db"
+    assert req.mysql_password == "secret"
+    assert req.mysql_table == "preparsed_keys"
+    assert req.mysql_query == "SELECT * FROM preparsed_keys"
+
+
 def test_cli_ask_uses_cli_approval_handler(monkeypatch, capsys) -> None:
     captured: dict[str, object] = {}
 

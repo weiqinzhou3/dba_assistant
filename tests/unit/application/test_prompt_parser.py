@@ -457,7 +457,7 @@ def test_normalize_raw_request_extracts_mysql_routing_hint() -> None:
         default_output_mode="summary",
     )
 
-    assert request.rdb_overrides.route_name == "legacy_sql_pipeline"
+    assert request.rdb_overrides.route_name == "database_backed_analysis"
 
 
 def test_normalize_raw_request_does_not_route_on_bare_mysql_token() -> None:
@@ -488,7 +488,7 @@ def test_normalize_raw_request_does_not_treat_not_only_as_mysql_route_negation()
         default_output_mode="summary",
     )
 
-    assert request.rdb_overrides.route_name == "legacy_sql_pipeline"
+    assert request.rdb_overrides.route_name == "database_backed_analysis"
 
 
 def test_normalize_raw_request_ignores_long_distance_negated_mysql_route_phrases() -> None:
@@ -506,4 +506,4 @@ def test_normalize_raw_request_honors_later_mysql_route_correction() -> None:
         default_output_mode="summary",
     )
 
-    assert request.rdb_overrides.route_name == "legacy_sql_pipeline"
+    assert request.rdb_overrides.route_name == "database_backed_analysis"

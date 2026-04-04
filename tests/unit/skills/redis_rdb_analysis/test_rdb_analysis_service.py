@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from dba_assistant.core.reporter.report_model import AnalysisReport
+from dba_assistant.skills.redis_rdb_analysis import service as service_module
 from dba_assistant.skills.redis_rdb_analysis.service import analyze_rdb
 from dba_assistant.skills.redis_rdb_analysis.types import (
     AnalysisStatus,
@@ -47,7 +48,7 @@ def test_analyze_rdb_returns_analysis_report_for_local_inputs(monkeypatch) -> No
     assert isinstance(result, AnalysisReport)
     assert result.title == "Redis RDB Analysis"
     assert result.metadata["profile"] == "generic"
-    assert result.metadata["route"] == "direct_memory_analysis"
+    assert result.metadata["route"] == "direct_rdb_analysis"
     assert result.metadata["path"] == "3c"
     assert any(section.id == "top_big_keys" for section in result.sections)
 
@@ -72,6 +73,72 @@ def test_analyze_rdb_returns_analysis_report_for_precomputed_inputs() -> None:
     assert isinstance(result, AnalysisReport)
     assert result.title == "Redis RDB Analysis"
     assert result.metadata["profile"] == "generic"
-    assert result.metadata["route"] == "precomputed_dataset"
+    assert result.metadata["route"] == "preparsed_dataset_analysis"
     assert result.metadata["path"] == "3b"
     assert any(section.id == "sample_overview" for section in result.sections)
+
+
+def test_analyze_rdb_returns_analysis_report_for_preparsed_mysql_inputs() -> None:
+    rows = json.loads(Path("tests/fixtures/rdb/direct/sample_key_records.json").read_text(encoding="utf-8"))
+    request = RdbAnalysisRequest(
+        prompt="summarize this mysql dataset",
+        inputs=[SampleInput(source="mysql:preparsed_keys", kind=InputSourceKind.PREPARSED_MYSQL)],
+        mysql_table="preparsed_keys",
+    )
+    calls: dict[str, object] = {}
+
+    def fake_load_preparsed_dataset_from_mysql(table_name: str) -> dict[str, object]:
+        calls["table_name"] = table_name
+        return {"source": f"mysql:{table_name}", "rows": rows}
+
+    result = analyze_rdb(
+        request,
+        profile=None,
+        remote_discovery=lambda *_args, **_kwargs: {"rdb_path": "/data/redis/dump.rdb"},
+        load_preparsed_dataset_from_mysql=fake_load_preparsed_dataset_from_mysql,
+    )
+
+    assert isinstance(result, AnalysisReport)
+    assert calls["table_name"] == "preparsed_keys"
+    assert result.metadata["route"] == "preparsed_dataset_analysis"
+    assert result.metadata["path"] == "3b"
+    assert any(section.id == "sample_overview" for section in result.sections)
+
+
+def test_analyze_rdb_database_backed_route_stages_rows_and_reloads_mysql_dataset(
+    monkeypatch,
+) -> None:
+    rows = json.loads(Path("tests/fixtures/rdb/direct/sample_key_records.json").read_text(encoding="utf-8"))
+    request = RdbAnalysisRequest(
+        prompt="analyze this rdb via mysql",
+        inputs=[SampleInput(source=Path("/tmp/dump.rdb"), kind=InputSourceKind.LOCAL_RDB)],
+        path_mode="database_backed_analysis",
+    )
+    calls: dict[str, object] = {}
+
+    monkeypatch.setattr(service_module, "_parse_rdb_rows", lambda _path: rows)
+
+    def fake_stage_rdb_rows_to_mysql(table_name: str, parsed_rows: list[dict[str, object]]) -> dict[str, object]:
+        calls["stage"] = (table_name, parsed_rows)
+        return {"table": table_name, "staged": len(parsed_rows)}
+
+    def fake_load_preparsed_dataset_from_mysql(table_name: str) -> dict[str, object]:
+        calls["load"] = table_name
+        return {"source": f"mysql:{table_name}", "rows": rows}
+
+    result = analyze_rdb(
+        request,
+        profile=None,
+        remote_discovery=lambda *_args, **_kwargs: {"rdb_path": "/data/redis/dump.rdb"},
+        stage_rdb_rows_to_mysql=fake_stage_rdb_rows_to_mysql,
+        load_preparsed_dataset_from_mysql=fake_load_preparsed_dataset_from_mysql,
+    )
+
+    assert isinstance(result, AnalysisReport)
+    staged_table, staged_rows = calls["stage"]
+    assert staged_table.startswith("rdb_stage_")
+    assert staged_rows == rows
+    assert calls["load"] == staged_table
+    assert result.metadata["route"] == "database_backed_analysis"
+    assert result.metadata["path"] == "3a"
+    assert any(section.id == "top_big_keys" for section in result.sections)

@@ -85,3 +85,49 @@ def test_handle_request_applies_overrides(monkeypatch) -> None:
     assert n.runtime_inputs.output_mode == "report"
     assert n.runtime_inputs.report_format == "docx"
     assert n.runtime_inputs.output_path == Path("/tmp/out.docx")
+
+
+def test_handle_request_applies_mysql_overrides(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    config = SimpleNamespace(runtime=SimpleNamespace(default_output_mode="summary"), model=None)
+
+    monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
+
+    monkeypatch.setattr(
+        adapter_module,
+        "normalize_raw_request",
+        lambda raw_prompt, *, default_output_mode, input_paths=(): NormalizedRequest(
+            raw_prompt=raw_prompt,
+            prompt=raw_prompt,
+            runtime_inputs=RuntimeInputs(output_mode="summary", input_paths=tuple(input_paths)),
+            secrets=Secrets(),
+            rdb_overrides=RdbOverrides(),
+        ),
+    )
+
+    def fake_run_orchestrated(normalized, *, config, approval_handler):
+        captured["normalized"] = normalized
+        return "ok"
+
+    monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
+
+    request = InterfaceRequest(
+        prompt="test",
+        mysql_host="db.example",
+        mysql_port=3307,
+        mysql_user="analyst",
+        mysql_database="analysis_db",
+        mysql_password="secret",
+        mysql_table="preparsed_keys",
+        mysql_query="SELECT * FROM preparsed_keys",
+    )
+    handle_request(request, approval_handler=AutoApproveHandler())
+
+    n = captured["normalized"]
+    assert n.runtime_inputs.mysql_host == "db.example"
+    assert n.runtime_inputs.mysql_port == 3307
+    assert n.runtime_inputs.mysql_user == "analyst"
+    assert n.runtime_inputs.mysql_database == "analysis_db"
+    assert n.runtime_inputs.mysql_table == "preparsed_keys"
+    assert n.runtime_inputs.mysql_query == "SELECT * FROM preparsed_keys"
+    assert n.secrets.mysql_password == "secret"

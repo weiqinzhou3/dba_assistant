@@ -8,19 +8,32 @@ Delivered
 
 Implement the full pipeline for RDB memory analysis, supporting multiple input paths, prompt-first CLI usage, and shared output modes.
 
-## Stage Mapping
+## Follow-On Split
 
-| Phase stage | Formal route name | Description | Delivery order |
-|-------------|-------------------|-------------|----------------|
-| `3a` | `legacy_sql_pipeline` | Reproduce the current manual workflow: RDB parsing, MySQL staging, SQL aggregation, then report generation. | Deliver first |
-| `3b` | `precomputed_dataset` | Analysis data already exists in MySQL or another precomputed form, so the report can be generated without re-parsing the RDB. | Deliver after `3a` |
-| `3c` | `direct_memory_analysis` | No external tool or database dependency: parse the RDB directly and analyze it in memory. | Deliver after `3a` |
+The delivered Phase 3 baseline is now treated as the foundation for two follow-on sub-phases:
 
-The table above defines the intended semantics of each formal route name. In the current local debug wiring, `legacy_sql_pipeline` still falls back to the default direct-parser collector unless a dedicated path-A collector is injected.
+- `Phase 3.1`: Redis RDB Capability
+- `Phase 3.2`: MySQL Access Capability
+
+Those documents define the next architectural evolution for Phase 3 under the unified execution shape:
+
+`CLI / API / WebUI -> interface adapter -> one Deep Agent -> skills/tools`
+
+This file remains the high-level phase contract for delivered Phase 3 scope. It no longer serves as the sole planning surface for upcoming RDB-routing, MySQL-capability, and interface-contract work.
+
+## Route Mapping
+
+| Delivery stage | Canonical route name | Description | Compatibility alias |
+|----------------|----------------------|-------------|---------------------|
+| `3a` | `database_backed_analysis` | Reproduce the SQL-backed workflow: RDB parsing, MySQL staging, downstream database aggregation, then report generation. | `legacy_sql_pipeline` |
+| `3b` | `preparsed_dataset_analysis` | Analysis data already exists in MySQL or another preparsed form, so the report can be generated without re-parsing the RDB. | `precomputed_dataset` |
+| `3c` | `direct_rdb_analysis` | No external tool or database dependency: parse the RDB directly and analyze it in memory. | `direct_memory_analysis` |
+
+Canonical route names are the primary engineering vocabulary. Stage labels and old names remain only as historical or compatibility references.
 
 ## Implementation Breakdown
 
-### Phase 3a: `legacy_sql_pipeline`
+### Phase 3a: `database_backed_analysis`
 
 1. Write `skills/redis-rdb-analysis/SKILL.md` defining input and output contracts.
 2. Implement the RDB Offline Collector.
@@ -36,13 +49,13 @@ The table above defines the intended semantics of each formal route name. In the
    - Render through the Reporter Layer.
 5. Test end to end with fixture RDB files and a MySQL environment.
 
-### Phase 3b: `precomputed_dataset`
+### Phase 3b: `preparsed_dataset_analysis`
 
 1. Implement a MySQL Query Collector that queries existing analysis data from MySQL directly, or reads from pre-exported CSV or JSON.
 2. Reuse the Analyzer and Reporter from Phase 3a.
 3. Test report generation with MySQL fixture data.
 
-### Phase 3c: `direct_memory_analysis`
+### Phase 3c: `direct_rdb_analysis`
 
 1. Implement an RDB Direct Parser Collector using Python or Node libraries, without `rdb-tools` or MySQL.
 2. Implement a lightweight Analyzer that performs in-memory statistics and outputs the same `RdbAnalysisResult`.
@@ -62,8 +75,8 @@ The prompt-first surface uses report-oriented terminology, but the currently wir
 
 ## Acceptance Criteria
 
-- After Phase 3a completion, the current manual workflow is fully reproducible and generates documents of higher quality than historical reports.
-- After Phase 3b and Phase 3c completion, all three routes work independently with consistent output structures.
+- After `database_backed_analysis` completion, the SQL-backed workflow is fully reproducible and generates documents of higher quality than historical reports.
+- After `preparsed_dataset_analysis` and `direct_rdb_analysis` completion, all three canonical routes work independently with consistent output structures.
 
 ## Wired Entry Points
 

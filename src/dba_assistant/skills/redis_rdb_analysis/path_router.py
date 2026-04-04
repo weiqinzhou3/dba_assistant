@@ -1,22 +1,19 @@
 from __future__ import annotations
 
 from dba_assistant.skills.redis_rdb_analysis.types import (
-    DIRECT_MEMORY_ANALYSIS_ROUTE_NAME,
+    DATABASE_BACKED_ANALYSIS,
+    DIRECT_RDB_ANALYSIS,
     InputSourceKind,
-    LEGACY_SQL_PIPELINE_ROUTE_NAME,
-    PRECOMPUTED_DATASET_ROUTE_NAME,
+    PREPARSED_DATASET_ANALYSIS,
     RdbAnalysisRequest,
     normalize_route_name,
 )
 
-_EXPLICIT_PATHS = frozenset(
+_CANONICAL_ROUTES = frozenset(
     {
-        LEGACY_SQL_PIPELINE_ROUTE_NAME,
-        PRECOMPUTED_DATASET_ROUTE_NAME,
-        DIRECT_MEMORY_ANALYSIS_ROUTE_NAME,
-        "3a",
-        "3b",
-        "3c",
+        DATABASE_BACKED_ANALYSIS,
+        PREPARSED_DATASET_ANALYSIS,
+        DIRECT_RDB_ANALYSIS,
     }
 )
 _MYSQL_PATH_HINTS = ("mysql", "sql-style", "sql style")
@@ -25,14 +22,17 @@ _MYSQL_PATH_HINTS = ("mysql", "sql-style", "sql style")
 def choose_path(request: RdbAnalysisRequest) -> str:
     if request.path_mode != "auto":
         normalized_path = normalize_route_name(request.path_mode)
-        if normalized_path in _EXPLICIT_PATHS:
+        if normalized_path in _CANONICAL_ROUTES:
             return normalized_path
 
-    if any(sample.kind is InputSourceKind.PRECOMPUTED for sample in request.inputs):
-        return PRECOMPUTED_DATASET_ROUTE_NAME
+    if any(
+        sample.kind in {InputSourceKind.PRECOMPUTED, InputSourceKind.PREPARSED_MYSQL}
+        for sample in request.inputs
+    ):
+        return PREPARSED_DATASET_ANALYSIS
 
     prompt = request.prompt.lower()
     if any(hint in prompt for hint in _MYSQL_PATH_HINTS):
-        return LEGACY_SQL_PIPELINE_ROUTE_NAME
+        return DATABASE_BACKED_ANALYSIS
 
-    return DIRECT_MEMORY_ANALYSIS_ROUTE_NAME
+    return DIRECT_RDB_ANALYSIS

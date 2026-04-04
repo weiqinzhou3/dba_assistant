@@ -22,6 +22,15 @@ class InterfaceRequest:
     config_path: str | None = None
     profile: str | None = None
     report_format: str | None = None
+    input_kind: str | None = None
+    path_mode: str | None = None
+    mysql_host: str | None = None
+    mysql_port: int | None = None
+    mysql_user: str | None = None
+    mysql_database: str | None = None
+    mysql_password: str | None = None
+    mysql_table: str | None = None
+    mysql_query: str | None = None
 
 
 @dataclass(frozen=True)

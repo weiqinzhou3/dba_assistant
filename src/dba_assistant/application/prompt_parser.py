@@ -30,14 +30,31 @@ _HOST_PORT_PATTERN = re.compile(
     r"(?i)\b(?:redis\s+)?(?P<host>(?:localhost)|(?:\d{1,3}(?:\.\d{1,3}){3})|(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*)):(?P<port>\d{1,5})\b"
 )
 _DB_PATTERN = re.compile(r"(?i)\bdb(?:\s+(?:index\s+)?)?(?P<db>\d+)\b")
+
+
+def _build_profile_alternation() -> str:
+    """Build a regex alternation from available profile YAML files."""
+    try:
+        from dba_assistant.skills.redis_rdb_analysis.profile_resolver import (
+            available_profile_names,
+        )
+        names = available_profile_names()
+    except Exception:  # noqa: BLE001
+        names = []
+    if not names:
+        names = ["generic", "rcs"]
+    return "|".join(re.escape(n) for n in names)
+
+
+_PROFILE_ALT = _build_profile_alternation()
 _WITH_PROFILE_PATTERN = re.compile(
-    r"(?i)\bwith\s+(?:the\s+)?(?P<profile>generic|rcs)\s+profile(?![a-z0-9_])"
+    rf"(?i)\bwith\s+(?:the\s+)?(?P<profile>{_PROFILE_ALT})\s+profile(?![a-z0-9_])"
 )
 _USE_PROFILE_PATTERN = re.compile(
-    r"(?i)\b(?:use|using|choose|select)\s+(?:the\s+)?(?P<profile>generic|rcs)\s+profile(?![a-z0-9_])"
+    rf"(?i)\b(?:use|using|choose|select)\s+(?:the\s+)?(?P<profile>{_PROFILE_ALT})\s+profile(?![a-z0-9_])"
 )
 _BY_PROFILE_PATTERN = re.compile(
-    r"(?i)(?:按|用)\s*(?P<profile>generic|rcs)\s+profile(?![a-z0-9_])"
+    rf"(?i)(?:按|用)\s*(?P<profile>{_PROFILE_ALT})\s+profile(?![a-z0-9_])"
 )
 _CHINESE_GENERIC_PROFILE_PATTERN = re.compile(
     r"(?i)(?:按|用)\s*(?P<profile_cn>通用)\s*profile(?![a-z0-9_])"
@@ -217,7 +234,7 @@ def _extract_report_output_intent(
 def _extract_route_name(prompt: str) -> str | None:
     route_name = None
     for match in sorted(_MYSQL_ROUTE_HINT_PATTERN.finditer(prompt), key=lambda match: match.start()):
-        route_name = None if _has_negation_prefix(prompt, match.start()) else "legacy_sql_pipeline"
+        route_name = None if _has_negation_prefix(prompt, match.start()) else "database_backed_analysis"
     return route_name
 
 

@@ -1,0 +1,91 @@
+"""Tests for input_kind/path_mode in the interface contract (WI-2)."""
+from pathlib import Path
+
+from dba_assistant.application.request_models import NormalizedRequest, RdbOverrides, RuntimeInputs, Secrets
+from dba_assistant.interface.types import InterfaceRequest
+
+
+def test_interface_request_carries_input_kind_and_path_mode() -> None:
+    request = InterfaceRequest(
+        prompt="analyze rdb",
+        input_kind="precomputed",
+        path_mode="preparsed_dataset_analysis",
+    )
+
+    assert request.input_kind == "precomputed"
+    assert request.path_mode == "preparsed_dataset_analysis"
+
+
+def test_interface_request_defaults_to_none() -> None:
+    request = InterfaceRequest(prompt="analyze rdb")
+
+    assert request.input_kind is None
+    assert request.path_mode is None
+
+
+def test_interface_request_carries_mysql_fields() -> None:
+    request = InterfaceRequest(
+        prompt="analyze rdb",
+        mysql_host="db.example",
+        mysql_port=3307,
+        mysql_user="analyst",
+        mysql_database="analysis_db",
+        mysql_password="secret",
+        mysql_table="preparsed_keys",
+        mysql_query="SELECT * FROM preparsed_keys",
+    )
+
+    assert request.mysql_host == "db.example"
+    assert request.mysql_port == 3307
+    assert request.mysql_user == "analyst"
+    assert request.mysql_database == "analysis_db"
+    assert request.mysql_password == "secret"
+    assert request.mysql_table == "preparsed_keys"
+    assert request.mysql_query == "SELECT * FROM preparsed_keys"
+
+
+def test_interface_request_mysql_defaults_to_none() -> None:
+    request = InterfaceRequest(prompt="analyze rdb")
+
+    assert request.mysql_host is None
+    assert request.mysql_port is None
+    assert request.mysql_user is None
+    assert request.mysql_database is None
+    assert request.mysql_password is None
+    assert request.mysql_table is None
+    assert request.mysql_query is None
+
+
+def test_runtime_inputs_carries_input_kind_and_path_mode() -> None:
+    ri = RuntimeInputs(
+        input_kind="local_rdb",
+        path_mode="direct_rdb_analysis",
+    )
+
+    assert ri.input_kind == "local_rdb"
+    assert ri.path_mode == "direct_rdb_analysis"
+
+
+def test_runtime_inputs_defaults_to_none() -> None:
+    ri = RuntimeInputs()
+
+    assert ri.input_kind is None
+    assert ri.path_mode is None
+
+
+def test_runtime_inputs_carries_mysql_fields() -> None:
+    ri = RuntimeInputs(
+        mysql_host="db.example",
+        mysql_port=3307,
+        mysql_user="analyst",
+        mysql_database="analysis_db",
+        mysql_table="preparsed_keys",
+        mysql_query="SELECT * FROM preparsed_keys",
+    )
+
+    assert ri.mysql_host == "db.example"
+    assert ri.mysql_port == 3307
+    assert ri.mysql_user == "analyst"
+    assert ri.mysql_database == "analysis_db"
+    assert ri.mysql_table == "preparsed_keys"
+    assert ri.mysql_query == "SELECT * FROM preparsed_keys"

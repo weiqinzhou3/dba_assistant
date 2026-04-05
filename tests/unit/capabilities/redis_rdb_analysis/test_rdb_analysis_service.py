@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from dba_assistant.core.reporter.report_model import AnalysisReport
+from dba_assistant.adaptors.mysql_adaptor import MySQLConnectionConfig
 from dba_assistant.parsers import rdb_parser_strategy as parser_strategy_module
 from dba_assistant.capabilities.redis_rdb_analysis import service as service_module
 from dba_assistant.capabilities.redis_rdb_analysis.service import analyze_rdb
@@ -14,8 +15,50 @@ from dba_assistant.capabilities.redis_rdb_analysis.types import (
     RdbAnalysisRequest,
     SampleInput,
 )
+from dba_assistant.tools.mysql_tools import (
+    load_preparsed_dataset_from_mysql,
+    stage_rdb_rows_to_mysql,
+)
 
 HDT_BINARY = Path(".tools/bin/rdb")
+
+
+class InMemoryTextMySQLAdaptor:
+    def __init__(self) -> None:
+        self._rows_by_table: dict[str, list[dict[str, object]]] = {}
+
+    def execute_write(self, _config, sql: str, params=None) -> int:
+        if sql.startswith("CREATE TABLE IF NOT EXISTS "):
+            table_name = sql.removeprefix("CREATE TABLE IF NOT EXISTS ").split(" ", 1)[0].strip("`")
+            self._rows_by_table.setdefault(table_name, [])
+            return 0
+
+        if sql.startswith("INSERT INTO "):
+            table_name = sql.removeprefix("INSERT INTO ").split(" ", 1)[0].strip("`")
+            column_names = [
+                column.strip().strip("`")
+                for column in sql.split("(", 1)[1].split(")", 1)[0].split(",")
+            ]
+            stored_rows = self._rows_by_table.setdefault(table_name, [])
+            for row_values in params or []:
+                stored_rows.append(
+                    {
+                        column: None if value is None else str(value)
+                        for column, value in zip(column_names, row_values, strict=True)
+                    }
+                )
+            return len(params or [])
+
+        raise AssertionError(f"Unexpected write SQL: {sql}")
+
+    def read_query(self, _config, sql: str) -> list[dict[str, object]]:
+        if not sql.startswith("SELECT * FROM "):
+            raise AssertionError(f"Unexpected read SQL: {sql}")
+
+        tail = sql.removeprefix("SELECT * FROM ")
+        table_name, _, raw_limit = tail.partition(" LIMIT ")
+        rows = self._rows_by_table.get(table_name.strip("`"), [])
+        return [dict(row) for row in rows[: int(raw_limit)]]
 
 
 def test_analyze_rdb_returns_confirmation_request_for_remote_redis_without_confirmation() -> None:
@@ -167,6 +210,57 @@ def test_analyze_rdb_database_backed_route_stages_rows_and_reloads_mysql_dataset
     assert result.metadata["route"] == "database_backed_analysis"
     assert result.metadata["path"] == "3a"
     assert any(section.id == "top_big_keys" for section in result.sections)
+
+
+def test_analyze_rdb_database_backed_route_round_trips_mysql_text_values_without_type_breakage(
+    monkeypatch,
+) -> None:
+    rows = [
+        {
+            "key_name": "cache:1",
+            "key_type": "string",
+            "size_bytes": 123,
+            "has_expiration": False,
+            "ttl_seconds": None,
+        }
+    ]
+    request = RdbAnalysisRequest(
+        prompt="analyze this rdb via mysql",
+        inputs=[SampleInput(source=Path("/tmp/dump.rdb"), kind=InputSourceKind.LOCAL_RDB)],
+        path_mode="database_backed_analysis",
+    )
+    adaptor = InMemoryTextMySQLAdaptor()
+    config = MySQLConnectionConfig(
+        host="localhost",
+        port=3306,
+        user="test",
+        password="test",
+        database="testdb",
+    )
+
+    monkeypatch.setattr(service_module, "_parse_rdb_rows", lambda _path: rows)
+
+    result = analyze_rdb(
+        request,
+        profile=None,
+        remote_discovery=lambda *_args, **_kwargs: {"rdb_path": "/data/redis/dump.rdb"},
+        stage_rdb_rows_to_mysql=lambda table_name, parsed_rows: stage_rdb_rows_to_mysql(
+            adaptor,
+            config,
+            table_name,
+            parsed_rows,
+        ),
+        load_preparsed_dataset_from_mysql=lambda table_name: load_preparsed_dataset_from_mysql(
+            adaptor,
+            config,
+            table_name,
+        ),
+    )
+
+    assert isinstance(result, AnalysisReport)
+    assert result.summary == "1 samples, 1 keys, 123 bytes."
+    assert result.metadata["route"] == "database_backed_analysis"
+    assert result.metadata["path"] == "3a"
 
 
 def test_analyze_rdb_remote_discovery_requires_rdb_path() -> None:

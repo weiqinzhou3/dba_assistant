@@ -3,6 +3,11 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 
+from dba_assistant.capabilities.redis_rdb_analysis.collectors.row_value_coercion import (
+    _coerce_bool,
+    _coerce_optional_int,
+    _coerce_required_int,
+)
 from dba_assistant.capabilities.redis_rdb_analysis.types import (
     InputSourceKind,
     KeyRecord,
@@ -45,8 +50,8 @@ class PathBMySQLPreparsedCollector:
                     sample_id=sample_id,
                     key_name=str(row["key_name"]),
                     key_type=str(row["key_type"]),
-                    size_bytes=int(row["size_bytes"]),
-                    has_expiration=bool(row["has_expiration"]),
+                    size_bytes=_coerce_required_int(row.get("size_bytes"), "size_bytes"),
+                    has_expiration=_coerce_bool(row.get("has_expiration")),
                     ttl_seconds=_coerce_optional_int(row.get("ttl_seconds")),
                     prefix_segments=_infer_prefix_segments(str(row["key_name"])),
                 )
@@ -89,12 +94,6 @@ def _extract_rows(payload: object) -> list[dict[str, object]]:
             return [dict(row) for row in rows]
 
     raise ValueError("MySQL preparsed dataset payload must be a JSON list or mapping with 'rows'.")
-
-
-def _coerce_optional_int(value: object) -> int | None:
-    if value is None:
-        return None
-    return int(value)
 
 
 def _infer_prefix_segments(key_name: str) -> tuple[str, ...]:

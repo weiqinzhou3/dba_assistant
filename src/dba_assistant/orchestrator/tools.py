@@ -489,7 +489,7 @@ def _make_mysql_tools(
         return _mysql_read(adaptor, config, sql)
 
     def load_preparsed_dataset_from_mysql(table_name: str, limit: str = "100000") -> str:
-        return _load_dataset(adaptor, config, table_name, limit=int(limit))
+        return _load_dataset(adaptor, config, table_name, limit=limit)
 
     def stage_rdb_rows_to_mysql(table_name: str, rows_json: str) -> str:
         rows = json.loads(rows_json)

@@ -1,6 +1,8 @@
 """Tests for MySQL tools (WI-4) and adaptor write path."""
 import json
 
+import pytest
+
 from dba_assistant.adaptors.mysql_adaptor import MySQLAdaptor, MySQLConnectionConfig
 from dba_assistant.tools.mysql_tools import (
     load_preparsed_dataset_from_mysql,
@@ -112,6 +114,25 @@ def test_stage_rdb_rows_to_mysql_creates_table_and_inserts() -> None:
     assert any("INSERT INTO" in q for q in conn.queries)
 
 
+def test_stage_rdb_rows_to_mysql_preserves_null_bool_and_int_params() -> None:
+    conn = FakeConnection()
+    adaptor = MySQLAdaptor(connect=lambda **_kw: conn)
+    config = _make_config()
+    rows = [
+        {
+            "key_name": "cache:1",
+            "key_type": "string",
+            "size_bytes": 123,
+            "has_expiration": False,
+            "ttl_seconds": None,
+        }
+    ]
+
+    stage_rdb_rows_to_mysql(adaptor, config, "staging_t", rows)
+
+    assert conn.params == [("cache:1", "string", 123, False, None)]
+
+
 def test_stage_rdb_rows_empty_returns_zero() -> None:
     adaptor = MySQLAdaptor(connect=lambda **_kw: FakeConnection())
     config = _make_config()
@@ -131,3 +152,23 @@ def test_mysql_adaptor_execute_write_commits() -> None:
 
     assert conn.committed
     assert conn.closed
+
+
+@pytest.mark.parametrize("limit", [None, "", "None", "null", "NULL"])
+def test_load_preparsed_dataset_from_mysql_uses_default_limit_for_nullish_limit_values(limit: object) -> None:
+    conn = FakeConnection()
+    conn._result = [{"key_name": "cache:1", "size_bytes": 100}]
+    adaptor = MySQLAdaptor(connect=lambda **_kw: conn)
+    config = _make_config()
+
+    load_preparsed_dataset_from_mysql(adaptor, config, "rdb_staging", limit=limit)
+
+    assert conn.queries[0].endswith("LIMIT 100000")
+
+
+def test_load_preparsed_dataset_from_mysql_rejects_non_numeric_limit() -> None:
+    adaptor = MySQLAdaptor(connect=lambda **_kw: FakeConnection())
+    config = _make_config()
+
+    with pytest.raises(ValueError, match="Invalid MySQL dataset row limit"):
+        load_preparsed_dataset_from_mysql(adaptor, config, "rdb_staging", limit="oops")

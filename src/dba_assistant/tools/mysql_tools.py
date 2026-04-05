@@ -28,14 +28,14 @@ def load_preparsed_dataset_from_mysql(
     config: MySQLConnectionConfig,
     table_name: str,
     *,
-    limit: int = 100_000,
+    limit: int | str | None = 100_000,
 ) -> str:
     """Load a preparsed dataset from MySQL and return it as JSON.
 
     The dataset shape matches what preparsed_dataset_analysis expects.
     """
     safe_table = _sanitize_identifier(table_name)
-    sql = f"SELECT * FROM {safe_table} LIMIT {int(limit)}"
+    sql = f"SELECT * FROM {safe_table} LIMIT {_normalize_limit(limit)}"
     rows = adaptor.read_query(config, sql)
     return json.dumps({"source": f"mysql:{table_name}", "rows": rows}, default=str)
 
@@ -67,7 +67,7 @@ def stage_rdb_rows_to_mysql(
 
     placeholders = ", ".join(["%s"] * len(columns))
     insert_sql = f"INSERT INTO {safe_table} ({', '.join(safe_columns)}) VALUES ({placeholders})"
-    params = [tuple(str(row.get(c, "")) for c in columns) for row in rows]
+    params = [tuple(_serialize_sql_value(row.get(c)) for c in columns) for row in rows]
     count = adaptor.execute_write(config, insert_sql, params=params)
 
     return json.dumps({"staged": count, "table": table_name})
@@ -79,3 +79,23 @@ def _sanitize_identifier(name: str) -> str:
     if not clean:
         raise ValueError(f"Invalid SQL identifier: {name!r}")
     return f"`{clean}`"
+
+
+def _serialize_sql_value(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    return str(value)
+
+
+def _normalize_limit(limit: int | str | None) -> int:
+    if limit is None:
+        return 100_000
+    if isinstance(limit, str):
+        normalized = limit.strip()
+        if normalized.lower() in {"", "none", "null"}:
+            return 100_000
+        limit = normalized
+    try:
+        return int(limit)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid MySQL dataset row limit: {limit!r}") from exc

@@ -3,6 +3,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
+from dba_assistant.capabilities.redis_rdb_analysis.collectors.row_value_coercion import (
+    _coerce_bool,
+    _coerce_optional_int,
+    _coerce_required_int,
+)
 from dba_assistant.capabilities.redis_rdb_analysis.types import (
     InputSourceKind,
     KeyRecord,
@@ -30,20 +35,14 @@ class PathCDirectParserCollector:
                         sample_id=sample_id,
                         key_name=key_name,
                         key_type=str(row["key_type"]),
-                        size_bytes=int(row["size_bytes"]),
-                        has_expiration=bool(row["has_expiration"]),
+                        size_bytes=_coerce_required_int(row.get("size_bytes"), "size_bytes"),
+                        has_expiration=_coerce_bool(row.get("has_expiration")),
                         ttl_seconds=_coerce_optional_int(row.get("ttl_seconds")),
                         prefix_segments=_infer_prefix_segments(key_name),
                     )
                 )
 
         return NormalizedRdbDataset(samples=samples, records=records)
-
-
-def _coerce_optional_int(value: object) -> int | None:
-    if value is None:
-        return None
-    return int(value)
 
 
 def _infer_prefix_segments(key_name: str) -> tuple[str, ...]:

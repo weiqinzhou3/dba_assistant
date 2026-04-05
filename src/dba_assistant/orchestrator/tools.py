@@ -22,7 +22,10 @@ from dba_assistant.adaptors.redis_adaptor import (
 from dba_assistant.adaptors.ssh_adaptor import SSHAdaptor, SSHConnectionConfig
 from dba_assistant.application.request_models import NormalizedRequest, RdbOverrides
 from dba_assistant.core.reporter.types import OutputMode, ReportFormat, ReportOutputConfig
-from dba_assistant.capabilities.redis_rdb_analysis.remote_input import discover_remote_rdb
+from dba_assistant.capabilities.redis_rdb_analysis.remote_input import (
+    RemoteRedisDiscoveryError,
+    discover_remote_rdb,
+)
 from dba_assistant.tools.analyze_rdb import analyze_rdb_tool
 from dba_assistant.tools.mysql_tools import (
     load_preparsed_dataset_from_mysql as _load_dataset,
@@ -276,12 +279,28 @@ def _make_discover_remote_rdb_tool(
                 connection,
                 remote_rdb_state=remote_rdb_state,
             )
+        except RemoteRedisDiscoveryError as exc:
+            return json.dumps(
+                {
+                    "status": "failed",
+                    "error_kind": exc.kind,
+                    "error_stage": exc.stage,
+                    "error_message": exc.message,
+                }
+            )
         except Exception as exc:  # noqa: BLE001
-            return f"Discovery failed: {exc}"
+            return json.dumps(
+                {
+                    "status": "failed",
+                    "error_kind": "unknown_error",
+                    "error_stage": "discover_remote_rdb",
+                    "error_message": str(exc),
+                }
+            )
 
-        import json
         return json.dumps(
             {
+                "status": "succeeded",
                 "redis_dir": discovery.get("redis_dir"),
                 "dbfilename": discovery.get("dbfilename"),
                 "rdb_path": discovery.get("rdb_path"),
@@ -335,6 +354,8 @@ def _make_remote_rdb_fetch_tools(
                 connection,
                 remote_rdb_state=remote_rdb_state,
             )
+        except RemoteRedisDiscoveryError as exc:
+            return f"Remote RDB discovery failed: {exc}"
         except Exception as exc:  # noqa: BLE001
             return f"Remote RDB discovery failed: {exc}"
 
@@ -629,7 +650,8 @@ def ensure_remote_rdb_snapshot(
     previous_lastsave = _coerce_int(discovery.get("lastsave"))
     already_in_progress = bool(discovery.get("bgsave_in_progress"))
     if not already_in_progress:
-        adaptor.bgsave(connection)
+        bgsave = adaptor.bgsave(connection)
+        _assert_adaptor_probe_success(bgsave, stage="bgsave")
     persistence = _wait_for_bgsave_completion(
         adaptor,
         connection,
@@ -654,10 +676,11 @@ def _wait_for_bgsave_completion(
     previous_lastsave: int | None,
     poll_interval_seconds: float,
     max_attempts: int,
- ) -> dict[str, object]:
+) -> dict[str, object]:
     saw_in_progress = False
     for _ in range(max_attempts):
         persistence = adaptor.info(connection, section="persistence")
+        _assert_adaptor_probe_success(persistence, stage="info(persistence)")
         in_progress = bool(persistence.get("rdb_bgsave_in_progress"))
         lastsave = _coerce_int(persistence.get("rdb_last_save_time"))
         saw_in_progress = saw_in_progress or in_progress
@@ -682,6 +705,18 @@ def _coerce_int(value: object) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _assert_adaptor_probe_success(response: object, *, stage: str) -> None:
+    if not isinstance(response, dict):
+        raise RuntimeError(f"Redis {stage} returned a non-dictionary payload.")
+    if response.get("available") is False:
+        error = response.get("error")
+        if isinstance(error, dict):
+            kind = str(error.get("kind") or "unknown_error")
+            message = str(error.get("message") or "No error message returned by Redis.")
+            raise RuntimeError(f"{kind}: {message}")
+        raise RuntimeError(f"Redis {stage} reported failure without error details.")
 
 
 def _render_remote_rdb_analysis(

@@ -641,6 +641,19 @@ def test_normalize_raw_request_keeps_redis_and_ssh_passwords_separate() -> None:
     assert request.runtime_inputs.require_fresh_rdb_snapshot is True
 
 
+def test_normalize_raw_request_extracts_remote_rdb_path_as_override_in_remote_context() -> None:
+    request = normalize_raw_request(
+        "请帮我分析远端Redis，192.168.23.54:6379，密码是123456。SSH信息如下：主机地址 192.168.23.54，用户名是root，密码也是root。rdb文件在 /data/redis/data/dump.rdb",
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.redis_host == "192.168.23.54"
+    assert request.runtime_inputs.remote_rdb_path == "/data/redis/data/dump.rdb"
+    assert request.runtime_inputs.remote_rdb_path_source == "user_override"
+    assert request.runtime_inputs.input_paths == ()
+    assert request.runtime_inputs.input_kind == "remote_redis"
+
+
 def test_normalize_raw_request_does_not_route_on_bare_mysql_token() -> None:
     for prompt in (
         "按 generic profile 分析这个 rdb，连接 mysql 数据库并输出 summary",

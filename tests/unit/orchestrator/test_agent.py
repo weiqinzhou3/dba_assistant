@@ -5,6 +5,7 @@ from dba_assistant.application.request_models import NormalizedRequest, RdbOverr
 from dba_assistant.deep_agent_integration.config import AppConfig, ModelConfig, ProviderKind, RuntimeConfig
 from dba_assistant.interface.hitl import AutoApproveHandler
 from dba_assistant.orchestrator import agent as agent_module
+from dba_assistant.capabilities.redis_rdb_analysis.remote_input import RemoteRedisDiscoveryError
 
 
 def _make_config() -> AppConfig:
@@ -303,6 +304,48 @@ def test_build_remote_rdb_interrupt_description_includes_path_source(monkeypatch
     assert "Discovery status: succeeded" in text
 
 
+def test_build_remote_rdb_interrupt_description_reports_real_discovery_failure() -> None:
+    request = _make_request(
+        runtime_inputs=RuntimeInputs(
+            redis_host="192.168.23.54",
+            redis_port=6379,
+            ssh_host="192.168.23.54",
+            ssh_port=22,
+            ssh_username="root",
+            output_mode="summary",
+            require_fresh_rdb_snapshot=True,
+        ),
+        secrets=Secrets(redis_password="123456", ssh_password="root"),
+    )
+
+    def fake_resolve(tool_args):
+        return {
+            "discovery_status": "failed",
+            "discovery_error_stage": "config_get(dir)",
+            "discovery_error_kind": "permission_denied",
+            "discovery_error_message": "CONFIG GET dir not permitted by ACL",
+            "remote_rdb_path": "",
+            "remote_rdb_path_source": "unresolved",
+            "acquisition_mode": "fresh_snapshot",
+            "bgsave_required": "blocked",
+        }
+
+    description = agent_module._build_remote_rdb_interrupt_description(
+        request,
+        path_resolution_resolver=fake_resolve,
+    )
+
+    text = description({"args": {"acquisition_mode": "fresh_snapshot"}}, None, None)
+
+    assert "Discovery status: failed" in text
+    assert "Discovery failure stage: config_get(dir)" in text
+    assert "Discovery failure kind: permission_denied" in text
+    assert "CONFIG GET dir not permitted by ACL" in text
+    assert "BGSAVE required: blocked" in text
+    assert "Redis dir: unresolved" not in text
+    assert "Redis dbfilename: unresolved" not in text
+
+
 def test_remote_rdb_path_resolution_resolver_discovers_path_when_no_override(monkeypatch) -> None:
     request = _make_request(
         runtime_inputs=RuntimeInputs(
@@ -340,3 +383,48 @@ def test_remote_rdb_path_resolution_resolver_discovers_path_when_no_override(mon
     assert resolution["remote_rdb_path"] == "/data/redis/data/dump.rdb"
     assert resolution["remote_rdb_path_source"] == "discovered"
     assert resolution["discovery_status"] == "succeeded"
+
+
+def test_remote_rdb_path_resolution_resolver_surfaces_discovery_failure(monkeypatch) -> None:
+    request = _make_request(
+        runtime_inputs=RuntimeInputs(
+            redis_host="redis.example",
+            redis_port=6379,
+            ssh_host="ssh.example",
+            ssh_port=22,
+            ssh_username="root",
+            output_mode="summary",
+            require_fresh_rdb_snapshot=True,
+        ),
+        secrets=Secrets(redis_password="secret", ssh_password="root"),
+    )
+    connection = agent_module._build_connection(request, _make_config())
+
+    class FakeRedisAdaptor:
+        pass
+
+    monkeypatch.setattr(agent_module, "RedisAdaptor", lambda: FakeRedisAdaptor())
+    monkeypatch.setattr(
+        agent_module,
+        "discover_remote_rdb_snapshot",
+        lambda adaptor, connection, remote_rdb_state=None: (_ for _ in ()).throw(
+            RemoteRedisDiscoveryError(
+                kind="authentication_failed",
+                stage="ping",
+                message="authentication_failed: invalid username-password pair or user is disabled",
+            )
+        ),
+    )
+
+    resolver = agent_module._make_remote_rdb_path_resolution_resolver(
+        request,
+        connection=connection,
+        remote_rdb_state={},
+    )
+    resolution = resolver({"acquisition_mode": "fresh_snapshot"})
+
+    assert resolution["discovery_status"] == "failed"
+    assert resolution["discovery_error_stage"] == "ping"
+    assert resolution["discovery_error_kind"] == "authentication_failed"
+    assert "invalid username-password pair" in resolution["discovery_error_message"]
+    assert resolution["bgsave_required"] == "blocked"

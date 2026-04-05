@@ -265,3 +265,56 @@ def test_handle_request_keeps_prompt_first_but_allows_explicit_overrides(monkeyp
     assert n.runtime_inputs.mysql_query == "SELECT 1"
     assert n.secrets.mysql_password == "explicit-secret"
     assert n.rdb_overrides.profile_name == "rcs"
+
+
+def test_handle_request_lets_explicit_remote_redis_flags_override_prompt_values(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    config = SimpleNamespace(runtime=SimpleNamespace(default_output_mode="summary"), model=None)
+
+    monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
+    monkeypatch.setattr(
+        adapter_module,
+        "normalize_raw_request",
+        lambda raw_prompt, *, default_output_mode, input_paths=(): NormalizedRequest(
+            raw_prompt=raw_prompt,
+            prompt=raw_prompt,
+            runtime_inputs=RuntimeInputs(
+                output_mode="summary",
+                ssh_host="prompt-host",
+                ssh_port=22,
+                ssh_username="prompt-user",
+                remote_rdb_path="/prompt/dump.rdb",
+                remote_rdb_path_source="user_override",
+                require_fresh_rdb_snapshot=False,
+            ),
+            secrets=Secrets(ssh_password="prompt-secret"),
+            rdb_overrides=RdbOverrides(),
+        ),
+    )
+
+    def fake_run_orchestrated(normalized, *, config, approval_handler):
+        captured["normalized"] = normalized
+        return "ok"
+
+    monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
+
+    request = InterfaceRequest(
+        prompt="analyze remote redis",
+        ssh_host="explicit-host",
+        ssh_port=2222,
+        ssh_username="explicit-user",
+        ssh_password="explicit-secret",
+        remote_rdb_path="/explicit/dump.rdb",
+        remote_rdb_path_source="user_override",
+        require_fresh_rdb_snapshot=True,
+    )
+    handle_request(request, approval_handler=AutoApproveHandler())
+
+    n = captured["normalized"]
+    assert n.runtime_inputs.ssh_host == "explicit-host"
+    assert n.runtime_inputs.ssh_port == 2222
+    assert n.runtime_inputs.ssh_username == "explicit-user"
+    assert n.secrets.ssh_password == "explicit-secret"
+    assert n.runtime_inputs.remote_rdb_path == "/explicit/dump.rdb"
+    assert n.runtime_inputs.remote_rdb_path_source == "user_override"
+    assert n.runtime_inputs.require_fresh_rdb_snapshot is True

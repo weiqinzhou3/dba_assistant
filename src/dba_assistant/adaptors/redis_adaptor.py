@@ -130,16 +130,23 @@ class RedisAdaptor:
         except ConnectionError as error:
             return self._probe_unavailable(metadata, "connection_failed", error)
         except TimeoutError as error:
-            return self._probe_unavailable(metadata, "timeout_failed", error)
+            return self._probe_unavailable(metadata, "timeout", error)
         except PermissionError as error:
             return self._probe_unavailable(metadata, "permission_denied", error)
         except RedisError as error:
-            kind = self._classify_admin_error(error)
+            kind = self._classify_redis_error(error)
             if kind is None:
-                raise
+                return self._probe_unavailable(metadata, "unknown_error", error)
             return self._probe_unavailable(metadata, kind, error)
+        except Exception as error:  # noqa: BLE001
+            return self._probe_unavailable(metadata, "unknown_error", error)
 
-        return {"available": True, **metadata, **formatter(payload)}
+        try:
+            return {"available": True, **metadata, **formatter(payload)}
+        except (TypeError, ValueError) as error:
+            return self._probe_unavailable(metadata, "malformed_response", error)
+        except Exception as error:  # noqa: BLE001
+            return self._probe_unavailable(metadata, "unknown_error", error)
 
     def _run_read_only_probe(
         self,
@@ -155,9 +162,23 @@ class RedisAdaptor:
         except ConnectionError as error:
             return self._probe_unavailable({}, "connection_failed", error)
         except TimeoutError as error:
-            return self._probe_unavailable({}, "timeout_failed", error)
+            return self._probe_unavailable({}, "timeout", error)
+        except PermissionError as error:
+            return self._probe_unavailable({}, "permission_denied", error)
+        except RedisError as error:
+            kind = self._classify_redis_error(error)
+            if kind is None:
+                return self._probe_unavailable({}, "unknown_error", error)
+            return self._probe_unavailable({}, kind, error)
+        except Exception as error:  # noqa: BLE001
+            return self._probe_unavailable({}, "unknown_error", error)
 
-        return formatter(payload)
+        try:
+            return formatter(payload)
+        except (TypeError, ValueError) as error:
+            return self._probe_unavailable({}, "malformed_response", error)
+        except Exception as error:  # noqa: BLE001
+            return self._probe_unavailable({}, "unknown_error", error)
 
     def _probe_unavailable(
         self,
@@ -168,11 +189,13 @@ class RedisAdaptor:
         return {
             "available": False,
             **metadata,
-            "error": {"kind": kind, "message": str(error)},
+            "error": {"kind": kind, "message": str(error) or error.__class__.__name__},
         }
 
-    def _classify_admin_error(self, error: RedisError) -> str | None:
+    def _classify_redis_error(self, error: RedisError) -> str | None:
         message = str(error).lower()
+        if "wrongpass" in message or "noauth" in message or "invalid username-password" in message:
+            return "authentication_failed"
         if "noperm" in message or "permission" in message:
             return "permission_denied"
         if "unknown command" in message or "disabled" in message:

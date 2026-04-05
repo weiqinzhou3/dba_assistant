@@ -97,6 +97,19 @@ class TimeoutFailingRedisClient(FakeRedisClient):
         raise TimeoutError("timed out")
 
 
+class MalformedResponseRedisClient(FakeRedisClient):
+    def info(self, section=None):
+        return ["oops"]
+
+    def config_get(self, pattern: str):
+        return ["oops"]
+
+
+class UnknownFailingRedisClient(FakeRedisClient):
+    def ping(self) -> bool:
+        raise RuntimeError("socket wrapper exploded")
+
+
 def test_redis_adaptor_wraps_read_only_commands() -> None:
     adaptor = RedisAdaptor(client_factory=FakeRedisClient)
     connection = RedisConnectionConfig(host="redis.example", port=6380, password="secret")
@@ -218,25 +231,48 @@ def test_redis_adaptor_normalizes_timeout_failures() -> None:
 
     assert adaptor.ping(connection) == {
         "available": False,
-        "error": {"kind": "timeout_failed", "message": "timed out"},
+        "error": {"kind": "timeout", "message": "timed out"},
     }
     assert adaptor.info(connection, section="server") == {
         "available": False,
-        "error": {"kind": "timeout_failed", "message": "timed out"},
+        "error": {"kind": "timeout", "message": "timed out"},
     }
     assert adaptor.config_get(connection, pattern="maxmemory*") == {
         "available": False,
         "pattern": "maxmemory*",
-        "error": {"kind": "timeout_failed", "message": "timed out"},
+        "error": {"kind": "timeout", "message": "timed out"},
     }
     assert adaptor.slowlog_get(connection, length=5) == {
         "available": False,
         "requested_length": 5,
-        "error": {"kind": "timeout_failed", "message": "timed out"},
+        "error": {"kind": "timeout", "message": "timed out"},
     }
     assert adaptor.client_list(connection) == {
         "available": False,
-        "error": {"kind": "timeout_failed", "message": "timed out"},
+        "error": {"kind": "timeout", "message": "timed out"},
+    }
+
+
+def test_redis_adaptor_reports_malformed_response_and_unknown_errors() -> None:
+    malformed = RedisAdaptor(client_factory=MalformedResponseRedisClient)
+    unknown = RedisAdaptor(client_factory=UnknownFailingRedisClient)
+    connection = RedisConnectionConfig(host="redis.example")
+
+    info = malformed.info(connection, section="persistence")
+    config = malformed.config_get(connection, pattern="dir")
+
+    assert info["available"] is False
+    assert info["error"]["kind"] == "malformed_response"
+    assert "length" in info["error"]["message"]
+
+    assert config["available"] is False
+    assert config["pattern"] == "dir"
+    assert config["error"]["kind"] == "malformed_response"
+    assert "length" in config["error"]["message"]
+
+    assert unknown.ping(connection) == {
+        "available": False,
+        "error": {"kind": "unknown_error", "message": "socket wrapper exploded"},
     }
 
 

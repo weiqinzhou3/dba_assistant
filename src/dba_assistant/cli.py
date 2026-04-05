@@ -39,6 +39,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         default=None,
     )
+    ask_parser.add_argument("--ssh-host", default=None)
+    ask_parser.add_argument("--ssh-port", default=None, type=int)
+    ask_parser.add_argument("--ssh-username", default=None)
+    ask_parser.add_argument("--ssh-password", default=None)
+    ask_parser.add_argument("--remote-rdb-path", default=None)
+    ask_parser.add_argument(
+        "--remote-rdb-path-source",
+        choices=("user_override", "discovered", "fallback_default"),
+        default=None,
+    )
+    ask_parser.add_argument("--fresh-rdb", action="store_true")
     ask_parser.add_argument("--mysql-host", default=None)
     ask_parser.add_argument("--mysql-port", default=None, type=int)
     ask_parser.add_argument("--mysql-user", default=None)
@@ -63,6 +74,13 @@ def main(argv: list[str] | None = None) -> int:
             report_format=args.report_format,
             input_kind=args.input_kind,
             path_mode=args.path_mode,
+            ssh_host=args.ssh_host,
+            ssh_port=args.ssh_port,
+            ssh_username=args.ssh_username,
+            ssh_password=args.ssh_password,
+            remote_rdb_path=args.remote_rdb_path,
+            remote_rdb_path_source=args.remote_rdb_path_source,
+            require_fresh_rdb_snapshot=args.fresh_rdb or None,
             mysql_host=args.mysql_host,
             mysql_port=args.mysql_port,
             mysql_user=args.mysql_user,

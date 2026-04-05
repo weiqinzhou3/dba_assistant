@@ -25,6 +25,7 @@ from dba_assistant.deep_agent_integration.runtime_support import (
 )
 from dba_assistant.interface.hitl import HumanApprovalHandler
 from dba_assistant.interface.types import ApprovalRequest, ApprovalStatus
+from dba_assistant.capabilities.redis_rdb_analysis.remote_input import RemoteRedisDiscoveryError
 from dba_assistant.orchestrator.tools import (
     build_all_tools,
     resolve_remote_rdb_acquisition_plan,
@@ -48,11 +49,12 @@ Live read-only Redis inspection.
 (requires human approval).
 
 Rules:
-- All Redis operations are strictly read-only.
+- Redis inspection tools are read-only. Remote fetch remains approval-gated, and fresh_snapshot may trigger approved BGSAVE before fetch.
 - For remote RDB: call discover_remote_rdb first, then fetch_remote_rdb_via_ssh.
 - When the user asks for the latest/fresh RDB snapshot, use fetch_remote_rdb_via_ssh with acquisition_mode='fresh_snapshot'.
 - If Redis connection details are available and the user did not provide remote_rdb_path, do not ask the user for dir/dbfilename first; discover them by executing Redis discovery.
-- Only ask the user for dir/dbfilename/remote_rdb_path when Redis discovery actually fails and you need the user to override it.
+- If Redis discovery fails, surface the exact failure reason and stage. Do not paraphrase it as missing dir/dbfilename unless discovery explicitly returned missing_dir/missing_dbfilename.
+- Only ask the user for dir/dbfilename/remote_rdb_path when Redis discovery explicitly returned missing_dir/missing_dbfilename and you need the user to override it.
 - MySQL read operations (mysql_read_query, load_preparsed_dataset_from_mysql) are lower-risk.
 - MySQL write operations (stage_rdb_rows_to_mysql) require human approval before execution.
 - Use the profile the user requests (generic, rcs). Default to generic.
@@ -302,15 +304,34 @@ def _make_remote_rdb_path_resolution_resolver(
                 connection,
                 remote_rdb_state=remote_rdb_state,
             )
-        except Exception:  # noqa: BLE001
-            return {
-                **resolve_remote_rdb_acquisition_plan(
-                    request,
-                    None,
-                    acquisition_mode=str(tool_args.get("acquisition_mode", "")),
-                ),
-                "discovery_status": "failed",
-            }
+        except RemoteRedisDiscoveryError as exc:
+            resolution = resolve_remote_rdb_acquisition_plan(
+                request,
+                None,
+                acquisition_mode=str(tool_args.get("acquisition_mode", "")),
+            )
+            resolution["discovery_status"] = "failed"
+            resolution["discovery_error_stage"] = exc.stage
+            resolution["discovery_error_kind"] = exc.kind
+            resolution["discovery_error_message"] = exc.message
+            resolution["bgsave_required"] = "blocked"
+            if not resolution.get("remote_rdb_path"):
+                resolution["remote_rdb_path_source"] = "unresolved"
+            return resolution
+        except Exception as exc:  # noqa: BLE001
+            resolution = resolve_remote_rdb_acquisition_plan(
+                request,
+                None,
+                acquisition_mode=str(tool_args.get("acquisition_mode", "")),
+            )
+            resolution["discovery_status"] = "failed"
+            resolution["discovery_error_stage"] = "discover_remote_rdb"
+            resolution["discovery_error_kind"] = "unknown_error"
+            resolution["discovery_error_message"] = str(exc)
+            resolution["bgsave_required"] = "blocked"
+            if not resolution.get("remote_rdb_path"):
+                resolution["remote_rdb_path_source"] = "unresolved"
+            return resolution
         return {
             **resolve_remote_rdb_acquisition_plan(
                 request,
@@ -367,26 +388,52 @@ def _build_remote_rdb_interrupt_description(
         discovery_status = resolution.get("discovery_status") or (
             "succeeded" if remote_rdb_path_source == "discovered" else "not_run"
         )
+        discovery_error_stage = resolution.get("discovery_error_stage") or ""
+        discovery_error_kind = resolution.get("discovery_error_kind") or ""
+        discovery_error_message = resolution.get("discovery_error_message") or ""
         ssh_username = request.runtime_inputs.ssh_username or "unspecified"
-        return (
-            "Remote RDB acquisition requires human approval.\n\n"
-            f"Target Redis: {target}\n"
-            f"SSH target: {ssh_target}\n"
-            f"SSH username: {ssh_username}\n"
-            f"Discovery status: {discovery_status}\n"
-            f"Redis dir: {redis_dir}\n"
-            f"Redis dbfilename: {dbfilename}\n"
-            f"Remote RDB path: {remote_rdb_path}\n"
-            f"remote_rdb_path_source: {remote_rdb_path_source}\n"
-            f"Acquisition mode: {acquisition_mode}\n"
-            f"BGSAVE required: {bgsave_required}\n"
-            "The agent wants to fetch and analyze a remote Redis RDB.\n"
-            f"Profile: {profile_name}\n"
-            f"Output mode: {output_mode}\n"
-            f"Report format: {report_format}\n"
-            f"Output path: {output_path}\n"
-            "Approve only if remote RDB retrieval is allowed for this target."
+        lines = [
+            "Remote RDB acquisition requires human approval.",
+            "",
+            f"Target Redis: {target}",
+            f"SSH target: {ssh_target}",
+            f"SSH username: {ssh_username}",
+            f"Discovery status: {discovery_status}",
+        ]
+        if discovery_status == "failed":
+            lines.extend(
+                [
+                    f"Discovery failure stage: {discovery_error_stage or 'unknown'}",
+                    f"Discovery failure kind: {discovery_error_kind or 'unknown_error'}",
+                    f"Discovery failure message: {discovery_error_message or 'No error details available.'}",
+                    f"Remote RDB path: {remote_rdb_path}",
+                    f"remote_rdb_path_source: {remote_rdb_path_source}",
+                    f"Acquisition mode: {acquisition_mode}",
+                    f"BGSAVE required: {bgsave_required}",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    f"Redis dir: {redis_dir}",
+                    f"Redis dbfilename: {dbfilename}",
+                    f"Remote RDB path: {remote_rdb_path}",
+                    f"remote_rdb_path_source: {remote_rdb_path_source}",
+                    f"Acquisition mode: {acquisition_mode}",
+                    f"BGSAVE required: {bgsave_required}",
+                ]
+            )
+        lines.extend(
+            [
+                "The agent wants to fetch and analyze a remote Redis RDB.",
+                f"Profile: {profile_name}",
+                f"Output mode: {output_mode}",
+                f"Report format: {report_format}",
+                f"Output path: {output_path}",
+                "Approve only if remote RDB retrieval is allowed for this target.",
+            ]
         )
+        return "\n".join(lines)
 
     return describe_remote_rdb_fetch_interrupt
 

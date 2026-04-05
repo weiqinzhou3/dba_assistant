@@ -87,6 +87,9 @@ _SSH_PASSWORD_PATTERN = re.compile(
 _LATEST_RDB_PATTERN = re.compile(
     r"(?i)(?:最新(?:的)?\s*(?:rdb|快照)|latest\s+(?:rdb|snapshot)|fresh\s+snapshot|生成最新快照)"
 )
+_REMOTE_RDB_PATH_HINT_PATTERN = re.compile(
+    r"(?i)(?:rdb(?:文件|file)?\s*(?:在|位于|路径(?:是|为)?|path(?:\s+is|\s+at)?))"
+)
 
 
 def _build_profile_alternation() -> str:
@@ -177,7 +180,11 @@ def normalize_raw_request(
     db_match = _DB_PATTERN.search(prompt)
     output_mode, report_format, output_path = _extract_report_output_intent(prompt, default_output_mode)
     route_name = _extract_route_name(prompt)
-    prompt_input_paths = _extract_prompt_input_paths(prompt)
+    remote_rdb_path = _extract_remote_rdb_path(
+        prompt,
+        has_remote_context=bool(host_match or ssh_details),
+    )
+    prompt_input_paths = _extract_prompt_input_paths(prompt, exclude_path=remote_rdb_path)
     effective_input_paths = tuple(input_paths or prompt_input_paths)
     mysql_query, mysql_query_span = _extract_mysql_query(prompt)
     mysql_context = _mysql_connection_context(prompt, mysql_query_span)
@@ -206,6 +213,8 @@ def normalize_raw_request(
             ssh_host=ssh_details.get("host") if ssh_details else None,
             ssh_port=ssh_details.get("port") if ssh_details else None,
             ssh_username=ssh_details.get("username") if ssh_details else None,
+            remote_rdb_path=remote_rdb_path,
+            remote_rdb_path_source="user_override" if remote_rdb_path else None,
             mysql_host=mysql_host,
             mysql_port=mysql_port or 3306,
             mysql_user=mysql_user,
@@ -364,6 +373,24 @@ def _extract_latest_rdb_request(prompt: str) -> bool:
     return _LATEST_RDB_PATTERN.search(prompt) is not None
 
 
+def _extract_remote_rdb_path(
+    prompt: str,
+    *,
+    has_remote_context: bool,
+) -> str | None:
+    matches = list(_RDB_PATH_PATTERN.finditer(prompt))
+    if not matches:
+        return None
+
+    for match in matches:
+        if _REMOTE_RDB_PATH_HINT_PATTERN.search(prompt[max(0, match.start() - 32):match.start()]):
+            return str(Path(match.group("path")))
+
+    if has_remote_context and len(matches) == 1:
+        return str(Path(matches[0].group("path")))
+    return None
+
+
 def _extract_profile_name(prompt: str) -> str | None:
     matches: list[tuple[int, str, bool]] = []
 
@@ -457,11 +484,13 @@ def _extract_route_name(prompt: str) -> str | None:
     return route_name
 
 
-def _extract_prompt_input_paths(prompt: str) -> tuple[Path, ...]:
+def _extract_prompt_input_paths(prompt: str, *, exclude_path: str | None = None) -> tuple[Path, ...]:
     seen: set[Path] = set()
     paths: list[Path] = []
     for match in _RDB_PATH_PATTERN.finditer(prompt):
         path = Path(match.group("path")).expanduser()
+        if exclude_path is not None and str(path) == exclude_path:
+            continue
         if path not in seen:
             seen.add(path)
             paths.append(path)

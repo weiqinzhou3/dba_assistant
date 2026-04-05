@@ -2,6 +2,7 @@ from pathlib import Path
 
 from dba_assistant.adaptors.redis_adaptor import RedisConnectionConfig
 from dba_assistant.application.request_models import NormalizedRequest, RdbOverrides, RuntimeInputs, Secrets
+from dba_assistant.capabilities.redis_rdb_analysis.remote_input import RemoteRedisDiscoveryError
 from dba_assistant.orchestrator.tools import build_all_tools, resolve_remote_rdb_fetch_plan
 
 
@@ -589,5 +590,78 @@ def test_fetch_remote_rdb_via_ssh_tool_generates_latest_snapshot_when_requested(
     result = fetch_tool()
 
     assert "ok" in result
-    assert "bgsave" in events
+    assert events[:4] == [
+        "info:persistence",
+        "bgsave",
+        "info:persistence",
+        "sleep:0.2",
+    ]
     assert "fetch:/data/redis/data/dump.rdb" in events
+
+
+def test_fetch_remote_rdb_via_ssh_returns_auth_failure_without_missing_dir_prompt(monkeypatch) -> None:
+    request = _make_request(
+        runtime_inputs=RuntimeInputs(
+            redis_host="192.168.23.54",
+            redis_port=6379,
+            ssh_host="192.168.23.54",
+            ssh_port=22,
+            ssh_username="root",
+            output_mode="summary",
+        ),
+        secrets=Secrets(redis_password="123456", ssh_password="root"),
+    )
+    connection = RedisConnectionConfig(host="192.168.23.54", port=6379, password="123456")
+    tools = build_all_tools(request, connection=connection)
+    fetch_tool = next(t for t in tools if t.__name__ == "fetch_remote_rdb_via_ssh")
+
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools.discover_remote_rdb_snapshot",
+        lambda adaptor, connection, remote_rdb_state=None: (_ for _ in ()).throw(
+            RemoteRedisDiscoveryError(
+                kind="authentication_failed",
+                stage="ping",
+                message="authentication_failed: invalid username-password pair or user is disabled",
+            )
+        ),
+    )
+
+    result = fetch_tool()
+
+    assert "authentication_failed" in result
+    assert "preflight failed at ping" in result
+    assert "provide dir/dbfilename" not in result.lower()
+
+
+def test_fetch_remote_rdb_via_ssh_returns_permission_denied_from_config_get(monkeypatch) -> None:
+    request = _make_request(
+        runtime_inputs=RuntimeInputs(
+            redis_host="192.168.23.54",
+            redis_port=6379,
+            ssh_host="192.168.23.54",
+            ssh_port=22,
+            ssh_username="root",
+            output_mode="summary",
+        ),
+        secrets=Secrets(redis_password="123456", ssh_password="root"),
+    )
+    connection = RedisConnectionConfig(host="192.168.23.54", port=6379, password="123456")
+    tools = build_all_tools(request, connection=connection)
+    fetch_tool = next(t for t in tools if t.__name__ == "fetch_remote_rdb_via_ssh")
+
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools.discover_remote_rdb_snapshot",
+        lambda adaptor, connection, remote_rdb_state=None: (_ for _ in ()).throw(
+            RemoteRedisDiscoveryError(
+                kind="permission_denied",
+                stage="config_get(dir)",
+                message="permission_denied: CONFIG GET dir not permitted by ACL",
+            )
+        ),
+    )
+
+    result = fetch_tool()
+
+    assert "permission_denied" in result
+    assert "config_get(dir)" in result
+    assert "missing dir" not in result.lower()

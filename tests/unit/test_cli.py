@@ -88,6 +88,37 @@ def test_cli_ask_threads_mysql_flags_to_interface_request(monkeypatch, capsys) -
     assert req.mysql_query == "SELECT * FROM preparsed_keys"
 
 
+def test_cli_ask_threads_remote_redis_flags_to_interface_request(monkeypatch, capsys) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_handle_request(request, *, approval_handler):
+        captured["request"] = request
+        return "ok"
+
+    monkeypatch.setattr(cli, "handle_request", fake_handle_request)
+
+    exit_code = cli.main([
+        "ask", "analyze remote redis",
+        "--ssh-host", "192.168.23.54",
+        "--ssh-port", "2222",
+        "--ssh-username", "root",
+        "--ssh-password", "root",
+        "--remote-rdb-path", "/data/redis/data/dump.rdb",
+        "--remote-rdb-path-source", "user_override",
+        "--fresh-rdb",
+    ])
+
+    assert exit_code == 0
+    req = captured["request"]
+    assert req.ssh_host == "192.168.23.54"
+    assert req.ssh_port == 2222
+    assert req.ssh_username == "root"
+    assert req.ssh_password == "root"
+    assert req.remote_rdb_path == "/data/redis/data/dump.rdb"
+    assert req.remote_rdb_path_source == "user_override"
+    assert req.require_fresh_rdb_snapshot is True
+
+
 def test_cli_ask_uses_cli_approval_handler(monkeypatch, capsys) -> None:
     captured: dict[str, object] = {}
 

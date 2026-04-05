@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import tempfile
 from pathlib import Path
+from typing import Any
 
 from dba_assistant.adaptors.mysql_adaptor import MySQLAdaptor, MySQLConnectionConfig
 from dba_assistant.adaptors.redis_adaptor import (
@@ -20,7 +21,7 @@ from dba_assistant.adaptors.redis_adaptor import (
 from dba_assistant.adaptors.ssh_adaptor import SSHAdaptor, SSHConnectionConfig
 from dba_assistant.application.request_models import NormalizedRequest, RdbOverrides
 from dba_assistant.core.reporter.types import OutputMode, ReportFormat, ReportOutputConfig
-from dba_assistant.skills.redis_rdb_analysis.remote_input import discover_remote_rdb
+from dba_assistant.capabilities.redis_rdb_analysis.remote_input import discover_remote_rdb
 from dba_assistant.tools.analyze_rdb import analyze_rdb_tool
 from dba_assistant.tools.mysql_tools import (
     load_preparsed_dataset_from_mysql as _load_dataset,
@@ -64,8 +65,8 @@ def build_all_tools(
         adaptor = RedisAdaptor()
         tools.extend(_make_redis_inspection_tools(adaptor, connection))
         tools.append(_make_discover_remote_rdb_tool(adaptor, connection))
-        tools.append(
-            _make_fetch_and_analyze_remote_rdb_tool(
+        tools.extend(
+            _make_remote_rdb_fetch_tools(
                 request,
                 adaptor,
                 connection,
@@ -269,7 +270,7 @@ def _make_discover_remote_rdb_tool(
                 "lastsave": discovery.get("lastsave"),
                 "bgsave_in_progress": discovery.get("bgsave_in_progress"),
                 "approval_required": True,
-                "next_step": "Call fetch_and_analyze_remote_rdb to fetch the RDB after human approval.",
+                "next_step": "Call fetch_remote_rdb_via_ssh to fetch the RDB after human approval.",
             },
             default=str,
         )
@@ -281,12 +282,12 @@ def _make_discover_remote_rdb_tool(
             "Discover the remote Redis RDB file location and persistence status. "
             "Read-only operation — does not fetch or modify anything. "
             "Returns JSON with rdb_path, lastsave, and approval_required flag. "
-            "After discovery, call fetch_and_analyze_remote_rdb to proceed."
+            "After discovery, call fetch_remote_rdb_via_ssh to proceed."
         ),
     )
 
 
-def _make_fetch_and_analyze_remote_rdb_tool(
+def _make_remote_rdb_fetch_tools(
     request: NormalizedRequest,
     adaptor: RedisAdaptor,
     connection: RedisConnectionConfig,
@@ -294,49 +295,31 @@ def _make_fetch_and_analyze_remote_rdb_tool(
     mysql_adaptor: MySQLAdaptor | None = None,
     mysql_connection: MySQLConnectionConfig | None = None,
 ):
-    """Remote RDB fetch + analysis tool protected by Deep Agent interrupt_on."""
+    """Remote RDB fetch + analysis tools protected by Deep Agent interrupt_on."""
 
     analysis_service = _make_phase3_analysis_service(
         mysql_adaptor=mysql_adaptor,
         mysql_connection=mysql_connection,
     )
 
-    def fetch_and_analyze_remote_rdb(
+    def _fetch_remote_and_continue(
         profile_name: str = "generic",
         output_mode: str = "summary",
         report_format: str = "summary",
         output_path: str = "",
-        local_rdb_path: str = "",
         ssh_host: str = "",
-        ssh_port: str = "22",
+        ssh_port: str = "",
         ssh_username: str = "",
         ssh_password: str = "",
         remote_rdb_path: str = "",
     ) -> str:
-        # If a local path was supplied (manual retrieval or future SSH fetch),
-        # close the loop by routing directly into analyze_rdb_tool.
-        if local_rdb_path:
-            local_path = Path(local_rdb_path)
-            if not local_path.exists():
-                return f"Error: local RDB path does not exist: {local_rdb_path}"
-
-            return _render_remote_rdb_analysis(
-                request=request,
-                local_path=local_path,
-                connection=connection,
-                profile_name=profile_name,
-                output_mode=output_mode,
-                report_format=report_format,
-                output_path=output_path,
-                analysis_service=analysis_service,
-            )
-
         try:
             discovery = discover_remote_rdb(adaptor, connection)
         except Exception as exc:  # noqa: BLE001
             return f"Remote RDB discovery failed: {exc}"
 
         fetched_path = _fetch_remote_rdb_via_ssh(
+            request=request,
             connection=connection,
             discovery=discovery,
             ssh_host=ssh_host,
@@ -359,18 +342,74 @@ def _make_fetch_and_analyze_remote_rdb_tool(
             analysis_service=analysis_service,
         )
 
-    return _named_tool(
+    def fetch_remote_rdb_via_ssh(
+        profile_name: str = "generic",
+        output_mode: str = "summary",
+        report_format: str = "summary",
+        output_path: str = "",
+        ssh_host: str = "",
+        ssh_port: str = "",
+        ssh_username: str = "",
+        ssh_password: str = "",
+        remote_rdb_path: str = "",
+    ) -> str:
+        return _fetch_remote_and_continue(
+            profile_name=profile_name,
+            output_mode=output_mode,
+            report_format=report_format,
+            output_path=output_path,
+            ssh_host=ssh_host,
+            ssh_port=ssh_port,
+            ssh_username=ssh_username,
+            ssh_password=ssh_password,
+            remote_rdb_path=remote_rdb_path,
+        )
+
+    def fetch_and_analyze_remote_rdb(
+        profile_name: str = "generic",
+        output_mode: str = "summary",
+        report_format: str = "summary",
+        output_path: str = "",
+        ssh_host: str = "",
+        ssh_port: str = "",
+        ssh_username: str = "",
+        ssh_password: str = "",
+        remote_rdb_path: str = "",
+    ) -> str:
+        return _fetch_remote_and_continue(
+            profile_name=profile_name,
+            output_mode=output_mode,
+            report_format=report_format,
+            output_path=output_path,
+            ssh_host=ssh_host,
+            ssh_port=ssh_port,
+            ssh_username=ssh_username,
+            ssh_password=ssh_password,
+            remote_rdb_path=remote_rdb_path,
+        )
+
+    canonical_tool = _named_tool(
+        fetch_remote_rdb_via_ssh,
+        "fetch_remote_rdb_via_ssh",
+        (
+            "Fetch a remote Redis RDB over SSH, store it in a local temporary artifact, "
+            "then continue into the unified Phase 3 analysis chain. "
+            "REQUIRES HUMAN APPROVAL before proceeding. "
+            "Use after discover_remote_rdb. "
+            "Parameters: profile_name, output_mode, report_format, output_path, "
+            "ssh_host, ssh_port, ssh_username, ssh_password, remote_rdb_path. "
+            "SSH parameters are optional if already present in shared request context."
+        ),
+    )
+    compatibility_alias = _named_tool(
         fetch_and_analyze_remote_rdb,
         "fetch_and_analyze_remote_rdb",
         (
-            "Fetch and analyze an RDB file from a remote Redis server. "
-            "REQUIRES HUMAN APPROVAL before proceeding. "
-            "Use after discover_remote_rdb to fetch the actual RDB file. "
-            "Parameters: profile_name, output_mode, report_format, output_path, "
-            "local_rdb_path (optional — if set, analyze this local file instead of SSH fetch), "
-            "ssh_host, ssh_port, ssh_username, ssh_password, remote_rdb_path."
+            "Compatibility alias for fetch_remote_rdb_via_ssh. "
+            "Fetch a remote Redis RDB over SSH, then continue analysis."
         ),
     )
+    return [canonical_tool, compatibility_alias]
 
 
 # ---------------------------------------------------------------------------
@@ -459,7 +498,7 @@ def _make_phase3_analysis_service(
         return None
 
     def run_analysis(request):
-        from dba_assistant.skills.redis_rdb_analysis.service import analyze_rdb as _analyze_rdb
+        from dba_assistant.capabilities.redis_rdb_analysis.service import analyze_rdb as _analyze_rdb
 
         return _analyze_rdb(
             request,
@@ -481,6 +520,7 @@ def _make_phase3_analysis_service(
 
 def _fetch_remote_rdb_via_ssh(
     *,
+    request: NormalizedRequest,
     connection: RedisConnectionConfig,
     discovery: dict[str, object],
     ssh_host: str,
@@ -489,15 +529,20 @@ def _fetch_remote_rdb_via_ssh(
     ssh_password: str,
     remote_rdb_path: str,
 ) -> Path | str:
-    target_path = str(remote_rdb_path or discovery.get("rdb_path") or "").strip()
+    target_path = str(
+        remote_rdb_path
+        or request.runtime_inputs.remote_rdb_path
+        or discovery.get("rdb_path")
+        or ""
+    ).strip()
     if not target_path:
         return "Remote RDB discovery did not return a usable rdb_path."
 
     ssh_config = SSHConnectionConfig(
-        host=ssh_host or connection.host,
-        port=int(ssh_port or 22),
-        username=ssh_username or None,
-        password=ssh_password or None,
+        host=ssh_host or request.runtime_inputs.ssh_host or connection.host,
+        port=int(ssh_port or request.runtime_inputs.ssh_port or 22),
+        username=ssh_username or request.runtime_inputs.ssh_username or None,
+        password=ssh_password or request.secrets.ssh_password or None,
     )
     local_dir = Path(tempfile.mkdtemp(prefix="dba-assistant-remote-rdb-"))
     local_path = local_dir / Path(target_path).name
@@ -543,7 +588,7 @@ def _render_remote_rdb_analysis(
     )
 
     fmt = ReportFormat.SUMMARY if report_format == "summary" else ReportFormat.DOCX
-    out = Path(output_path) if output_path else None
+    out = Path(output_path) if output_path else request.runtime_inputs.output_path
     if fmt is ReportFormat.DOCX and out is None:
         return "Error: DOCX output requires an output path."
 

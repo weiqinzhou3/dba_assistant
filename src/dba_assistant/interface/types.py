@@ -24,6 +24,11 @@ class InterfaceRequest:
     report_format: str | None = None
     input_kind: str | None = None
     path_mode: str | None = None
+    ssh_host: str | None = None
+    ssh_port: int | None = None
+    ssh_username: str | None = None
+    ssh_password: str | None = None
+    remote_rdb_path: str | None = None
     mysql_host: str | None = None
     mysql_port: int | None = None
     mysql_user: str | None = None

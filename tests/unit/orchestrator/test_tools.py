@@ -42,6 +42,7 @@ def test_build_all_tools_includes_redis_tools_with_connection() -> None:
     assert "redis_slowlog_get" in names
     assert "redis_client_list" in names
     assert "discover_remote_rdb" in names
+    assert "fetch_remote_rdb_via_ssh" in names
     assert "fetch_and_analyze_remote_rdb" in names
 
 
@@ -154,9 +155,10 @@ def test_discover_remote_rdb_tool_returns_discovery_json(monkeypatch) -> None:
     result = json.loads(discover_tool())
     assert result["rdb_path"] == "/data/dump.rdb"
     assert result["approval_required"] is True
+    assert result["next_step"] == "Call fetch_remote_rdb_via_ssh to fetch the RDB after human approval."
 
 
-def test_fetch_and_analyze_remote_rdb_tool_returns_manual_fetch_scaffold(monkeypatch) -> None:
+def test_fetch_remote_rdb_via_ssh_tool_fetches_and_continues_analysis(monkeypatch) -> None:
     from dba_assistant.core.reporter.report_model import AnalysisReport, ReportSectionModel, TextBlock
 
     captured: dict[str, object] = {}
@@ -205,7 +207,7 @@ def test_fetch_and_analyze_remote_rdb_tool_returns_manual_fetch_scaffold(monkeyp
     request = _make_request()
     connection = RedisConnectionConfig(host="redis.example", port=6379)
     tools = build_all_tools(request, connection=connection)
-    fetch_tool = next(t for t in tools if t.__name__ == "fetch_and_analyze_remote_rdb")
+    fetch_tool = next(t for t in tools if t.__name__ == "fetch_remote_rdb_via_ssh")
 
     result = fetch_tool(ssh_username="root", ssh_password="secret")
     assert "remote ok" in result
@@ -216,7 +218,54 @@ def test_fetch_and_analyze_remote_rdb_tool_returns_manual_fetch_scaffold(monkeyp
     assert len(captured["analyze_input_paths"]) == 1
 
 
-def test_fetch_and_analyze_remote_rdb_tool_preserves_database_backed_route(monkeypatch) -> None:
+def test_fetch_remote_rdb_via_ssh_tool_uses_request_ssh_context_when_args_omitted(monkeypatch) -> None:
+    from dba_assistant.core.reporter.report_model import AnalysisReport, ReportSectionModel, TextBlock
+
+    captured: dict[str, object] = {}
+
+    def fake_discover(adaptor, connection):
+        return {"rdb_path": "/data/dump.rdb", "lastsave": 12345, "bgsave_in_progress": False}
+
+    class FakeSSHAdaptor:
+        def fetch_file(self, config, remote_path, local_path):
+            captured["ssh_config"] = config
+            captured["remote_path"] = remote_path
+            local_path.write_text("fixture", encoding="utf-8")
+            return local_path
+
+    monkeypatch.setattr("dba_assistant.orchestrator.tools.discover_remote_rdb", fake_discover)
+    monkeypatch.setattr("dba_assistant.orchestrator.tools.SSHAdaptor", FakeSSHAdaptor)
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools.analyze_rdb_tool",
+        lambda *args, **kwargs: AnalysisReport(
+            title="Redis RDB Analysis",
+            sections=[ReportSectionModel(id="summary", title="Summary", blocks=[TextBlock(text="ok")])],
+        ),
+    )
+
+    request = _make_request(
+        runtime_inputs=RuntimeInputs(
+            output_mode="summary",
+            ssh_host="ssh.example",
+            ssh_port=2222,
+            ssh_username="root",
+        ),
+        secrets=Secrets(ssh_password="secret"),
+    )
+    connection = RedisConnectionConfig(host="redis.example", port=6379)
+    tools = build_all_tools(request, connection=connection)
+    fetch_tool = next(t for t in tools if t.__name__ == "fetch_remote_rdb_via_ssh")
+
+    fetch_tool()
+
+    assert captured["remote_path"] == "/data/dump.rdb"
+    assert captured["ssh_config"].host == "ssh.example"
+    assert captured["ssh_config"].port == 2222
+    assert captured["ssh_config"].username == "root"
+    assert captured["ssh_config"].password == "secret"
+
+
+def test_fetch_remote_rdb_via_ssh_tool_preserves_database_backed_route(monkeypatch) -> None:
     from dba_assistant.core.reporter.report_model import AnalysisReport, ReportSectionModel, TextBlock
 
     captured: dict[str, object] = {}
@@ -270,7 +319,7 @@ def test_fetch_and_analyze_remote_rdb_tool_preserves_database_backed_route(monke
         host="db.example", port=3306, user="analyst", password="secret", database="analysis_db",
     )
     tools = build_all_tools(request, connection=connection, mysql_connection=mysql_connection)
-    fetch_tool = next(t for t in tools if t.__name__ == "fetch_and_analyze_remote_rdb")
+    fetch_tool = next(t for t in tools if t.__name__ == "fetch_remote_rdb_via_ssh")
 
     result = fetch_tool(ssh_username="root", ssh_password="secret")
 

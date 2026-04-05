@@ -44,6 +44,21 @@ def test_interface_request_carries_mysql_fields() -> None:
     assert request.mysql_query == "SELECT * FROM preparsed_keys"
 
 
+def test_interface_request_carries_ssh_fields() -> None:
+    request = InterfaceRequest(
+        prompt="analyze remote redis",
+        ssh_host="ssh.example",
+        ssh_port=2222,
+        ssh_username="root",
+        ssh_password="secret",
+    )
+
+    assert request.ssh_host == "ssh.example"
+    assert request.ssh_port == 2222
+    assert request.ssh_username == "root"
+    assert request.ssh_password == "secret"
+
+
 def test_interface_request_mysql_defaults_to_none() -> None:
     request = InterfaceRequest(prompt="analyze rdb")
 
@@ -54,6 +69,10 @@ def test_interface_request_mysql_defaults_to_none() -> None:
     assert request.mysql_password is None
     assert request.mysql_table is None
     assert request.mysql_query is None
+    assert request.ssh_host is None
+    assert request.ssh_port is None
+    assert request.ssh_username is None
+    assert request.ssh_password is None
 
 
 def test_runtime_inputs_carries_input_kind_and_path_mode() -> None:
@@ -89,3 +108,21 @@ def test_runtime_inputs_carries_mysql_fields() -> None:
     assert ri.mysql_database == "analysis_db"
     assert ri.mysql_table == "preparsed_keys"
     assert ri.mysql_query == "SELECT * FROM preparsed_keys"
+
+
+def test_runtime_inputs_carries_ssh_fields() -> None:
+    ri = RuntimeInputs(
+        ssh_host="ssh.example",
+        ssh_port=2222,
+        ssh_username="root",
+    )
+
+    assert ri.ssh_host == "ssh.example"
+    assert ri.ssh_port == 2222
+    assert ri.ssh_username == "root"
+
+
+def test_secrets_carry_ssh_password() -> None:
+    secrets = Secrets(ssh_password="secret")
+
+    assert secrets.ssh_password == "secret"

@@ -23,6 +23,8 @@ DBA Assistant is a Deep Agents SDK-based project. Functional delivery happens ph
 - `templates/reports/` stores repository-owned report template work.
 - `references/report-samples/` stores historical report samples for comparison only.
 - `tests/` stores repository-native fixtures and verification assets.
+- Regarding repository layering, skill/tools/capabilities responsibility boundaries, shared infrastructure reuse rules, and prohibition of anti-patterns, please consistently follow docs/dba_assistant_architecture_constraints_addendum_v1.md; if implementation convenience conflicts with this document, the document shall prevail, unless docs/dba_assistant_master_plan_en.md explicitly overrides it.
+
 
 ## Initialization Rules
 

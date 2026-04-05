@@ -70,6 +70,18 @@ def _apply_overrides(
     if request.path_mode is not None:
         runtime_inputs = replace(runtime_inputs, path_mode=request.path_mode)
 
+    if request.ssh_host is not None:
+        runtime_inputs = replace(runtime_inputs, ssh_host=request.ssh_host)
+
+    if request.ssh_port is not None:
+        runtime_inputs = replace(runtime_inputs, ssh_port=request.ssh_port)
+
+    if request.ssh_username is not None:
+        runtime_inputs = replace(runtime_inputs, ssh_username=request.ssh_username)
+
+    if request.remote_rdb_path is not None:
+        runtime_inputs = replace(runtime_inputs, remote_rdb_path=request.remote_rdb_path)
+
     if request.mysql_host is not None:
         runtime_inputs = replace(runtime_inputs, mysql_host=request.mysql_host)
 
@@ -90,6 +102,10 @@ def _apply_overrides(
 
     if request.mysql_password is not None:
         secrets = replace(normalized.secrets, mysql_password=request.mysql_password)
+        normalized = replace(normalized, secrets=secrets)
+
+    if request.ssh_password is not None:
+        secrets = replace(normalized.secrets, ssh_password=request.ssh_password)
         normalized = replace(normalized, secrets=secrets)
 
     return replace(normalized, runtime_inputs=runtime_inputs, rdb_overrides=rdb_overrides)

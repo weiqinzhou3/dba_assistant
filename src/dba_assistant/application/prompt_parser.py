@@ -66,7 +66,7 @@ _REDIS_TOKEN_PATTERN = re.compile(r"(?i)\bredis\b")
 def _build_profile_alternation() -> str:
     """Build a regex alternation from available profile YAML files."""
     try:
-        from dba_assistant.skills.redis_rdb_analysis.profile_resolver import (
+        from dba_assistant.capabilities.redis_rdb_analysis.profile_resolver import (
             available_profile_names,
         )
         names = available_profile_names()

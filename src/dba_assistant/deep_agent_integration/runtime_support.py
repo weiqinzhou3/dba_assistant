@@ -10,7 +10,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 MEMORY_SOURCES = ("/AGENTS.md",)
-SKILL_SOURCES = ("/src/dba_assistant/skills",)
+SKILL_SOURCES = ("/skills",)
 
 
 def build_runtime_backend() -> FilesystemBackend:

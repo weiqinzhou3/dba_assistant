@@ -34,7 +34,7 @@ Available capabilities (use the corresponding tool):
 1. **analyze_local_rdb** — Analyze local Redis RDB dump files. Use when local .rdb file paths are provided.
 2. **analyze_preparsed_dataset** — Analyze a preparsed dataset from local JSON or MySQL-backed source.
 3. **discover_remote_rdb** — Read-only discovery of remote Redis RDB location and persistence info.
-4. **fetch_and_analyze_remote_rdb** — Fetch a remote RDB (requires human approval) then analyze it.
+4. **fetch_remote_rdb_via_ssh** — Fetch a remote RDB via SSH (requires human approval) then continue analysis.
 5. **redis_ping / redis_info / redis_config_get / redis_slowlog_get / redis_client_list** — \
 Live read-only Redis inspection.
 6. **mysql_read_query** — Execute a bounded read-only SQL query against MySQL.
@@ -44,7 +44,7 @@ Live read-only Redis inspection.
 
 Rules:
 - All Redis operations are strictly read-only.
-- For remote RDB: call discover_remote_rdb first, then fetch_and_analyze_remote_rdb.
+- For remote RDB: call discover_remote_rdb first, then fetch_remote_rdb_via_ssh.
 - MySQL read operations (mysql_read_query, load_preparsed_dataset_from_mysql) are lower-risk.
 - MySQL write operations (stage_rdb_rows_to_mysql) require human approval before execution.
 - Use the profile the user requests (generic, rcs). Default to generic.
@@ -71,6 +71,10 @@ def build_unified_agent(
     checkpointer = build_runtime_checkpointer()
 
     interrupt_on: dict[str, Any] = {
+        "fetch_remote_rdb_via_ssh": {
+            "allowed_decisions": ["approve", "reject"],
+            "description": _build_remote_rdb_interrupt_description(request),
+        },
         "fetch_and_analyze_remote_rdb": {
             "allowed_decisions": ["approve", "reject"],
             "description": _build_remote_rdb_interrupt_description(request),
@@ -174,6 +178,14 @@ def _build_user_message(request: NormalizedRequest) -> str:
             f"Redis connection: {request.runtime_inputs.redis_host}:"
             f"{request.runtime_inputs.redis_port}"
         )
+    if request.runtime_inputs.ssh_host:
+        ssh_port = request.runtime_inputs.ssh_port or 22
+        ssh_user = request.runtime_inputs.ssh_username or "unspecified"
+        context_lines.append(
+            f"SSH connection: {request.runtime_inputs.ssh_host}:{ssh_port} as {ssh_user}"
+        )
+    if request.runtime_inputs.remote_rdb_path:
+        context_lines.append(f"Remote RDB path override: {request.runtime_inputs.remote_rdb_path}")
 
     if request.runtime_inputs.mysql_host:
         context_lines.append(
@@ -250,6 +262,11 @@ def _build_remote_rdb_interrupt_description(request: NormalizedRequest):
         if request.runtime_inputs.redis_host
         else "unknown target"
     )
+    ssh_target = (
+        f"{request.runtime_inputs.ssh_host}:{request.runtime_inputs.ssh_port or 22}"
+        if request.runtime_inputs.ssh_host
+        else "same as Redis host"
+    )
 
     def describe_remote_rdb_fetch_interrupt(
         tool_call: dict[str, Any],
@@ -264,6 +281,7 @@ def _build_remote_rdb_interrupt_description(request: NormalizedRequest):
         return (
             "Remote RDB acquisition requires human approval.\n\n"
             f"Target Redis: {target}\n"
+            f"SSH target: {ssh_target}\n"
             "The agent wants to fetch and analyze a remote Redis RDB.\n"
             f"Profile: {profile_name}\n"
             f"Output mode: {output_mode}\n"

@@ -1,0 +1,1 @@
+"""Redis inspection report capability."""

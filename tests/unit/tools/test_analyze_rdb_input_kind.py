@@ -1,7 +1,7 @@
 """Tests for analyze_rdb_tool input_kind handling (WI-3)."""
 from pathlib import Path
 
-from dba_assistant.skills.redis_rdb_analysis.types import InputSourceKind
+from dba_assistant.capabilities.redis_rdb_analysis.types import InputSourceKind
 from dba_assistant.tools.analyze_rdb import analyze_rdb_tool
 
 

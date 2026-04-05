@@ -71,6 +71,9 @@ def test_build_user_message_includes_context() -> None:
             redis_port=6379,
             input_kind="preparsed_mysql",
             path_mode="preparsed_dataset_analysis",
+            ssh_host="ssh.example",
+            ssh_port=2222,
+            ssh_username="root",
             mysql_host="db.example",
             mysql_port=3306,
             mysql_user="analyst",
@@ -95,6 +98,7 @@ def test_build_user_message_includes_context() -> None:
     assert "preparsed_mysql" in msg
     assert "preparsed_dataset_analysis" in msg
     assert "redis.example:6379" in msg
+    assert "ssh.example:2222" in msg
     assert "db.example:3306" in msg
     assert "preparsed_keys" in msg
     assert "SELECT * FROM preparsed_keys" in msg
@@ -110,7 +114,7 @@ def test_build_unified_agent_wires_tools_and_model(monkeypatch) -> None:
     monkeypatch.setattr(agent_module, "build_model", lambda mc: "fake-model")
     monkeypatch.setattr(agent_module, "build_runtime_backend", lambda: "fake-backend")
     monkeypatch.setattr(agent_module, "get_memory_sources", lambda: ["/AGENTS.md"])
-    monkeypatch.setattr(agent_module, "get_skill_sources", lambda: ["/src/dba_assistant/skills"])
+    monkeypatch.setattr(agent_module, "get_skill_sources", lambda: ["/skills"])
     monkeypatch.setattr(agent_module, "build_runtime_checkpointer", lambda: "fake-checkpointer")
     monkeypatch.setattr(
         agent_module,
@@ -136,8 +140,12 @@ def test_build_unified_agent_wires_tools_and_model(monkeypatch) -> None:
     assert captured["tools"] == ["tool1", "tool2"]
     assert captured["backend"] == "fake-backend"
     assert captured["memory"] == ["/AGENTS.md"]
-    assert captured["skills"] == ["/src/dba_assistant/skills"]
+    assert captured["skills"] == ["/skills"]
     assert captured["checkpointer"] == "fake-checkpointer"
+    assert captured["interrupt_on"]["fetch_remote_rdb_via_ssh"]["allowed_decisions"] == [
+        "approve",
+        "reject",
+    ]
     assert captured["interrupt_on"]["fetch_and_analyze_remote_rdb"]["allowed_decisions"] == [
         "approve",
         "reject",
@@ -162,14 +170,14 @@ def test_run_orchestrated_approves_interrupt_and_resumes(monkeypatch) -> None:
                             {
                                 "action_requests": [
                                     {
-                                        "name": "fetch_and_analyze_remote_rdb",
+                                        "name": "fetch_remote_rdb_via_ssh",
                                         "args": {"profile_name": "rcs"},
                                         "description": "Fetch remote RDB for approval",
                                     }
                                 ],
                                 "review_configs": [
                                     {
-                                        "action_name": "fetch_and_analyze_remote_rdb",
+                                        "action_name": "fetch_remote_rdb_via_ssh",
                                         "allowed_decisions": ["approve", "reject"],
                                     }
                                 ],
@@ -216,14 +224,14 @@ def test_run_orchestrated_returns_denial_message_when_interrupt_rejected(monkeyp
                         {
                             "action_requests": [
                                 {
-                                    "name": "fetch_and_analyze_remote_rdb",
+                                    "name": "fetch_remote_rdb_via_ssh",
                                     "args": {},
                                     "description": "Fetch remote RDB for approval",
                                 }
                             ],
                             "review_configs": [
                                 {
-                                    "action_name": "fetch_and_analyze_remote_rdb",
+                                    "action_name": "fetch_remote_rdb_via_ssh",
                                     "allowed_decisions": ["approve", "reject"],
                                 }
                             ],

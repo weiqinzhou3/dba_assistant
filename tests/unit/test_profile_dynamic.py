@@ -1,6 +1,6 @@
 """Tests for dynamic profile name resolution in prompt_parser (WI-7)."""
 from dba_assistant.application.prompt_parser import normalize_raw_request
-from dba_assistant.skills.redis_rdb_analysis.profile_resolver import available_profile_names
+from dba_assistant.capabilities.redis_rdb_analysis.profile_resolver import available_profile_names
 
 
 def test_available_profile_names_returns_at_least_generic_and_rcs() -> None:

@@ -8,7 +8,7 @@ from dba_assistant.core.reporter.generate_analysis_report import (
     generate_analysis_report as core_generate_analysis_report,
 )
 from dba_assistant.core.reporter.report_model import AnalysisReport, ReportSectionModel, TextBlock
-from dba_assistant.skills.redis_rdb_analysis.types import InputSourceKind
+from dba_assistant.capabilities.redis_rdb_analysis.types import InputSourceKind
 from dba_assistant.tools.analyze_rdb import analyze_rdb_tool
 from dba_assistant.tools.generate_analysis_report import generate_analysis_report
 
@@ -44,7 +44,7 @@ def test_analyze_rdb_tool_requires_mysql_backend_for_database_backed_route(
     source = tmp_path / "dump.rdb"
     source.write_text("fixture", encoding="utf-8")
     rows = json.loads(Path("tests/fixtures/rdb/direct/sample_key_records.json").read_text(encoding="utf-8"))
-    monkeypatch.setattr("dba_assistant.skills.redis_rdb_analysis.service._parse_rdb_rows", lambda _path: rows)
+    monkeypatch.setattr("dba_assistant.capabilities.redis_rdb_analysis.service._parse_rdb_rows", lambda _path: rows)
 
     with pytest.raises(ValueError, match="database_backed_analysis requires MySQL staging"):
         analyze_rdb_tool(

@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
-from dba_assistant.skills.redis_rdb_analysis.service import analyze_rdb
-from dba_assistant.skills.redis_rdb_analysis.types import InputSourceKind, RdbAnalysisRequest, SampleInput
+from dba_assistant.capabilities.redis_rdb_analysis.service import analyze_rdb
+from dba_assistant.capabilities.redis_rdb_analysis.types import InputSourceKind, RdbAnalysisRequest, SampleInput
 
 
 _INPUT_KIND_MAP: dict[str, InputSourceKind] = {

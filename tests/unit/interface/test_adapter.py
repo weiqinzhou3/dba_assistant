@@ -133,6 +133,45 @@ def test_handle_request_applies_mysql_overrides(monkeypatch) -> None:
     assert n.secrets.mysql_password == "secret"
 
 
+def test_handle_request_applies_ssh_overrides(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    config = SimpleNamespace(runtime=SimpleNamespace(default_output_mode="summary"), model=None)
+
+    monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
+    monkeypatch.setattr(
+        adapter_module,
+        "normalize_raw_request",
+        lambda raw_prompt, *, default_output_mode, input_paths=(): NormalizedRequest(
+            raw_prompt=raw_prompt,
+            prompt=raw_prompt,
+            runtime_inputs=RuntimeInputs(output_mode="summary", input_paths=tuple(input_paths)),
+            secrets=Secrets(),
+            rdb_overrides=RdbOverrides(),
+        ),
+    )
+
+    def fake_run_orchestrated(normalized, *, config, approval_handler):
+        captured["normalized"] = normalized
+        return "ok"
+
+    monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
+
+    request = InterfaceRequest(
+        prompt="test",
+        ssh_host="ssh.example",
+        ssh_port=2222,
+        ssh_username="root",
+        ssh_password="secret",
+    )
+    handle_request(request, approval_handler=AutoApproveHandler())
+
+    n = captured["normalized"]
+    assert n.runtime_inputs.ssh_host == "ssh.example"
+    assert n.runtime_inputs.ssh_port == 2222
+    assert n.runtime_inputs.ssh_username == "root"
+    assert n.secrets.ssh_password == "secret"
+
+
 def test_handle_request_keeps_prompt_first_but_allows_explicit_overrides(monkeypatch) -> None:
     captured: dict[str, object] = {}
     config = SimpleNamespace(runtime=SimpleNamespace(default_output_mode="summary"), model=None)

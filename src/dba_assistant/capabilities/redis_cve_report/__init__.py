@@ -1,0 +1,1 @@
+"""Redis CVE report capability."""

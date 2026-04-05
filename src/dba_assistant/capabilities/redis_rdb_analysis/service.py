@@ -60,9 +60,10 @@ def analyze_rdb(
 
     if any(sample.kind is InputSourceKind.REMOTE_REDIS for sample in request.inputs):
         discovery = remote_discovery(request)
+        rdb_path = _require_remote_rdb_path(discovery)
         return ConfirmationRequest(
             status=AnalysisStatus.CONFIRMATION_REQUIRED,
-            message=f"Remote RDB available at {discovery['rdb_path']}.",
+            message=f"Remote RDB available at {rdb_path}.",
             required_action="fetch_existing",
         )
 
@@ -156,3 +157,12 @@ def _parse_rdb_rows(path: Path) -> tuple[list[dict[str, object]], dict[str, str]
     if parsed.strategy_detail:
         metadata["parser_binary"] = parsed.strategy_detail
     return parsed.rows, metadata
+
+
+def _require_remote_rdb_path(discovery: object) -> str:
+    if not isinstance(discovery, dict):
+        raise ValueError("remote_discovery did not return a dictionary payload")
+    rdb_path = discovery.get("rdb_path")
+    if not isinstance(rdb_path, str) or not rdb_path.strip():
+        raise ValueError("remote_discovery did not return rdb_path")
+    return rdb_path

@@ -58,6 +58,26 @@ def test_analyze_rdb_returns_analysis_report_for_local_inputs(monkeypatch) -> No
     assert any(section.id == "top_big_keys" for section in result.sections)
 
 
+def test_analyze_rdb_local_inputs_do_not_call_remote_discovery(monkeypatch) -> None:
+    rows = json.loads(Path("tests/fixtures/rdb/direct/sample_key_records.json").read_text(encoding="utf-8"))
+    request = RdbAnalysisRequest(
+        prompt="analyze this local rdb",
+        inputs=[SampleInput(source=Path("/tmp/dump.rdb"), kind=InputSourceKind.LOCAL_RDB)],
+    )
+    monkeypatch.setattr("dba_assistant.capabilities.redis_rdb_analysis.service._parse_rdb_rows", lambda _path: rows)
+
+    def fail_remote_discovery(*_args, **_kwargs):
+        raise AssertionError("remote_discovery should not be called for local inputs")
+
+    result = analyze_rdb(
+        request,
+        profile=None,
+        remote_discovery=fail_remote_discovery,
+    )
+
+    assert isinstance(result, AnalysisReport)
+
+
 def test_analyze_rdb_returns_analysis_report_for_precomputed_inputs() -> None:
     request = RdbAnalysisRequest(
         prompt="summarize this exported analysis",
@@ -147,6 +167,20 @@ def test_analyze_rdb_database_backed_route_stages_rows_and_reloads_mysql_dataset
     assert result.metadata["route"] == "database_backed_analysis"
     assert result.metadata["path"] == "3a"
     assert any(section.id == "top_big_keys" for section in result.sections)
+
+
+def test_analyze_rdb_remote_discovery_requires_rdb_path() -> None:
+    request = RdbAnalysisRequest(
+        prompt="analyze remote redis",
+        inputs=[SampleInput(source="10.0.0.8:6379", kind=InputSourceKind.REMOTE_REDIS)],
+    )
+
+    with pytest.raises(ValueError, match="remote_discovery did not return rdb_path"):
+        analyze_rdb(
+            request,
+            profile=None,
+            remote_discovery=lambda *_args, **_kwargs: {},
+        )
 
 
 @pytest.mark.skipif(not HDT_BINARY.exists(), reason="HDT3213/rdb binary is not available in this workspace")

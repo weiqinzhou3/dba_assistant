@@ -156,6 +156,25 @@ def test_normalize_raw_request_extracts_redis_password_from_remote_redis_natural
     assert "123456" not in request.prompt
 
 
+def test_normalize_raw_request_keeps_local_rdb_and_mysql_context_separate() -> None:
+    request = normalize_raw_request(
+        "请帮我分析本地rdb文件，传入MySQL中分析。rdb文件在：/tmp/dump.rdb ， "
+        "MySQL信息如下：192.168.23.176:3306，用户名root，密码Root@1234! ，"
+        "使用数据库rcs，表名叫rdb 吧。",
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.input_paths == (Path("/tmp/dump.rdb"),)
+    assert request.runtime_inputs.mysql_host == "192.168.23.176"
+    assert request.runtime_inputs.mysql_port == 3306
+    assert request.runtime_inputs.mysql_user == "root"
+    assert request.runtime_inputs.mysql_database == "rcs"
+    assert request.runtime_inputs.mysql_table == "rdb"
+    assert request.runtime_inputs.input_kind == "local_rdb"
+    assert request.runtime_inputs.redis_host is None
+    assert request.runtime_inputs.remote_rdb_path is None
+
+
 def test_normalize_raw_request_extracts_task_2_profile_overrides() -> None:
     request = normalize_raw_request(
         "按通用profile分析这个rdb，重点看order:*前缀，prefix top 30，hash top 20，top 8",

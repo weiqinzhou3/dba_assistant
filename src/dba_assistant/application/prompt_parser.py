@@ -35,7 +35,8 @@ _HOST_PORT_PATTERN = re.compile(
     rf"(?i)\b(?P<host>{_HOST_PATTERN}):(?P<port>\d{{1,5}})\b"
 )
 _MYSQL_HOST_PORT_PATTERN = re.compile(
-    rf"(?i)\bmysql\b(?:\s+(?:host|server|地址|from|at|on|从))?\s*(?P<host>{_HOST_PATTERN}):(?P<port>\d{{1,5}})\b"
+    rf"(?i)(?<![a-z0-9_])mysql(?![a-z0-9_])(?:\s*(?:信息如下|信息|如下|host|server|地址|from|at|on|从))?\s*"
+    rf"(?:是|为|：|:)?\s*(?P<host>{_HOST_PATTERN}):(?P<port>\d{{1,5}})\b"
 )
 _DB_PATTERN = re.compile(r"(?i)\bdb(?:\s+(?:index\s+)?)?(?P<db>\d+)\b")
 _RDB_PATH_PATTERN = re.compile(
@@ -51,7 +52,7 @@ _MYSQL_DATABASE_ALIAS_PATTERN = re.compile(
     r"(?i)(?:的\s*)?(?P<database>[A-Za-z_][A-Za-z0-9_$]*)\s*库(?:里|中)?"
 )
 _MYSQL_TABLE_PATTERN = re.compile(
-    r"(?i)(?:表|table)\s*(?:是|为|：|:)?\s*(?P<table>[A-Za-z_][A-Za-z0-9_$.]*)"
+    r"(?i)(?:表名|表|table)\s*(?:叫|是|为|：|:)?\s*(?P<table>[A-Za-z_][A-Za-z0-9_$.]*)"
 )
 _MYSQL_QUERY_PATTERN = re.compile(
     r"(?is)(?:查询|query)\s*(?P<quote>\"|')(?P<query>.+?)(?P=quote)"
@@ -378,6 +379,9 @@ def _extract_remote_rdb_path(
     *,
     has_remote_context: bool,
 ) -> str | None:
+    if not has_remote_context:
+        return None
+
     matches = list(_RDB_PATH_PATTERN.finditer(prompt))
     if not matches:
         return None
@@ -386,7 +390,7 @@ def _extract_remote_rdb_path(
         if _REMOTE_RDB_PATH_HINT_PATTERN.search(prompt[max(0, match.start() - 32):match.start()]):
             return str(Path(match.group("path")))
 
-    if has_remote_context and len(matches) == 1:
+    if len(matches) == 1:
         return str(Path(matches[0].group("path")))
     return None
 

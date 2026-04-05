@@ -58,6 +58,8 @@ def test_fetch_remote_rdb_via_ssh_tool_does_not_expose_ssh_secret_parameters() -
     assert "ssh_password" not in annotations
     assert "ssh_username" not in annotations
     assert "auto-discover redis dir and dbfilename" in (fetch_tool.__doc__ or "").lower()
+    assert "do not ask for plain-text approval first" in (fetch_tool.__doc__ or "").lower()
+    assert "approval is collected by runtime interrupt_on" in (fetch_tool.__doc__ or "").lower()
 
 
 def test_analyze_local_rdb_tool_runs_full_pipeline(monkeypatch) -> None:
@@ -96,6 +98,166 @@ def test_analyze_local_rdb_tool_runs_full_pipeline(monkeypatch) -> None:
     result = analyze_tool(input_paths="/tmp/dump.rdb", profile_name="generic")
     assert captured["analyze_called"]
     assert "summary" in result.lower() or "text" in result.lower() or len(result) > 0
+
+
+def test_analyze_local_rdb_tool_validates_host_paths_before_analysis(monkeypatch, tmp_path) -> None:
+    captured: dict[str, object] = {}
+    source = tmp_path / "dump.rdb"
+    source.write_text("fixture", encoding="utf-8")
+
+    def fake_analyze_rdb_tool(
+        prompt,
+        input_paths,
+        *,
+        input_kind="local_rdb",
+        profile_name="generic",
+        path_mode="auto",
+        profile_overrides=None,
+        service=None,
+    ):
+        captured["input_paths"] = input_paths
+        from dba_assistant.core.reporter.report_model import AnalysisReport, ReportSectionModel, TextBlock
+
+        return AnalysisReport(
+            title="Redis RDB Analysis",
+            sections=[ReportSectionModel(id="s1", title="S1", blocks=[TextBlock(text="ok")])],
+        )
+
+    monkeypatch.setattr("dba_assistant.orchestrator.tools.analyze_rdb_tool", fake_analyze_rdb_tool)
+    monkeypatch.setattr(
+        "dba_assistant.core.reporter.report_model.render_summary_text",
+        lambda report: "summary text",
+    )
+
+    request = _make_request()
+    tools = build_all_tools(request)
+    analyze_tool = next(t for t in tools if t.__name__ == "analyze_local_rdb")
+
+    result = analyze_tool(input_paths=str(source))
+
+    assert captured["input_paths"] == [source]
+    assert "Redis RDB Analysis" in result
+
+
+def test_analyze_local_rdb_tool_returns_host_side_missing_path_error(monkeypatch) -> None:
+    def fail_analyze_rdb_tool(*args, **kwargs):
+        raise AssertionError("analyze_rdb_tool should not be called for missing host paths")
+
+    monkeypatch.setattr("dba_assistant.orchestrator.tools.analyze_rdb_tool", fail_analyze_rdb_tool)
+
+    request = _make_request()
+    tools = build_all_tools(request)
+    analyze_tool = next(t for t in tools if t.__name__ == "analyze_local_rdb")
+
+    result = analyze_tool(input_paths="/tmp/definitely-missing-dba-assistant.rdb")
+
+    assert result == (
+        "Error: input path does not exist on host filesystem: "
+        "/tmp/definitely-missing-dba-assistant.rdb"
+    )
+
+
+def test_analyze_local_rdb_tool_forces_local_input_kind_even_when_request_is_polluted(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_analyze_rdb_tool(
+        prompt,
+        input_paths,
+        *,
+        input_kind="local_rdb",
+        profile_name="generic",
+        path_mode="auto",
+        profile_overrides=None,
+        service=None,
+    ):
+        captured["input_kind"] = input_kind
+        from dba_assistant.core.reporter.report_model import AnalysisReport, ReportSectionModel, TextBlock
+
+        return AnalysisReport(
+            title="Redis RDB Analysis",
+            sections=[ReportSectionModel(id="s1", title="S1", blocks=[TextBlock(text="ok")])],
+        )
+
+    monkeypatch.setattr("dba_assistant.orchestrator.tools.analyze_rdb_tool", fake_analyze_rdb_tool)
+    monkeypatch.setattr(
+        "dba_assistant.core.reporter.report_model.render_summary_text",
+        lambda report: "summary text",
+    )
+
+    request = _make_request(
+        runtime_inputs=RuntimeInputs(
+            output_mode="summary",
+            input_kind="remote_redis",
+            input_paths=(Path("/tmp/dump.rdb"),),
+        )
+    )
+    tools = build_all_tools(request)
+    analyze_tool = next(t for t in tools if t.__name__ == "analyze_local_rdb")
+
+    analyze_tool(input_paths="/tmp/dump.rdb")
+
+    assert captured["input_kind"] == "local_rdb"
+
+
+def test_analyze_local_rdb_with_mysql_route_does_not_fall_into_remote_discovery(monkeypatch) -> None:
+    import json
+
+    from dba_assistant.adaptors.mysql_adaptor import MySQLConnectionConfig
+
+    rows_fixture = Path("tests/fixtures/rdb/direct/sample_key_records.json")
+    rows = json.loads(rows_fixture.read_text(encoding="utf-8"))
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "dba_assistant.capabilities.redis_rdb_analysis.service._parse_rdb_rows",
+        lambda _path: rows,
+    )
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._stage_rows",
+        lambda _adaptor, _connection, table_name, parsed_rows: (
+            captured.setdefault("staged_table", table_name),
+            captured.setdefault("staged_count", len(parsed_rows)),
+            json.dumps({"table": table_name, "staged": len(parsed_rows)}),
+        )[-1],
+    )
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._load_dataset",
+        lambda _adaptor, _connection, table_name: (
+            captured.setdefault("loaded_table", table_name),
+            json.dumps({"source": f"mysql:{table_name}", "rows": rows}),
+        )[-1],
+    )
+
+    request = _make_request(
+        prompt="analyze local rdb via mysql",
+        runtime_inputs=RuntimeInputs(
+            output_mode="summary",
+            input_kind="remote_redis",
+            path_mode="database_backed_analysis",
+            input_paths=(Path("/tmp/dump.rdb"),),
+            mysql_host="192.168.23.176",
+            mysql_port=3306,
+            mysql_user="root",
+            mysql_database="rcs",
+            mysql_table="rdb",
+        ),
+    )
+    mysql_connection = MySQLConnectionConfig(
+        host="192.168.23.176",
+        port=3306,
+        user="root",
+        password="Root@1234!",
+        database="rcs",
+    )
+    tools = build_all_tools(request, mysql_connection=mysql_connection)
+    analyze_tool = next(t for t in tools if t.__name__ == "analyze_local_rdb")
+
+    result = analyze_tool(input_paths="/tmp/dump.rdb")
+
+    assert "KeyError" not in result
+    assert captured["staged_count"] == len(rows)
+    assert captured["loaded_table"] == captured["staged_table"]
+    assert "samples" in result.lower()
 
 
 def test_analyze_preparsed_dataset_tool_uses_mysql_source_from_request(monkeypatch) -> None:
@@ -179,7 +341,9 @@ def test_discover_remote_rdb_tool_returns_discovery_json(monkeypatch) -> None:
     assert result["rdb_path"] == "/data/dump.rdb"
     assert result["rdb_path_source"] == "discovered"
     assert result["approval_required"] is True
-    assert result["next_step"] == "Call fetch_remote_rdb_via_ssh to fetch the RDB after human approval."
+    assert "call fetch_remote_rdb_via_ssh" in result["next_step"].lower()
+    assert "do not ask the user for approval in plain text" in (discover_tool.__doc__ or "").lower()
+    assert "runtime interrupt_on will collect approval" in (discover_tool.__doc__ or "").lower()
 
 
 def test_fetch_remote_rdb_via_ssh_tool_fetches_and_continues_analysis(monkeypatch) -> None:

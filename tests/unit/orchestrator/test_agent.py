@@ -51,7 +51,9 @@ def test_run_orchestrated_invokes_agent_and_returns_output(monkeypatch) -> None:
         lambda request, config, approval_handler: FakeAgent(),
     )
 
-    request = _make_request()
+    request = _make_request(
+        runtime_inputs=RuntimeInputs(output_mode="summary"),
+    )
     config = _make_config()
     handler = AutoApproveHandler()
 
@@ -61,7 +63,7 @@ def test_run_orchestrated_invokes_agent_and_returns_output(monkeypatch) -> None:
     assert "messages" in captured["payload"]
     user_msg = captured["payload"]["messages"][0]["content"]
     assert "analyze rdb" in user_msg
-    assert "/tmp/dump.rdb" in user_msg
+    assert "Output: summary / summary" in user_msg
     assert captured["config"]["configurable"]["thread_id"]
 
 
@@ -154,6 +156,89 @@ def test_build_unified_agent_wires_tools_and_model(monkeypatch) -> None:
     assert "fetch_and_analyze_remote_rdb" not in captured["interrupt_on"]
     assert "read-only" in captured["system_prompt"].lower()
     assert "do not ask the user for dir/dbfilename first" in captured["system_prompt"].lower()
+    assert "never ask the user for approval in plain text" in captured["system_prompt"].lower()
+    assert "explicit local `.rdb` paths" in captured["system_prompt"].lower()
+
+
+def test_run_orchestrated_bypasses_agent_and_calls_local_rdb_tool_for_explicit_paths(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_analyze_local_rdb(**kwargs):
+        captured["tool_kwargs"] = kwargs
+        return "host analysis done"
+
+    def fake_build_all_tools(request, connection=None, mysql_connection=None, remote_rdb_state=None):
+        captured["mysql_connection"] = mysql_connection
+        captured["connection"] = connection
+        fake_analyze_local_rdb.__name__ = "analyze_local_rdb"
+        return [fake_analyze_local_rdb]
+
+    monkeypatch.setattr(agent_module, "build_all_tools", fake_build_all_tools)
+    monkeypatch.setattr(
+        agent_module,
+        "build_unified_agent",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("build_unified_agent should not be called for explicit local RDB paths")
+        ),
+    )
+
+    request = _make_request(
+        runtime_inputs=RuntimeInputs(
+            output_mode="summary",
+            path_mode="database_backed_analysis",
+            input_paths=(Path("/tmp/dump.rdb"),),
+            mysql_host="192.168.23.176",
+            mysql_port=3306,
+            mysql_user="root",
+            mysql_database="rcs",
+            mysql_table="rdb",
+        ),
+    )
+
+    result = agent_module.run_orchestrated(
+        request,
+        config=_make_config(),
+        approval_handler=AutoApproveHandler(),
+    )
+
+    assert result == "host analysis done"
+    assert captured["connection"] is None
+    assert captured["mysql_connection"] is not None
+    assert captured["tool_kwargs"]["input_paths"] == "/tmp/dump.rdb"
+    assert captured["tool_kwargs"]["profile_name"] == "generic"
+
+
+def test_run_orchestrated_does_not_return_agent_file_not_found_guess_for_explicit_paths(monkeypatch) -> None:
+    def fake_analyze_local_rdb(**kwargs):
+        return "Error: input path does not exist on host filesystem: /tmp/dump.rdb"
+
+    def fake_build_all_tools(request, connection=None, mysql_connection=None, remote_rdb_state=None):
+        fake_analyze_local_rdb.__name__ = "analyze_local_rdb"
+        return [fake_analyze_local_rdb]
+
+    monkeypatch.setattr(agent_module, "build_all_tools", fake_build_all_tools)
+    monkeypatch.setattr(
+        agent_module,
+        "build_unified_agent",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("agent filesystem exploration should not happen for explicit local RDB paths")
+        ),
+    )
+
+    request = _make_request(
+        runtime_inputs=RuntimeInputs(
+            output_mode="summary",
+            input_paths=(Path("/tmp/dump.rdb"),),
+        ),
+    )
+
+    result = agent_module.run_orchestrated(
+        request,
+        config=_make_config(),
+        approval_handler=AutoApproveHandler(),
+    )
+
+    assert result == "Error: input path does not exist on host filesystem: /tmp/dump.rdb"
 
 
 def test_run_orchestrated_approves_interrupt_and_resumes(monkeypatch) -> None:
@@ -198,7 +283,9 @@ def test_run_orchestrated_approves_interrupt_and_resumes(monkeypatch) -> None:
         lambda request, config, approval_handler: FakeAgent(),
     )
 
-    request = _make_request()
+    request = _make_request(
+        runtime_inputs=RuntimeInputs(output_mode="summary"),
+    )
     config = _make_config()
 
     result = agent_module.run_orchestrated(
@@ -249,7 +336,9 @@ def test_run_orchestrated_returns_denial_message_when_interrupt_rejected(monkeyp
         lambda request, config, approval_handler: FakeAgent(),
     )
 
-    request = _make_request()
+    request = _make_request(
+        runtime_inputs=RuntimeInputs(output_mode="summary"),
+    )
     config = _make_config()
 
     result = agent_module.run_orchestrated(
@@ -259,6 +348,143 @@ def test_run_orchestrated_returns_denial_message_when_interrupt_rejected(monkeyp
     )
 
     assert "denied" in result.lower()
+
+
+def test_run_orchestrated_forces_runtime_approval_instead_of_returning_plain_text_question(
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {"calls": 0}
+
+    class FakeInterrupt:
+        def __init__(self, value):
+            self.value = value
+
+    class FakeAgent:
+        def __init__(self) -> None:
+            self._dba_remote_rdb_state = {
+                "discovery": {
+                    "rdb_path": "/data/redis/data/dump.rdb",
+                    "requires_confirmation": True,
+                }
+            }
+
+        def invoke(self, payload, config=None):
+            captured["calls"] += 1
+            if captured["calls"] == 1:
+                captured["first_payload"] = payload
+                return {
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": (
+                                "Good! I've discovered the remote RDB location. "
+                                "Now I need your approval. Do you approve proceeding?"
+                            ),
+                        }
+                    ]
+                }
+            if captured["calls"] == 2:
+                captured["second_payload"] = payload
+                return {
+                    "__interrupt__": [
+                        FakeInterrupt(
+                            {
+                                "action_requests": [
+                                    {
+                                        "name": "fetch_remote_rdb_via_ssh",
+                                        "args": {"acquisition_mode": "existing"},
+                                        "description": "Fetch remote RDB for approval",
+                                    }
+                                ],
+                                "review_configs": [
+                                    {
+                                        "action_name": "fetch_remote_rdb_via_ssh",
+                                        "allowed_decisions": ["approve", "reject"],
+                                    }
+                                ],
+                            }
+                        )
+                    ]
+                }
+            captured["resume_payload"] = payload
+            return {"messages": [{"role": "assistant", "content": "analysis done"}]}
+
+    monkeypatch.setattr(
+        agent_module,
+        "build_unified_agent",
+        lambda request, config, approval_handler: FakeAgent(),
+    )
+
+    result = agent_module.run_orchestrated(
+        _make_request(
+            runtime_inputs=RuntimeInputs(
+                redis_host="192.168.23.54",
+                redis_port=6379,
+                ssh_host="192.168.23.54",
+                ssh_port=22,
+                ssh_username="root",
+                output_mode="summary",
+            ),
+            secrets=Secrets(redis_password="123456", ssh_password="root"),
+        ),
+        config=_make_config(),
+        approval_handler=AutoApproveHandler(approve=True),
+    )
+
+    assert result == "analysis done"
+    assert captured["calls"] == 3
+    second_message = captured["second_payload"]["messages"][0]["content"]
+    assert "call fetch_remote_rdb_via_ssh now" in second_message.lower()
+
+
+def test_run_orchestrated_returns_policy_error_when_model_keeps_plain_text_approval_prompt(
+    monkeypatch,
+) -> None:
+    class FakeAgent:
+        def __init__(self) -> None:
+            self._dba_remote_rdb_state = {
+                "discovery": {
+                    "rdb_path": "/data/redis/data/dump.rdb",
+                    "requires_confirmation": True,
+                }
+            }
+            self.calls = 0
+
+        def invoke(self, payload, config=None):
+            self.calls += 1
+            return {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": "Please confirm whether I should proceed. Do you approve?",
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(
+        agent_module,
+        "build_unified_agent",
+        lambda request, config, approval_handler: FakeAgent(),
+    )
+
+    result = agent_module.run_orchestrated(
+        _make_request(
+            runtime_inputs=RuntimeInputs(
+                redis_host="192.168.23.54",
+                redis_port=6379,
+                ssh_host="192.168.23.54",
+                ssh_port=22,
+                ssh_username="root",
+                output_mode="summary",
+            ),
+            secrets=Secrets(redis_password="123456", ssh_password="root"),
+        ),
+        config=_make_config(),
+        approval_handler=AutoApproveHandler(approve=True),
+    )
+
+    assert "policy violation" in result.lower()
+    assert "do you approve" not in result.lower()
 
 
 def test_build_remote_rdb_interrupt_description_includes_path_source(monkeypatch) -> None:

@@ -2,6 +2,7 @@ from pathlib import Path
 
 from dba_assistant import cli
 from dba_assistant.interface import adapter as adapter_module
+from dba_assistant.interface.types import ApprovalRequest, ApprovalStatus
 
 
 def test_cli_ask_delegates_to_interface_adapter(monkeypatch, capsys) -> None:
@@ -132,3 +133,46 @@ def test_cli_ask_uses_cli_approval_handler(monkeypatch, capsys) -> None:
 
     cli.main(["ask", "test"])
     assert captured["handler_type"] == "CliApprovalHandler"
+
+
+def test_cli_single_run_can_prompt_for_approval_when_orchestrator_requests_it(
+    monkeypatch,
+    capsys,
+) -> None:
+    from dba_assistant.application.request_models import NormalizedRequest, RdbOverrides, RuntimeInputs, Secrets
+
+    config = type("Config", (), {"runtime": type("Runtime", (), {"default_output_mode": "summary"})(), "model": None})()
+
+    monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
+    monkeypatch.setattr(
+        adapter_module,
+        "normalize_raw_request",
+        lambda raw_prompt, *, default_output_mode, input_paths=(): NormalizedRequest(
+            raw_prompt=raw_prompt,
+            prompt=raw_prompt,
+            runtime_inputs=RuntimeInputs(output_mode="summary"),
+            secrets=Secrets(),
+            rdb_overrides=RdbOverrides(),
+        ),
+    )
+
+    def fake_run_orchestrated(normalized, *, config, approval_handler):
+        response = approval_handler.request_approval(
+            ApprovalRequest(
+                action="fetch_remote_rdb_via_ssh",
+                message="Runtime interrupt approval",
+                details={"args": {"acquisition_mode": "existing"}},
+            )
+        )
+        assert response.status is ApprovalStatus.APPROVED
+        return "continued after approval"
+
+    monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+
+    exit_code = cli.main(["ask", "analyze remote redis"])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "[Approval Required]" in output
+    assert "continued after approval" in output

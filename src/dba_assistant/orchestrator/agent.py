@@ -33,6 +33,13 @@ from dba_assistant.orchestrator.tools import (
     resolve_remote_rdb_fetch_plan,
 )
 
+APPROVAL_REQUEST_PHRASES = (
+    "do you approve",
+    "please confirm",
+    "now i need your approval",
+    "need your approval",
+)
+
 SYSTEM_PROMPT = """\
 You are DBA Assistant, a specialized database administration assistant focused on Redis diagnostics and analysis.
 
@@ -49,9 +56,16 @@ Live read-only Redis inspection.
 (requires human approval).
 
 Rules:
+- If explicit local input paths are already present in context, treat them as authoritative host filesystem paths.
+- For explicit local `.rdb` paths, do not use filesystem browsing tools to verify, replace, or search for alternatives before analysis.
+- Do not claim that an explicit local path is missing unless analyze_local_rdb itself returns that host-side validation error.
+- When explicit local `.rdb` paths are provided, call analyze_local_rdb directly rather than exploring the repository for sample files.
 - Redis inspection tools are read-only. Remote fetch remains approval-gated, and fresh_snapshot may trigger approved BGSAVE before fetch.
 - For remote RDB: call discover_remote_rdb first, then fetch_remote_rdb_via_ssh.
 - When the user asks for the latest/fresh RDB snapshot, use fetch_remote_rdb_via_ssh with acquisition_mode='fresh_snapshot'.
+- For approval-gated tools such as fetch_remote_rdb_via_ssh and stage_rdb_rows_to_mysql, never ask the user for approval in plain text.
+- When you determine that an approval-gated tool is the next step, call the tool directly and let runtime interrupt_on collect approval.
+- In single-run CLI flows, do not end with text like "Do you approve?" or "Please confirm" when the next step should be an approval-gated tool.
 - If Redis connection details are available and the user did not provide remote_rdb_path, do not ask the user for dir/dbfilename first; discover them by executing Redis discovery.
 - If Redis discovery fails, surface the exact failure reason and stage. Do not paraphrase it as missing dir/dbfilename unless discovery explicitly returned missing_dir/missing_dbfilename.
 - Only ask the user for dir/dbfilename/remote_rdb_path when Redis discovery explicitly returned missing_dir/missing_dbfilename and you need the user to override it.
@@ -103,7 +117,7 @@ def build_unified_agent(
             "description": _build_mysql_staging_interrupt_description(request),
         }
 
-    return create_deep_agent(
+    agent = create_deep_agent(
         name="dba-assistant",
         model=model,
         tools=tools,
@@ -114,6 +128,11 @@ def build_unified_agent(
         interrupt_on=interrupt_on,
         system_prompt=SYSTEM_PROMPT,
     )
+    try:
+        setattr(agent, "_dba_remote_rdb_state", remote_rdb_state)
+    except Exception:  # noqa: BLE001
+        pass
+    return agent
 
 
 def run_orchestrated(
@@ -123,6 +142,10 @@ def run_orchestrated(
     approval_handler: HumanApprovalHandler,
 ) -> str:
     """Run the unified Deep Agent and return the final output."""
+    shortcut = _run_explicit_local_rdb_analysis(request)
+    if shortcut is not None:
+        return shortcut
+
     agent = build_unified_agent(request, config, approval_handler)
     user_message = _build_user_message(request)
     run_config = {"configurable": {"thread_id": f"dba-assistant-{uuid4()}"}}
@@ -130,14 +153,103 @@ def run_orchestrated(
         {"messages": [{"role": "user", "content": user_message}]},
         config=run_config,
     )
+    approval_retry_count = 0
 
-    while interrupts := _extract_interrupts(result):
-        resume_payload = _handle_interrupts(interrupts, approval_handler)
-        if resume_payload is None:
-            return "Operation denied by user."
-        result = agent.invoke(Command(resume=resume_payload), config=run_config)
+    while True:
+        while interrupts := _extract_interrupts(result):
+            resume_payload = _handle_interrupts(interrupts, approval_handler)
+            if resume_payload is None:
+                return "Operation denied by user."
+            result = agent.invoke(Command(resume=resume_payload), config=run_config)
+
+        if not _should_force_runtime_approval(agent, request, result):
+            break
+        if approval_retry_count >= 1:
+            return (
+                "Internal policy violation: the model asked for approval in plain text "
+                "instead of invoking the approval-gated tool fetch_remote_rdb_via_ssh."
+            )
+        approval_retry_count += 1
+        result = agent.invoke(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": (
+                            "Policy reminder: do not ask for approval in plain text. "
+                            "If remote RDB retrieval is needed, call fetch_remote_rdb_via_ssh "
+                            "now so runtime can collect approval."
+                        ),
+                    }
+                ]
+            },
+            config=run_config,
+        )
 
     return extract_agent_output(result)
+
+
+def _run_explicit_local_rdb_analysis(request: NormalizedRequest) -> str | None:
+    if not _has_explicit_local_rdb_inputs(request):
+        return None
+
+    mysql_connection = _build_mysql_connection(request)
+    tools = build_all_tools(
+        request,
+        mysql_connection=mysql_connection,
+    )
+    analyze_tool = next(
+        (tool for tool in tools if getattr(tool, "__name__", "") == "analyze_local_rdb"),
+        None,
+    )
+    if analyze_tool is None:
+        raise RuntimeError("analyze_local_rdb tool is unavailable for explicit local RDB inputs.")
+
+    profile_name = request.rdb_overrides.profile_name or "generic"
+    output_mode = request.runtime_inputs.output_mode or "summary"
+    report_format = request.runtime_inputs.report_format or "summary"
+    output_path = str(request.runtime_inputs.output_path) if request.runtime_inputs.output_path else ""
+    focus_prefixes = ",".join(request.rdb_overrides.focus_prefixes)
+    input_paths = ",".join(str(path) for path in request.runtime_inputs.input_paths)
+    return analyze_tool(
+        input_paths=input_paths,
+        profile_name=profile_name,
+        output_mode=output_mode,
+        report_format=report_format,
+        output_path=output_path,
+        focus_prefixes=focus_prefixes,
+    )
+
+
+def _has_explicit_local_rdb_inputs(request: NormalizedRequest) -> bool:
+    paths = request.runtime_inputs.input_paths
+    if not paths:
+        return False
+    return all(str(path).lower().endswith(".rdb") for path in paths)
+
+
+def _should_force_runtime_approval(
+    agent: object,
+    request: NormalizedRequest,
+    result: object,
+) -> bool:
+    text = extract_agent_output(result).strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    if not any(phrase in lowered for phrase in APPROVAL_REQUEST_PHRASES):
+        return False
+    if request.runtime_inputs.redis_host is None:
+        return False
+    remote_rdb_state = getattr(agent, "_dba_remote_rdb_state", None)
+    if not isinstance(remote_rdb_state, dict):
+        return False
+    discovery = remote_rdb_state.get("discovery")
+    if not isinstance(discovery, dict):
+        return False
+    if not str(discovery.get("rdb_path") or "").strip():
+        return False
+    return bool(discovery.get("requires_confirmation"))
 
 
 # ---------------------------------------------------------------------------

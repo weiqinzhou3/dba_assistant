@@ -121,9 +121,14 @@ def _make_analyze_local_rdb_tool(
         output_path: str = "",
         focus_prefixes: str = "",
     ) -> str:
-        paths = [Path(p.strip()) for p in input_paths.split(",") if p.strip()]
+        paths = [Path(p.strip()).expanduser() for p in input_paths.split(",") if p.strip()]
         if not paths:
             return "Error: no input paths provided."
+        for path in paths:
+            if not path.exists():
+                return f"Error: input path does not exist on host filesystem: {path}"
+            if not path.is_file():
+                return f"Error: input path is not a regular file on host filesystem: {path}"
 
         overrides: dict[str, object] = {}
         if focus_prefixes:
@@ -137,7 +142,7 @@ def _make_analyze_local_rdb_tool(
             analysis = analyze_rdb_tool(
                 prompt=request.prompt,
                 input_paths=paths,
-                input_kind=request.runtime_inputs.input_kind or "local_rdb",
+                input_kind="local_rdb",
                 profile_name=profile_name,
                 path_mode=request.runtime_inputs.path_mode or request.rdb_overrides.route_name or "auto",
                 profile_overrides=overrides,
@@ -310,7 +315,10 @@ def _make_discover_remote_rdb_tool(
                 "lastsave": discovery.get("lastsave"),
                 "bgsave_in_progress": discovery.get("bgsave_in_progress"),
                 "approval_required": True,
-                "next_step": "Call fetch_remote_rdb_via_ssh to fetch the RDB after human approval.",
+                "next_step": (
+                    "Immediately call fetch_remote_rdb_via_ssh. "
+                    "Do not ask for approval in plain text; runtime interrupt_on will collect it."
+                ),
             },
             default=str,
         )
@@ -322,7 +330,9 @@ def _make_discover_remote_rdb_tool(
             "Discover the remote Redis RDB file location and persistence status. "
             "Read-only operation — does not fetch or modify anything. "
             "Returns JSON with rdb_path, lastsave, and approval_required flag. "
-            "After discovery, call fetch_remote_rdb_via_ssh to proceed."
+            "After successful discovery, do NOT ask the user for approval in plain text. "
+            "Immediately call fetch_remote_rdb_via_ssh; runtime interrupt_on will collect approval. "
+            "CLI and orchestrator runtime handle approval, not the model's free-form reply."
         ),
     )
 
@@ -419,6 +429,8 @@ def _make_remote_rdb_fetch_tools(
             "then continue into the unified Phase 3 analysis chain. "
             "REQUIRES HUMAN APPROVAL before proceeding. "
             "Use after discover_remote_rdb. "
+            "Call this directly when remote RDB retrieval is needed; do not ask for plain-text approval first. "
+            "Approval is collected by runtime interrupt_on, not by conversational follow-up. "
             "If remote_rdb_path is not already overridden by the user, this tool must auto-discover "
             "Redis dir and dbfilename by querying Redis directly instead of asking the user for dir. "
             "Parameters: profile_name, output_mode, report_format, output_path, "
@@ -501,6 +513,8 @@ def _make_mysql_tools(
             "stage_rdb_rows_to_mysql",
             "Stage parsed RDB rows into a MySQL table for database-backed aggregation. "
             "REQUIRES HUMAN APPROVAL — this is a write operation. "
+            "Call this directly when staging is required; do not ask for plain-text approval first. "
+            "Approval is collected by runtime interrupt_on, not by conversational follow-up. "
             "Parameters: table_name (staging table name), rows_json (JSON array of row objects).",
         ),
     ]

@@ -56,6 +56,7 @@ def test_fetch_remote_rdb_via_ssh_tool_does_not_expose_ssh_secret_parameters() -
 
     assert "ssh_password" not in annotations
     assert "ssh_username" not in annotations
+    assert "auto-discover redis dir and dbfilename" in (fetch_tool.__doc__ or "").lower()
 
 
 def test_analyze_local_rdb_tool_runs_full_pipeline(monkeypatch) -> None:

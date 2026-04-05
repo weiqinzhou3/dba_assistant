@@ -51,6 +51,8 @@ Rules:
 - All Redis operations are strictly read-only.
 - For remote RDB: call discover_remote_rdb first, then fetch_remote_rdb_via_ssh.
 - When the user asks for the latest/fresh RDB snapshot, use fetch_remote_rdb_via_ssh with acquisition_mode='fresh_snapshot'.
+- If Redis connection details are available and the user did not provide remote_rdb_path, do not ask the user for dir/dbfilename first; discover them by executing Redis discovery.
+- Only ask the user for dir/dbfilename/remote_rdb_path when Redis discovery actually fails and you need the user to override it.
 - MySQL read operations (mysql_read_query, load_preparsed_dataset_from_mysql) are lower-risk.
 - MySQL write operations (stage_rdb_rows_to_mysql) require human approval before execution.
 - Use the profile the user requests (generic, rcs). Default to generic.
@@ -301,12 +303,22 @@ def _make_remote_rdb_path_resolution_resolver(
                 remote_rdb_state=remote_rdb_state,
             )
         except Exception:  # noqa: BLE001
-            discovery = {}
-        return resolve_remote_rdb_acquisition_plan(
-            request,
-            discovery,
-            acquisition_mode=str(tool_args.get("acquisition_mode", "")),
-        )
+            return {
+                **resolve_remote_rdb_acquisition_plan(
+                    request,
+                    None,
+                    acquisition_mode=str(tool_args.get("acquisition_mode", "")),
+                ),
+                "discovery_status": "failed",
+            }
+        return {
+            **resolve_remote_rdb_acquisition_plan(
+                request,
+                discovery,
+                acquisition_mode=str(tool_args.get("acquisition_mode", "")),
+            ),
+            "discovery_status": "succeeded",
+        }
 
     return resolve_from_discovery
 
@@ -352,12 +364,16 @@ def _build_remote_rdb_interrupt_description(
         remote_rdb_path_source = resolution.get("remote_rdb_path_source") or "fallback_default"
         acquisition_mode = resolution.get("acquisition_mode") or "existing"
         bgsave_required = resolution.get("bgsave_required") or "no"
+        discovery_status = resolution.get("discovery_status") or (
+            "succeeded" if remote_rdb_path_source == "discovered" else "not_run"
+        )
         ssh_username = request.runtime_inputs.ssh_username or "unspecified"
         return (
             "Remote RDB acquisition requires human approval.\n\n"
             f"Target Redis: {target}\n"
             f"SSH target: {ssh_target}\n"
             f"SSH username: {ssh_username}\n"
+            f"Discovery status: {discovery_status}\n"
             f"Redis dir: {redis_dir}\n"
             f"Redis dbfilename: {dbfilename}\n"
             f"Remote RDB path: {remote_rdb_path}\n"

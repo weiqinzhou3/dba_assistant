@@ -396,6 +396,8 @@ def _make_remote_rdb_fetch_tools(
             "then continue into the unified Phase 3 analysis chain. "
             "REQUIRES HUMAN APPROVAL before proceeding. "
             "Use after discover_remote_rdb. "
+            "If remote_rdb_path is not already overridden by the user, this tool must auto-discover "
+            "Redis dir and dbfilename by querying Redis directly instead of asking the user for dir. "
             "Parameters: profile_name, output_mode, report_format, output_path, "
             "acquisition_mode ('existing' or 'fresh_snapshot'). "
             "SSH credentials come from shared request context only."

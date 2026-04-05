@@ -152,6 +152,7 @@ def test_build_unified_agent_wires_tools_and_model(monkeypatch) -> None:
     ]
     assert "fetch_and_analyze_remote_rdb" not in captured["interrupt_on"]
     assert "read-only" in captured["system_prompt"].lower()
+    assert "do not ask the user for dir/dbfilename first" in captured["system_prompt"].lower()
 
 
 def test_run_orchestrated_approves_interrupt_and_resumes(monkeypatch) -> None:
@@ -279,6 +280,7 @@ def test_build_remote_rdb_interrupt_description_includes_path_source(monkeypatch
             "remote_rdb_path_source": "discovered",
             "acquisition_mode": "fresh_snapshot",
             "bgsave_required": "yes",
+            "discovery_status": "succeeded",
         }
 
     description = agent_module._build_remote_rdb_interrupt_description(
@@ -298,3 +300,43 @@ def test_build_remote_rdb_interrupt_description_includes_path_source(monkeypatch
     assert "remote_rdb_path_source: discovered" in text
     assert "fresh_snapshot" in text
     assert "BGSAVE" in text
+    assert "Discovery status: succeeded" in text
+
+
+def test_remote_rdb_path_resolution_resolver_discovers_path_when_no_override(monkeypatch) -> None:
+    request = _make_request(
+        runtime_inputs=RuntimeInputs(
+            redis_host="redis.example",
+            redis_port=6379,
+            output_mode="summary",
+        )
+    )
+    connection = agent_module._build_connection(request, _make_config())
+
+    class FakeRedisAdaptor:
+        pass
+
+    monkeypatch.setattr(agent_module, "RedisAdaptor", lambda: FakeRedisAdaptor())
+    monkeypatch.setattr(
+        agent_module,
+        "discover_remote_rdb_snapshot",
+        lambda adaptor, connection, remote_rdb_state=None: {
+            "redis_dir": "/data/redis/data",
+            "dbfilename": "dump.rdb",
+            "rdb_path": "/data/redis/data/dump.rdb",
+            "rdb_path_source": "discovered",
+        },
+    )
+
+    resolver = agent_module._make_remote_rdb_path_resolution_resolver(
+        request,
+        connection=connection,
+        remote_rdb_state={},
+    )
+    resolution = resolver({})
+
+    assert resolution["redis_dir"] == "/data/redis/data"
+    assert resolution["dbfilename"] == "dump.rdb"
+    assert resolution["remote_rdb_path"] == "/data/redis/data/dump.rdb"
+    assert resolution["remote_rdb_path_source"] == "discovered"
+    assert resolution["discovery_status"] == "succeeded"

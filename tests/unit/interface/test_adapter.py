@@ -172,6 +172,77 @@ def test_handle_request_applies_ssh_overrides(monkeypatch) -> None:
     assert n.secrets.ssh_password == "secret"
 
 
+def test_handle_request_cli_redis_password_overrides_prompt_extracted_value(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    config = SimpleNamespace(runtime=SimpleNamespace(default_output_mode="summary"), model=None)
+
+    monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
+    monkeypatch.setattr(
+        adapter_module,
+        "normalize_raw_request",
+        lambda raw_prompt, *, default_output_mode, input_paths=(): NormalizedRequest(
+            raw_prompt=raw_prompt,
+            prompt=raw_prompt,
+            runtime_inputs=RuntimeInputs(
+                output_mode="summary",
+                redis_host="192.168.23.54",
+                redis_port=6379,
+            ),
+            secrets=Secrets(redis_password="prompt-secret"),
+            rdb_overrides=RdbOverrides(),
+        ),
+    )
+
+    def fake_run_orchestrated(normalized, *, config, approval_handler):
+        captured["normalized"] = normalized
+        return "ok"
+
+    monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
+
+    request = InterfaceRequest(
+        prompt="analyze remote redis",
+        redis_password="cli-secret",
+    )
+    handle_request(request, approval_handler=AutoApproveHandler())
+
+    n = captured["normalized"]
+    assert n.secrets.redis_password == "cli-secret"
+
+
+def test_handle_request_keeps_prompt_redis_password_when_cli_does_not_override(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    config = SimpleNamespace(runtime=SimpleNamespace(default_output_mode="summary"), model=None)
+
+    monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
+    monkeypatch.setattr(
+        adapter_module,
+        "normalize_raw_request",
+        lambda raw_prompt, *, default_output_mode, input_paths=(): NormalizedRequest(
+            raw_prompt=raw_prompt,
+            prompt=raw_prompt,
+            runtime_inputs=RuntimeInputs(
+                output_mode="summary",
+                redis_host="192.168.23.54",
+                redis_port=6379,
+            ),
+            secrets=Secrets(redis_password="prompt-secret"),
+            rdb_overrides=RdbOverrides(),
+        ),
+    )
+
+    def fake_run_orchestrated(normalized, *, config, approval_handler):
+        captured["normalized"] = normalized
+        return "ok"
+
+    monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
+
+    request = InterfaceRequest(prompt="analyze remote redis")
+    handle_request(request, approval_handler=AutoApproveHandler())
+
+    n = captured["normalized"]
+    assert n.secrets.redis_password == "prompt-secret"
+
+
 def test_handle_request_marks_remote_rdb_path_override_as_user_override(monkeypatch) -> None:
     captured: dict[str, object] = {}
     config = SimpleNamespace(runtime=SimpleNamespace(default_output_mode="summary"), model=None)

@@ -59,8 +59,8 @@ _MYSQL_QUERY_PATTERN = re.compile(
 _MYSQL_UNQUOTED_QUERY_PATTERN = re.compile(
     r"(?is)(?:执行|execute|run|query)\s+(?P<query>(?:select|with)\b.+?)(?=\s*(?:[,，。;；]|$))"
 )
-_MYSQL_TOKEN_PATTERN = re.compile(r"(?i)\bmysql\b")
-_REDIS_TOKEN_PATTERN = re.compile(r"(?i)\bredis\b")
+_MYSQL_TOKEN_PATTERN = re.compile(r"(?i)(?<![a-z0-9_])mysql(?![a-z0-9_])")
+_REDIS_TOKEN_PATTERN = re.compile(r"(?i)(?<![a-z0-9_])redis(?![a-z0-9_])")
 _SSH_TOKEN_PATTERN = re.compile(r"(?i)ssh")
 _SSH_SECTION_END_PATTERN = re.compile(r"[。；;!?]")
 _SSH_COMPACT_PATTERN = re.compile(

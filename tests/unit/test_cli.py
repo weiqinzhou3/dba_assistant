@@ -99,6 +99,7 @@ def test_cli_ask_threads_remote_redis_flags_to_interface_request(monkeypatch, ca
 
     exit_code = cli.main([
         "ask", "analyze remote redis",
+        "--redis-password", "123456",
         "--ssh-host", "192.168.23.54",
         "--ssh-port", "2222",
         "--ssh-username", "root",
@@ -110,6 +111,7 @@ def test_cli_ask_threads_remote_redis_flags_to_interface_request(monkeypatch, ca
 
     assert exit_code == 0
     req = captured["request"]
+    assert req.redis_password == "123456"
     assert req.ssh_host == "192.168.23.54"
     assert req.ssh_port == 2222
     assert req.ssh_username == "root"

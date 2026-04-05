@@ -143,6 +143,19 @@ def test_normalize_raw_request_extracts_password_from_chinese_as_password_phrase
     assert "abc123" not in request.prompt
 
 
+def test_normalize_raw_request_extracts_redis_password_from_remote_redis_natural_language() -> None:
+    request = normalize_raw_request(
+        "请帮我分析远端Redis，192.168.23.54:6379，密码是123456，如果有必要请拉取一份最新的rdb文件。",
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.redis_host == "192.168.23.54"
+    assert request.runtime_inputs.redis_port == 6379
+    assert request.runtime_inputs.input_kind == "remote_redis"
+    assert request.secrets.redis_password == "123456"
+    assert "123456" not in request.prompt
+
+
 def test_normalize_raw_request_extracts_task_2_profile_overrides() -> None:
     request = normalize_raw_request(
         "按通用profile分析这个rdb，重点看order:*前缀，prefix top 30，hash top 20，top 8",

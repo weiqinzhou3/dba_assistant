@@ -70,6 +70,10 @@ def _apply_overrides(
     if request.path_mode is not None:
         runtime_inputs = replace(runtime_inputs, path_mode=request.path_mode)
 
+    if request.redis_password is not None:
+        secrets = replace(normalized.secrets, redis_password=request.redis_password)
+        normalized = replace(normalized, secrets=secrets)
+
     if request.ssh_host is not None:
         runtime_inputs = replace(runtime_inputs, ssh_host=request.ssh_host)
 

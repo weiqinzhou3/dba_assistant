@@ -47,6 +47,7 @@ def test_interface_request_carries_mysql_fields() -> None:
 def test_interface_request_carries_ssh_fields() -> None:
     request = InterfaceRequest(
         prompt="analyze remote redis",
+        redis_password="redis-secret",
         ssh_host="ssh.example",
         ssh_port=2222,
         ssh_username="root",
@@ -56,6 +57,7 @@ def test_interface_request_carries_ssh_fields() -> None:
         require_fresh_rdb_snapshot=True,
     )
 
+    assert request.redis_password == "redis-secret"
     assert request.ssh_host == "ssh.example"
     assert request.ssh_port == 2222
     assert request.ssh_username == "root"
@@ -68,6 +70,7 @@ def test_interface_request_carries_ssh_fields() -> None:
 def test_interface_request_mysql_defaults_to_none() -> None:
     request = InterfaceRequest(prompt="analyze rdb")
 
+    assert request.redis_password is None
     assert request.mysql_host is None
     assert request.mysql_port is None
     assert request.mysql_user is None
@@ -138,3 +141,9 @@ def test_secrets_carry_ssh_password() -> None:
     secrets = Secrets(ssh_password="secret")
 
     assert secrets.ssh_password == "secret"
+
+
+def test_secrets_carry_redis_password() -> None:
+    secrets = Secrets(redis_password="redis-secret")
+
+    assert secrets.redis_password == "redis-secret"

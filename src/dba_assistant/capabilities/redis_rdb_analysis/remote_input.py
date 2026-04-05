@@ -11,23 +11,42 @@ class RemoteRedisDiscoveryError(RuntimeError):
     kind: str
     stage: str
     message: str
+    redis_password_supplied: bool = False
 
     def __str__(self) -> str:
-        return f"preflight failed at {self.stage}: {self.message}"
+        auth_flag = "yes" if self.redis_password_supplied else "no"
+        return (
+            f"preflight failed at {self.stage}: {self.message} "
+            f"(redis_password_supplied: {auth_flag})"
+        )
 
 
 def discover_remote_rdb(adaptor: RedisAdaptor, connection: RedisConnectionConfig) -> dict[str, object]:
+    redis_password_supplied = bool(connection.password)
+
     ping = adaptor.ping(connection)
-    _validate_ping_response(ping)
+    _validate_ping_response(ping, redis_password_supplied=redis_password_supplied)
 
     persistence = adaptor.info(connection, section="persistence")
-    _validate_info_response(persistence, stage="info(persistence)")
+    _validate_info_response(
+        persistence,
+        stage="info(persistence)",
+        redis_password_supplied=redis_password_supplied,
+    )
 
     directory = adaptor.config_get(connection, pattern="dir")
     filename = adaptor.config_get(connection, pattern="dbfilename")
 
-    dir_value = _extract_config_value(directory, "dir")
-    filename_value = _extract_config_value(filename, "dbfilename")
+    dir_value = _extract_config_value(
+        directory,
+        "dir",
+        redis_password_supplied=redis_password_supplied,
+    )
+    filename_value = _extract_config_value(
+        filename,
+        "dbfilename",
+        redis_password_supplied=redis_password_supplied,
+    )
 
     return {
         "lastsave": persistence.get("rdb_last_save_time"),
@@ -37,13 +56,22 @@ def discover_remote_rdb(adaptor: RedisAdaptor, connection: RedisConnectionConfig
         "rdb_path": str(PurePosixPath(dir_value) / filename_value),
         "rdb_path_source": "discovered",
         "requires_confirmation": True,
+        "redis_password_supplied": "yes" if redis_password_supplied else "no",
     }
 
 
-def _validate_ping_response(response: object) -> None:
-    payload = _require_mapping(response, stage="ping")
+def _validate_ping_response(response: object, *, redis_password_supplied: bool) -> None:
+    payload = _require_mapping(
+        response,
+        stage="ping",
+        redis_password_supplied=redis_password_supplied,
+    )
     if payload.get("available") is False:
-        _raise_probe_failure(payload, stage="ping")
+        _raise_probe_failure(
+            payload,
+            stage="ping",
+            redis_password_supplied=redis_password_supplied,
+        )
 
     ok = payload.get("ok")
     if ok is False or ok is None:
@@ -51,20 +79,47 @@ def _validate_ping_response(response: object) -> None:
             kind="malformed_response",
             stage="ping",
             message="malformed_response: PING returned an unexpected payload.",
+            redis_password_supplied=redis_password_supplied,
         )
 
 
-def _validate_info_response(response: object, *, stage: str) -> None:
-    payload = _require_mapping(response, stage=stage)
+def _validate_info_response(
+    response: object,
+    *,
+    stage: str,
+    redis_password_supplied: bool,
+) -> None:
+    payload = _require_mapping(
+        response,
+        stage=stage,
+        redis_password_supplied=redis_password_supplied,
+    )
     if payload.get("available") is False:
-        _raise_probe_failure(payload, stage=stage)
+        _raise_probe_failure(
+            payload,
+            stage=stage,
+            redis_password_supplied=redis_password_supplied,
+        )
 
 
-def _extract_config_value(response: object, key: str) -> str:
+def _extract_config_value(
+    response: object,
+    key: str,
+    *,
+    redis_password_supplied: bool,
+) -> str:
     stage = f"config_get({key})"
-    payload = _require_mapping(response, stage=stage)
+    payload = _require_mapping(
+        response,
+        stage=stage,
+        redis_password_supplied=redis_password_supplied,
+    )
     if payload.get("available") is False:
-        _raise_probe_failure(payload, stage=stage)
+        _raise_probe_failure(
+            payload,
+            stage=stage,
+            redis_password_supplied=redis_password_supplied,
+        )
 
     data = payload.get("data")
     if not isinstance(data, dict):
@@ -74,6 +129,7 @@ def _extract_config_value(response: object, key: str) -> str:
             message=(
                 f"malformed_response: Redis {stage} returned an unexpected payload for '{key}'."
             ),
+            redis_password_supplied=redis_password_supplied,
         )
 
     if key not in data:
@@ -81,6 +137,7 @@ def _extract_config_value(response: object, key: str) -> str:
             kind=f"missing_{key}",
             stage=stage,
             message=f"missing {key}: Redis {stage} returned no '{key}' value.",
+            redis_password_supplied=redis_password_supplied,
         )
 
     value = data[key]
@@ -90,27 +147,40 @@ def _extract_config_value(response: object, key: str) -> str:
             kind=f"missing_{key}",
             stage=stage,
             message=f"missing {key}: Redis {stage} returned an empty '{key}' value.",
+            redis_password_supplied=redis_password_supplied,
         )
     return text
 
 
-def _require_mapping(response: object, *, stage: str) -> dict[str, object]:
+def _require_mapping(
+    response: object,
+    *,
+    stage: str,
+    redis_password_supplied: bool,
+) -> dict[str, object]:
     if isinstance(response, dict):
         return response
     raise RemoteRedisDiscoveryError(
         kind="malformed_response",
         stage=stage,
         message=f"malformed_response: Redis {stage} returned a non-dictionary payload.",
+        redis_password_supplied=redis_password_supplied,
     )
 
 
-def _raise_probe_failure(response: dict[str, object], *, stage: str) -> None:
+def _raise_probe_failure(
+    response: dict[str, object],
+    *,
+    stage: str,
+    redis_password_supplied: bool,
+) -> None:
     error = response.get("error")
     if not isinstance(error, dict):
         raise RemoteRedisDiscoveryError(
             kind="malformed_response",
             stage=stage,
             message=f"malformed_response: Redis {stage} reported failure without an error payload.",
+            redis_password_supplied=redis_password_supplied,
         )
 
     kind = str(error.get("kind") or "unknown_error").strip() or "unknown_error"
@@ -119,6 +189,7 @@ def _raise_probe_failure(response: dict[str, object], *, stage: str) -> None:
         kind=kind,
         stage=stage,
         message=_format_probe_failure_message(stage=stage, kind=kind, raw_message=raw_message),
+        redis_password_supplied=redis_password_supplied,
     )
 
 

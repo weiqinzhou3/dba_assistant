@@ -59,6 +59,7 @@ def test_run_orchestrated_surfaces_real_discovery_failure_through_approval_and_f
                 kind="permission_denied",
                 stage="config_get(dir)",
                 message="permission_denied: CONFIG GET dir not permitted by ACL",
+                redis_password_supplied=True,
             )
         ),
     )
@@ -69,6 +70,7 @@ def test_run_orchestrated_surfaces_real_discovery_failure_through_approval_and_f
                 kind="permission_denied",
                 stage="config_get(dir)",
                 message="permission_denied: CONFIG GET dir not permitted by ACL",
+                redis_password_supplied=True,
             )
         ),
     )
@@ -131,7 +133,9 @@ def test_run_orchestrated_surfaces_real_discovery_failure_through_approval_and_f
 
     assert "permission_denied" in approval["text"]
     assert "Discovery failure stage: config_get(dir)" in approval["text"]
+    assert "Redis password supplied: yes" in approval["text"]
     assert "Redis dir: unresolved" not in approval["text"]
     assert "permission_denied" in result
     assert "config_get(dir)" in result
+    assert "redis_password_supplied: yes" in result
     assert "provide dir/dbfilename" not in result.lower()

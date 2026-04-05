@@ -47,3 +47,34 @@ def test_main_prints_run_phase2_output(monkeypatch, capsys) -> None:
     captured = capsys.readouterr()
     assert captured.out == "phase2 ok\n"
     assert captured.err == ""
+
+
+def test_run_phase2_builds_connection_with_prompt_extracted_redis_password(monkeypatch) -> None:
+    config = AppConfig(
+        model=ModelConfig(
+            preset_name="ollama_local",
+            provider_kind=ProviderKind.OPENAI_COMPATIBLE,
+            model_name="qwen3:8b",
+            base_url="http://127.0.0.1:11434/v1",
+            api_key="ollama",
+            max_turns=4,
+        ),
+        runtime=RuntimeConfig(default_output_mode="summary", redis_socket_timeout=5.0),
+    )
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(run_module, "load_app_config", lambda: config)
+
+    def fake_run_phase2_request(prompt, *, config, redis_connection):
+        captured["prompt"] = prompt
+        captured["connection"] = redis_connection
+        return "ok"
+
+    monkeypatch.setattr(run_module, "run_phase2_request", fake_run_phase2_request)
+
+    result = run_module.run_phase2("Inspect Redis 192.168.23.54:6379 password is 123456")
+
+    assert result == "ok"
+    connection = captured["connection"]
+    assert connection.host == "192.168.23.54"
+    assert connection.password == "123456"

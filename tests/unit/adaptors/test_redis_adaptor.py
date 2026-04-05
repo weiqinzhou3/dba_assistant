@@ -130,6 +130,28 @@ def test_redis_adaptor_wraps_read_only_commands() -> None:
     assert adaptor.client_list(connection) == {"available": True, "count": 1}
 
 
+def test_redis_adaptor_threads_password_into_client_factory_for_all_remote_calls() -> None:
+    seen_passwords: list[str | None] = []
+
+    class RecordingRedisClient(FakeRedisClient):
+        def __init__(self, **kwargs) -> None:
+            super().__init__(**kwargs)
+            seen_passwords.append(kwargs.get("password"))
+
+        def bgsave(self):
+            return True
+
+    adaptor = RedisAdaptor(client_factory=RecordingRedisClient)
+    connection = RedisConnectionConfig(host="redis.example", port=6380, password="secret")
+
+    adaptor.ping(connection)
+    adaptor.info(connection, section="server")
+    adaptor.config_get(connection, pattern="dir")
+    adaptor.bgsave(connection)
+
+    assert seen_passwords == ["secret", "secret", "secret", "secret"]
+
+
 def test_redis_adaptor_reports_unavailable_admin_probes() -> None:
     adaptor = RedisAdaptor(client_factory=RestrictedRedisClient)
     connection = RedisConnectionConfig(host="redis.example")

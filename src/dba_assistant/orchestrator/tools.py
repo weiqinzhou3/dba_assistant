@@ -286,6 +286,7 @@ def _make_discover_remote_rdb_tool(
                     "error_kind": exc.kind,
                     "error_stage": exc.stage,
                     "error_message": exc.message,
+                    "redis_password_supplied": "yes" if exc.redis_password_supplied else "no",
                 }
             )
         except Exception as exc:  # noqa: BLE001
@@ -305,6 +306,7 @@ def _make_discover_remote_rdb_tool(
                 "dbfilename": discovery.get("dbfilename"),
                 "rdb_path": discovery.get("rdb_path"),
                 "rdb_path_source": discovery.get("rdb_path_source", "discovered"),
+                "redis_password_supplied": discovery.get("redis_password_supplied", "no"),
                 "lastsave": discovery.get("lastsave"),
                 "bgsave_in_progress": discovery.get("bgsave_in_progress"),
                 "approval_required": True,

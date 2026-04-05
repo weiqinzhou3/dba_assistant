@@ -55,6 +55,20 @@ class FakeRedisAdaptor:
         raise AssertionError(f"unexpected pattern: {pattern}")
 
 
+class AuthSensitiveRedisAdaptor(FakeRedisAdaptor):
+    def ping(self, connection: RedisConnectionConfig) -> dict[str, object]:
+        self.calls.append(("ping", None))
+        if connection.password:
+            return {"ok": True}
+        return {
+            "available": False,
+            "error": {
+                "kind": "authentication_failed",
+                "message": "NOAUTH Authentication required.",
+            },
+        }
+
+
 def test_discover_remote_rdb_reports_path_and_source() -> None:
     adaptor = FakeRedisAdaptor()
     connection = RedisConnectionConfig(host="redis.example", port=6379)
@@ -69,6 +83,7 @@ def test_discover_remote_rdb_reports_path_and_source() -> None:
         "rdb_path": "/data/redis/dump.rdb",
         "rdb_path_source": "discovered",
         "requires_confirmation": True,
+        "redis_password_supplied": "no",
     }
     assert adaptor.calls == [
         ("ping", None),
@@ -76,6 +91,60 @@ def test_discover_remote_rdb_reports_path_and_source() -> None:
         ("config_get", "dir"),
         ("config_get", "dbfilename"),
     ]
+
+
+def test_discover_remote_rdb_uses_password_from_connection_across_probe_chain() -> None:
+    seen_passwords: list[tuple[str, str | None]] = []
+
+    class PasswordRecordingAdaptor(FakeRedisAdaptor):
+        def ping(self, connection: RedisConnectionConfig) -> dict[str, object]:
+            seen_passwords.append(("ping", connection.password))
+            return super().ping(connection)
+
+        def info(self, connection: RedisConnectionConfig, *, section: str | None = None) -> dict[str, object]:
+            seen_passwords.append(("info", connection.password))
+            return super().info(connection, section=section)
+
+        def config_get(self, connection: RedisConnectionConfig, *, pattern: str) -> dict[str, object]:
+            seen_passwords.append((f"config_get:{pattern}", connection.password))
+            return super().config_get(connection, pattern=pattern)
+
+    adaptor = PasswordRecordingAdaptor()
+
+    discover_remote_rdb(
+        adaptor,
+        RedisConnectionConfig(host="redis.example", port=6379, password="123456"),
+    )
+
+    assert seen_passwords == [
+        ("ping", "123456"),
+        ("info", "123456"),
+        ("config_get:dir", "123456"),
+        ("config_get:dbfilename", "123456"),
+    ]
+
+
+def test_discover_remote_rdb_authenticates_when_connection_has_password() -> None:
+    adaptor = AuthSensitiveRedisAdaptor()
+
+    discovery = discover_remote_rdb(
+        adaptor,
+        RedisConnectionConfig(host="redis.example", port=6379, password="123456"),
+    )
+
+    assert discovery["rdb_path"] == "/data/redis/dump.rdb"
+
+
+def test_discover_remote_rdb_reports_auth_failure_when_connection_lacks_password() -> None:
+    adaptor = AuthSensitiveRedisAdaptor()
+
+    with pytest.raises(RemoteRedisDiscoveryError) as excinfo:
+        discover_remote_rdb(adaptor, RedisConnectionConfig(host="redis.example", port=6379))
+
+    error = excinfo.value
+    assert error.kind == "authentication_failed"
+    assert error.redis_password_supplied is False
+    assert "redis_password_supplied: no" in str(error)
 
 
 def test_discover_remote_rdb_reports_ping_preflight_failure() -> None:

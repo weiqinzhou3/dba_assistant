@@ -532,13 +532,16 @@ def test_fetch_remote_rdb_via_ssh_tool_generates_latest_snapshot_when_requested(
 
     class FakeRedisAdaptor:
         def ping(self, connection):
+            events.append(f"ping-password:{connection.password}")
             return {"ok": True}
 
         def info(self, connection, *, section=None):
             events.append(f"info:{section}")
+            events.append(f"info-password:{connection.password}")
             return next(persistence_states)
 
         def config_get(self, connection, *, pattern):
+            events.append(f"config:{pattern}:{connection.password}")
             if pattern == "dir":
                 return {"available": True, "data": {"dir": "/data/redis/data"}}
             if pattern == "dbfilename":
@@ -590,12 +593,17 @@ def test_fetch_remote_rdb_via_ssh_tool_generates_latest_snapshot_when_requested(
     result = fetch_tool()
 
     assert "ok" in result
-    assert events[:4] == [
+    assert events[:7] == [
+        "ping-password:123456",
         "info:persistence",
+        "info-password:123456",
+        "config:dir:123456",
+        "config:dbfilename:123456",
         "bgsave",
         "info:persistence",
-        "sleep:0.2",
     ]
+    assert "info-password:123456" in events
+    assert "sleep:0.2" in events
     assert "fetch:/data/redis/data/dump.rdb" in events
 
 
@@ -622,6 +630,7 @@ def test_fetch_remote_rdb_via_ssh_returns_auth_failure_without_missing_dir_promp
                 kind="authentication_failed",
                 stage="ping",
                 message="authentication_failed: invalid username-password pair or user is disabled",
+                redis_password_supplied=True,
             )
         ),
     )
@@ -630,6 +639,7 @@ def test_fetch_remote_rdb_via_ssh_returns_auth_failure_without_missing_dir_promp
 
     assert "authentication_failed" in result
     assert "preflight failed at ping" in result
+    assert "redis_password_supplied: yes" in result
     assert "provide dir/dbfilename" not in result.lower()
 
 
@@ -656,6 +666,7 @@ def test_fetch_remote_rdb_via_ssh_returns_permission_denied_from_config_get(monk
                 kind="permission_denied",
                 stage="config_get(dir)",
                 message="permission_denied: CONFIG GET dir not permitted by ACL",
+                redis_password_supplied=True,
             )
         ),
     )
@@ -665,3 +676,38 @@ def test_fetch_remote_rdb_via_ssh_returns_permission_denied_from_config_get(monk
     assert "permission_denied" in result
     assert "config_get(dir)" in result
     assert "missing dir" not in result.lower()
+
+
+def test_discover_remote_rdb_tool_reports_redis_password_supplied_without_leaking_secret(monkeypatch) -> None:
+    import json
+
+    request = _make_request(
+        runtime_inputs=RuntimeInputs(
+            redis_host="192.168.23.54",
+            redis_port=6379,
+            output_mode="summary",
+        ),
+        secrets=Secrets(redis_password="123456"),
+    )
+    connection = RedisConnectionConfig(host="192.168.23.54", port=6379, password="123456")
+    tools = build_all_tools(request, connection=connection)
+    discover_tool = next(t for t in tools if t.__name__ == "discover_remote_rdb")
+
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools.discover_remote_rdb_snapshot",
+        lambda adaptor, connection, remote_rdb_state=None: (_ for _ in ()).throw(
+            RemoteRedisDiscoveryError(
+                kind="authentication_failed",
+                stage="ping",
+                message="authentication_failed: invalid username-password pair or user is disabled",
+                redis_password_supplied=True,
+            )
+        ),
+    )
+
+    result = json.loads(discover_tool())
+
+    assert result["status"] == "failed"
+    assert result["error_kind"] == "authentication_failed"
+    assert result["redis_password_supplied"] == "yes"
+    assert "123456" not in json.dumps(result)

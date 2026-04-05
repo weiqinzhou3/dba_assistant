@@ -39,6 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         default=None,
     )
+    ask_parser.add_argument("--redis-password", default=None)
     ask_parser.add_argument("--ssh-host", default=None)
     ask_parser.add_argument("--ssh-port", default=None, type=int)
     ask_parser.add_argument("--ssh-username", default=None)
@@ -74,6 +75,7 @@ def main(argv: list[str] | None = None) -> int:
             report_format=args.report_format,
             input_kind=args.input_kind,
             path_mode=args.path_mode,
+            redis_password=args.redis_password,
             ssh_host=args.ssh_host,
             ssh_port=args.ssh_port,
             ssh_username=args.ssh_username,

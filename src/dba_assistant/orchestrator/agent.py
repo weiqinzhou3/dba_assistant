@@ -314,6 +314,7 @@ def _make_remote_rdb_path_resolution_resolver(
             resolution["discovery_error_stage"] = exc.stage
             resolution["discovery_error_kind"] = exc.kind
             resolution["discovery_error_message"] = exc.message
+            resolution["redis_password_supplied"] = "yes" if exc.redis_password_supplied else "no"
             resolution["bgsave_required"] = "blocked"
             if not resolution.get("remote_rdb_path"):
                 resolution["remote_rdb_path_source"] = "unresolved"
@@ -328,6 +329,7 @@ def _make_remote_rdb_path_resolution_resolver(
             resolution["discovery_error_stage"] = "discover_remote_rdb"
             resolution["discovery_error_kind"] = "unknown_error"
             resolution["discovery_error_message"] = str(exc)
+            resolution["redis_password_supplied"] = "yes" if request.secrets.redis_password else "no"
             resolution["bgsave_required"] = "blocked"
             if not resolution.get("remote_rdb_path"):
                 resolution["remote_rdb_path_source"] = "unresolved"
@@ -391,6 +393,9 @@ def _build_remote_rdb_interrupt_description(
         discovery_error_stage = resolution.get("discovery_error_stage") or ""
         discovery_error_kind = resolution.get("discovery_error_kind") or ""
         discovery_error_message = resolution.get("discovery_error_message") or ""
+        redis_password_supplied = resolution.get("redis_password_supplied") or (
+            "yes" if request.secrets.redis_password else "no"
+        )
         ssh_username = request.runtime_inputs.ssh_username or "unspecified"
         lines = [
             "Remote RDB acquisition requires human approval.",
@@ -406,6 +411,7 @@ def _build_remote_rdb_interrupt_description(
                     f"Discovery failure stage: {discovery_error_stage or 'unknown'}",
                     f"Discovery failure kind: {discovery_error_kind or 'unknown_error'}",
                     f"Discovery failure message: {discovery_error_message or 'No error details available.'}",
+                    f"Redis password supplied: {redis_password_supplied}",
                     f"Remote RDB path: {remote_rdb_path}",
                     f"remote_rdb_path_source: {remote_rdb_path_source}",
                     f"Acquisition mode: {acquisition_mode}",

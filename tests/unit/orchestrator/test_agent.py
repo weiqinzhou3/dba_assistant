@@ -324,6 +324,7 @@ def test_build_remote_rdb_interrupt_description_reports_real_discovery_failure()
             "discovery_error_stage": "config_get(dir)",
             "discovery_error_kind": "permission_denied",
             "discovery_error_message": "CONFIG GET dir not permitted by ACL",
+            "redis_password_supplied": "yes",
             "remote_rdb_path": "",
             "remote_rdb_path_source": "unresolved",
             "acquisition_mode": "fresh_snapshot",
@@ -341,6 +342,7 @@ def test_build_remote_rdb_interrupt_description_reports_real_discovery_failure()
     assert "Discovery failure stage: config_get(dir)" in text
     assert "Discovery failure kind: permission_denied" in text
     assert "CONFIG GET dir not permitted by ACL" in text
+    assert "Redis password supplied: yes" in text
     assert "BGSAVE required: blocked" in text
     assert "Redis dir: unresolved" not in text
     assert "Redis dbfilename: unresolved" not in text
@@ -385,6 +387,26 @@ def test_remote_rdb_path_resolution_resolver_discovers_path_when_no_override(mon
     assert resolution["discovery_status"] == "succeeded"
 
 
+def test_build_connection_threads_redis_password_into_connection() -> None:
+    request = _make_request(
+        runtime_inputs=RuntimeInputs(
+            redis_host="192.168.23.54",
+            redis_port=6379,
+            redis_db=3,
+            output_mode="summary",
+        ),
+        secrets=Secrets(redis_password="123456"),
+    )
+
+    connection = agent_module._build_connection(request, _make_config())
+
+    assert connection is not None
+    assert connection.host == "192.168.23.54"
+    assert connection.port == 6379
+    assert connection.db == 3
+    assert connection.password == "123456"
+
+
 def test_remote_rdb_path_resolution_resolver_surfaces_discovery_failure(monkeypatch) -> None:
     request = _make_request(
         runtime_inputs=RuntimeInputs(
@@ -412,6 +434,7 @@ def test_remote_rdb_path_resolution_resolver_surfaces_discovery_failure(monkeypa
                 kind="authentication_failed",
                 stage="ping",
                 message="authentication_failed: invalid username-password pair or user is disabled",
+                redis_password_supplied=True,
             )
         ),
     )
@@ -427,4 +450,5 @@ def test_remote_rdb_path_resolution_resolver_surfaces_discovery_failure(monkeypa
     assert resolution["discovery_error_stage"] == "ping"
     assert resolution["discovery_error_kind"] == "authentication_failed"
     assert "invalid username-password pair" in resolution["discovery_error_message"]
+    assert resolution["redis_password_supplied"] == "yes"
     assert resolution["bgsave_required"] == "blocked"

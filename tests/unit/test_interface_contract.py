@@ -51,12 +51,18 @@ def test_interface_request_carries_ssh_fields() -> None:
         ssh_port=2222,
         ssh_username="root",
         ssh_password="secret",
+        remote_rdb_path="/custom/override.rdb",
+        remote_rdb_path_source="user_override",
+        require_fresh_rdb_snapshot=True,
     )
 
     assert request.ssh_host == "ssh.example"
     assert request.ssh_port == 2222
     assert request.ssh_username == "root"
     assert request.ssh_password == "secret"
+    assert request.remote_rdb_path == "/custom/override.rdb"
+    assert request.remote_rdb_path_source == "user_override"
+    assert request.require_fresh_rdb_snapshot is True
 
 
 def test_interface_request_mysql_defaults_to_none() -> None:
@@ -115,11 +121,17 @@ def test_runtime_inputs_carries_ssh_fields() -> None:
         ssh_host="ssh.example",
         ssh_port=2222,
         ssh_username="root",
+        remote_rdb_path="/custom/override.rdb",
+        remote_rdb_path_source="user_override",
+        require_fresh_rdb_snapshot=True,
     )
 
     assert ri.ssh_host == "ssh.example"
     assert ri.ssh_port == 2222
     assert ri.ssh_username == "root"
+    assert ri.remote_rdb_path == "/custom/override.rdb"
+    assert ri.remote_rdb_path_source == "user_override"
+    assert ri.require_fresh_rdb_snapshot is True
 
 
 def test_secrets_carry_ssh_password() -> None:

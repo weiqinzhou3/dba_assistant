@@ -48,6 +48,16 @@ def analyze_rdb(
     path_b_collector=None,
     path_c_collector=None,
 ) -> ConfirmationRequest | AnalysisReport:
+    parser_metadata: dict[str, str] = {}
+
+    def tracked_parser(path: Path) -> list[dict[str, object]]:
+        parsed = _parse_rdb_rows(path)
+        if isinstance(parsed, tuple):
+            rows, metadata = parsed
+            parser_metadata.update(metadata)
+            return rows
+        return parsed
+
     if any(sample.kind is InputSourceKind.REMOTE_REDIS for sample in request.inputs):
         discovery = remote_discovery(request)
         return ConfirmationRequest(
@@ -70,6 +80,7 @@ def analyze_rdb(
         mysql_read_query=mysql_read_query,
         path_b_collector=path_b_collector,
         path_c_collector=path_c_collector,
+        parser=tracked_parser,
     )
     analysis_result = analyze_overall(dataset, profile=effective_profile)
     report = assemble_report(
@@ -81,6 +92,7 @@ def analyze_rdb(
         **report.metadata,
         "input_count": str(len(dataset.samples)),
         "route": selected_route,
+        **parser_metadata,
     }
     legacy_path_label = phase_label_for_route_name(selected_route)
     if legacy_path_label is not None:
@@ -103,6 +115,7 @@ def _collect_dataset(
     mysql_read_query,
     path_b_collector,
     path_c_collector,
+    parser,
 ) -> NormalizedRdbDataset:
     paths = [Path(sample.source) for sample in request.inputs if sample.kind is not InputSourceKind.REMOTE_REDIS]
 
@@ -117,7 +130,7 @@ def _collect_dataset(
         return collector.collect(paths)
 
     if selected_route == DIRECT_RDB_ANALYSIS:
-        collector = path_c_collector or PathCDirectParserCollector(parser=_parse_rdb_rows)
+        collector = path_c_collector or PathCDirectParserCollector(parser=parser)
         return collector.collect(paths)
 
     if selected_route == DATABASE_BACKED_ANALYSIS:
@@ -128,7 +141,7 @@ def _collect_dataset(
                     "database_backed_analysis requires MySQL staging and dataset loading support."
                 )
             collector = PathAMySQLBackedCollector(
-                parser=_parse_rdb_rows,
+                parser=parser,
                 stage_rows_to_mysql=stage_rdb_rows_to_mysql,
                 load_preparsed_dataset_from_mysql=load_preparsed_dataset_from_mysql,
             )
@@ -137,5 +150,9 @@ def _collect_dataset(
     raise ValueError(f"Unsupported analysis route: {selected_route}")
 
 
-def _parse_rdb_rows(path: Path) -> list[dict[str, object]]:
-    return build_default_rdb_parser_strategy().parse_rows(path)
+def _parse_rdb_rows(path: Path) -> tuple[list[dict[str, object]], dict[str, str]]:
+    parsed = build_default_rdb_parser_strategy().parse_rows_result(path)
+    metadata = {"parser_strategy": parsed.strategy_name}
+    if parsed.strategy_detail:
+        metadata["parser_binary"] = parsed.strategy_detail
+    return parsed.rows, metadata

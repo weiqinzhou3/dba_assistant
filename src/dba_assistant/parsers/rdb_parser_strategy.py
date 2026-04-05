@@ -19,8 +19,18 @@ class FlamegraphSpec:
     url: str
 
 
+@dataclass(frozen=True)
+class ParsedRowsResult:
+    rows: list[dict[str, object]]
+    strategy_name: str
+    strategy_detail: str | None = None
+
+
 class RdbParserStrategy(Protocol):
     def parse_rows(self, path: Path) -> list[dict[str, object]]:
+        ...
+
+    def parse_rows_result(self, path: Path) -> ParsedRowsResult:
         ...
 
 
@@ -39,13 +49,20 @@ class HdtRdbCliStrategy:
             )
 
     def parse_rows(self, path: Path) -> list[dict[str, object]]:
+        return self.parse_rows_result(path).rows
+
+    def parse_rows_result(self, path: Path) -> ParsedRowsResult:
         payload = self.export_json(path)
         rows: list[dict[str, object]] = []
         for obj in payload:
             normalized = _normalize_hdt_json_object(obj)
             if normalized is not None:
                 rows.append(normalized)
-        return rows
+        return ParsedRowsResult(
+            rows=rows,
+            strategy_name=type(self).__name__,
+            strategy_detail=str(self._binary_path),
+        )
 
     def export_json(self, path: Path) -> list[dict[str, object]]:
         with tempfile.TemporaryDirectory(prefix="dba-assistant-rdb-json-") as tmpdir:
@@ -124,12 +141,18 @@ class HdtRdbCliStrategy:
 
 class LegacyRdbtoolsStrategy:
     def parse_rows(self, path: Path) -> list[dict[str, object]]:
+        return self.parse_rows_result(path).rows
+
+    def parse_rows_result(self, path: Path) -> ParsedRowsResult:
         from rdbtools import MemoryCallback, RdbParser
 
         stream = _MemoryRecordStream()
         parser = RdbParser(MemoryCallback(stream, 64))
         parser.parse(str(path))
-        return stream.rows
+        return ParsedRowsResult(
+            rows=stream.rows,
+            strategy_name=type(self).__name__,
+        )
 
 
 class CompositeRdbParserStrategy:
@@ -137,10 +160,13 @@ class CompositeRdbParserStrategy:
         self._strategies = strategies
 
     def parse_rows(self, path: Path) -> list[dict[str, object]]:
+        return self.parse_rows_result(path).rows
+
+    def parse_rows_result(self, path: Path) -> ParsedRowsResult:
         errors: list[str] = []
         for strategy in self._strategies:
             try:
-                return strategy.parse_rows(path)
+                return strategy.parse_rows_result(path)
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"{type(strategy).__name__}: {exc}")
         raise RuntimeError("All RDB parser strategies failed: " + " | ".join(errors))
@@ -196,17 +222,25 @@ def _resolve_hdt_rdb_binary() -> Path | None:
     candidates: list[Path] = []
     configured = os.getenv("DBA_ASSISTANT_HDT_RDB_BIN")
     if configured:
-        candidates.append(Path(configured))
+        candidates.append(Path(configured).expanduser().resolve())
 
-    repo_root = Path(__file__).resolve().parents[4]
-    candidates.append(repo_root / ".tools/bin/rdb")
+    repo_root = _find_repo_root(Path(__file__).resolve())
+    if repo_root is not None:
+        candidates.append(repo_root / ".tools/bin/rdb")
 
     path_candidate = shutil.which("rdb")
     if path_candidate:
-        candidates.append(Path(path_candidate))
+        candidates.append(Path(path_candidate).resolve())
 
     for candidate in candidates:
         if candidate.exists() and _looks_like_hdt_rdb(candidate):
+            return candidate.resolve()
+    return None
+
+
+def _find_repo_root(start: Path) -> Path | None:
+    for candidate in (start.parent, *start.parents):
+        if (candidate / "pyproject.toml").exists() and (candidate / "src").exists():
             return candidate
     return None
 

@@ -74,6 +74,7 @@ def test_build_user_message_includes_context() -> None:
             ssh_host="ssh.example",
             ssh_port=2222,
             ssh_username="root",
+            require_fresh_rdb_snapshot=True,
             mysql_host="db.example",
             mysql_port=3306,
             mysql_user="analyst",
@@ -85,6 +86,7 @@ def test_build_user_message_includes_context() -> None:
             output_path=Path("/tmp/out.docx"),
             input_paths=(Path("/tmp/dump.rdb"),),
         ),
+        secrets=Secrets(redis_password="secret", ssh_password="ssh-secret"),
         rdb_overrides=RdbOverrides(
             profile_name="rcs",
             focus_prefixes=("cache:*", "session:*"),
@@ -99,6 +101,8 @@ def test_build_user_message_includes_context() -> None:
     assert "preparsed_dataset_analysis" in msg
     assert "redis.example:6379" in msg
     assert "ssh.example:2222" in msg
+    assert "secure context" in msg
+    assert "fresh_snapshot" in msg
     assert "db.example:3306" in msg
     assert "preparsed_keys" in msg
     assert "SELECT * FROM preparsed_keys" in msg
@@ -119,7 +123,7 @@ def test_build_unified_agent_wires_tools_and_model(monkeypatch) -> None:
     monkeypatch.setattr(
         agent_module,
         "build_all_tools",
-        lambda req, connection=None, mysql_connection=None: ["tool1", "tool2"],
+        lambda req, connection=None, mysql_connection=None, remote_rdb_state=None: ["tool1", "tool2"],
     )
 
     def fake_create_deep_agent(**kwargs):
@@ -146,10 +150,7 @@ def test_build_unified_agent_wires_tools_and_model(monkeypatch) -> None:
         "approve",
         "reject",
     ]
-    assert captured["interrupt_on"]["fetch_and_analyze_remote_rdb"]["allowed_decisions"] == [
-        "approve",
-        "reject",
-    ]
+    assert "fetch_and_analyze_remote_rdb" not in captured["interrupt_on"]
     assert "read-only" in captured["system_prompt"].lower()
 
 
@@ -256,3 +257,44 @@ def test_run_orchestrated_returns_denial_message_when_interrupt_rejected(monkeyp
     )
 
     assert "denied" in result.lower()
+
+
+def test_build_remote_rdb_interrupt_description_includes_path_source(monkeypatch) -> None:
+    request = _make_request(
+        runtime_inputs=RuntimeInputs(
+            redis_host="redis.example",
+            redis_port=6379,
+            ssh_host="ssh.example",
+            ssh_port=2222,
+            output_mode="summary",
+        ),
+        rdb_overrides=RdbOverrides(profile_name="generic"),
+    )
+
+    def fake_resolve(tool_args):
+        return {
+            "redis_dir": "/data/redis/data",
+            "dbfilename": "actual.rdb",
+            "remote_rdb_path": "/data/redis/data/actual.rdb",
+            "remote_rdb_path_source": "discovered",
+            "acquisition_mode": "fresh_snapshot",
+            "bgsave_required": "yes",
+        }
+
+    description = agent_module._build_remote_rdb_interrupt_description(
+        request,
+        path_resolution_resolver=fake_resolve,
+    )
+
+    text = description(
+        {"args": {"profile_name": "rcs"}},
+        None,
+        None,
+    )
+
+    assert "/data/redis/data/actual.rdb" in text
+    assert "/data/redis/data" in text
+    assert "actual.rdb" in text
+    assert "remote_rdb_path_source: discovered" in text
+    assert "fresh_snapshot" in text
+    assert "BGSAVE" in text

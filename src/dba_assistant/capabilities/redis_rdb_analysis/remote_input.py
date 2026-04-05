@@ -16,7 +16,10 @@ def discover_remote_rdb(adaptor: RedisAdaptor, connection: RedisConnectionConfig
     return {
         "lastsave": persistence.get("rdb_last_save_time"),
         "bgsave_in_progress": persistence.get("rdb_bgsave_in_progress"),
+        "redis_dir": dir_value,
+        "dbfilename": filename_value,
         "rdb_path": str(PurePosixPath(dir_value) / filename_value),
+        "rdb_path_source": "discovered",
         "requires_confirmation": True,
     }
 

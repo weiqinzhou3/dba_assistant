@@ -1,4 +1,4 @@
-"""Redis adaptor for read-only inspection access."""
+"""Redis adaptor for inspection and approved administrative access."""
 
 from __future__ import annotations
 
@@ -85,6 +85,14 @@ class RedisAdaptor:
             metadata={},
             callback=lambda client: client.client_list(),
             formatter=lambda data: {"count": len(data)},
+        )
+
+    def bgsave(self, connection: RedisConnectionConfig) -> dict[str, Any]:
+        return self._run_structured_probe(
+            connection,
+            metadata={},
+            callback=lambda client: client.bgsave(),
+            formatter=lambda data: {"started": bool(data)},
         )
 
     def _connect(self, connection: RedisConnectionConfig) -> Any:

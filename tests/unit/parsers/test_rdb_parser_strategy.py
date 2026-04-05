@@ -5,9 +5,20 @@ import pytest
 from dba_assistant.parsers.rdb_parser_strategy import (
     HdtRdbCliStrategy,
     LegacyRdbtoolsStrategy,
+    _resolve_hdt_rdb_binary,
+    build_default_rdb_parser_strategy,
 )
 
 HDT_BINARY = Path(".tools/bin/rdb")
+
+
+@pytest.mark.skipif(not HDT_BINARY.exists(), reason="HDT3213/rdb binary is not available in this workspace")
+def test_default_strategy_discovers_repo_local_hdt_binary() -> None:
+    build_default_rdb_parser_strategy.cache_clear()
+
+    resolved = _resolve_hdt_rdb_binary()
+
+    assert resolved == HDT_BINARY.resolve()
 
 
 @pytest.mark.skipif(not HDT_BINARY.exists(), reason="HDT3213/rdb binary is not available in this workspace")

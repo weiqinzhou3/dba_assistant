@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,7 @@ def build_all_tools(
     *,
     connection: RedisConnectionConfig | None = None,
     mysql_connection: MySQLConnectionConfig | None = None,
+    remote_rdb_state: dict[str, Any] | None = None,
 ) -> list:
     """Build the complete tool list available to the unified agent."""
     tools: list = []
@@ -63,13 +65,21 @@ def build_all_tools(
     # Redis inspection & remote-RDB tools (only when connection info is present)
     if connection is not None:
         adaptor = RedisAdaptor()
+        shared_remote_rdb_state = remote_rdb_state if remote_rdb_state is not None else {}
         tools.extend(_make_redis_inspection_tools(adaptor, connection))
-        tools.append(_make_discover_remote_rdb_tool(adaptor, connection))
+        tools.append(
+            _make_discover_remote_rdb_tool(
+                adaptor,
+                connection,
+                remote_rdb_state=shared_remote_rdb_state,
+            )
+        )
         tools.extend(
             _make_remote_rdb_fetch_tools(
                 request,
                 adaptor,
                 connection,
+                remote_rdb_state=shared_remote_rdb_state,
                 mysql_adaptor=mysql_adaptor,
                 mysql_connection=mysql_connection,
             )
@@ -254,19 +264,28 @@ def _make_analyze_preparsed_dataset_tool(
 def _make_discover_remote_rdb_tool(
     adaptor: RedisAdaptor,
     connection: RedisConnectionConfig,
+    *,
+    remote_rdb_state: dict[str, Any] | None = None,
 ):
     """Read-only remote RDB discovery — no approval required."""
 
     def discover_remote_rdb_tool() -> str:
         try:
-            discovery = discover_remote_rdb(adaptor, connection)
+            discovery = discover_remote_rdb_snapshot(
+                adaptor,
+                connection,
+                remote_rdb_state=remote_rdb_state,
+            )
         except Exception as exc:  # noqa: BLE001
             return f"Discovery failed: {exc}"
 
         import json
         return json.dumps(
             {
+                "redis_dir": discovery.get("redis_dir"),
+                "dbfilename": discovery.get("dbfilename"),
                 "rdb_path": discovery.get("rdb_path"),
+                "rdb_path_source": discovery.get("rdb_path_source", "discovered"),
                 "lastsave": discovery.get("lastsave"),
                 "bgsave_in_progress": discovery.get("bgsave_in_progress"),
                 "approval_required": True,
@@ -292,6 +311,7 @@ def _make_remote_rdb_fetch_tools(
     adaptor: RedisAdaptor,
     connection: RedisConnectionConfig,
     *,
+    remote_rdb_state: dict[str, Any] | None = None,
     mysql_adaptor: MySQLAdaptor | None = None,
     mysql_connection: MySQLConnectionConfig | None = None,
 ):
@@ -307,26 +327,37 @@ def _make_remote_rdb_fetch_tools(
         output_mode: str = "summary",
         report_format: str = "summary",
         output_path: str = "",
-        ssh_host: str = "",
-        ssh_port: str = "",
-        ssh_username: str = "",
-        ssh_password: str = "",
-        remote_rdb_path: str = "",
+        acquisition_mode: str = "",
     ) -> str:
         try:
-            discovery = discover_remote_rdb(adaptor, connection)
+            discovery = discover_remote_rdb_snapshot(
+                adaptor,
+                connection,
+                remote_rdb_state=remote_rdb_state,
+            )
         except Exception as exc:  # noqa: BLE001
             return f"Remote RDB discovery failed: {exc}"
+
+        acquisition_plan = resolve_remote_rdb_acquisition_plan(
+            request,
+            discovery,
+            acquisition_mode=acquisition_mode,
+        )
+        if acquisition_plan["acquisition_mode"] == "fresh_snapshot":
+            try:
+                discovery = ensure_remote_rdb_snapshot(
+                    adaptor,
+                    connection,
+                    discovery=discovery,
+                    remote_rdb_state=remote_rdb_state,
+                )
+            except Exception as exc:  # noqa: BLE001
+                return f"Latest remote RDB snapshot failed: {exc}"
 
         fetched_path = _fetch_remote_rdb_via_ssh(
             request=request,
             connection=connection,
             discovery=discovery,
-            ssh_host=ssh_host,
-            ssh_port=ssh_port,
-            ssh_username=ssh_username,
-            ssh_password=ssh_password,
-            remote_rdb_path=remote_rdb_path,
         )
         if isinstance(fetched_path, str):
             return fetched_path
@@ -347,45 +378,14 @@ def _make_remote_rdb_fetch_tools(
         output_mode: str = "summary",
         report_format: str = "summary",
         output_path: str = "",
-        ssh_host: str = "",
-        ssh_port: str = "",
-        ssh_username: str = "",
-        ssh_password: str = "",
-        remote_rdb_path: str = "",
+        acquisition_mode: str = "",
     ) -> str:
         return _fetch_remote_and_continue(
             profile_name=profile_name,
             output_mode=output_mode,
             report_format=report_format,
             output_path=output_path,
-            ssh_host=ssh_host,
-            ssh_port=ssh_port,
-            ssh_username=ssh_username,
-            ssh_password=ssh_password,
-            remote_rdb_path=remote_rdb_path,
-        )
-
-    def fetch_and_analyze_remote_rdb(
-        profile_name: str = "generic",
-        output_mode: str = "summary",
-        report_format: str = "summary",
-        output_path: str = "",
-        ssh_host: str = "",
-        ssh_port: str = "",
-        ssh_username: str = "",
-        ssh_password: str = "",
-        remote_rdb_path: str = "",
-    ) -> str:
-        return _fetch_remote_and_continue(
-            profile_name=profile_name,
-            output_mode=output_mode,
-            report_format=report_format,
-            output_path=output_path,
-            ssh_host=ssh_host,
-            ssh_port=ssh_port,
-            ssh_username=ssh_username,
-            ssh_password=ssh_password,
-            remote_rdb_path=remote_rdb_path,
+            acquisition_mode=acquisition_mode,
         )
 
     canonical_tool = _named_tool(
@@ -397,19 +397,11 @@ def _make_remote_rdb_fetch_tools(
             "REQUIRES HUMAN APPROVAL before proceeding. "
             "Use after discover_remote_rdb. "
             "Parameters: profile_name, output_mode, report_format, output_path, "
-            "ssh_host, ssh_port, ssh_username, ssh_password, remote_rdb_path. "
-            "SSH parameters are optional if already present in shared request context."
+            "acquisition_mode ('existing' or 'fresh_snapshot'). "
+            "SSH credentials come from shared request context only."
         ),
     )
-    compatibility_alias = _named_tool(
-        fetch_and_analyze_remote_rdb,
-        "fetch_and_analyze_remote_rdb",
-        (
-            "Compatibility alias for fetch_remote_rdb_via_ssh. "
-            "Fetch a remote Redis RDB over SSH, then continue analysis."
-        ),
-    )
-    return [canonical_tool, compatibility_alias]
+    return [canonical_tool]
 
 
 # ---------------------------------------------------------------------------
@@ -523,26 +515,17 @@ def _fetch_remote_rdb_via_ssh(
     request: NormalizedRequest,
     connection: RedisConnectionConfig,
     discovery: dict[str, object],
-    ssh_host: str,
-    ssh_port: str,
-    ssh_username: str,
-    ssh_password: str,
-    remote_rdb_path: str,
 ) -> Path | str:
-    target_path = str(
-        remote_rdb_path
-        or request.runtime_inputs.remote_rdb_path
-        or discovery.get("rdb_path")
-        or ""
-    ).strip()
+    resolution = resolve_remote_rdb_fetch_plan(request, discovery)
+    target_path = resolution["remote_rdb_path"]
     if not target_path:
         return "Remote RDB discovery did not return a usable rdb_path."
 
     ssh_config = SSHConnectionConfig(
-        host=ssh_host or request.runtime_inputs.ssh_host or connection.host,
-        port=int(ssh_port or request.runtime_inputs.ssh_port or 22),
-        username=ssh_username or request.runtime_inputs.ssh_username or None,
-        password=ssh_password or request.secrets.ssh_password or None,
+        host=request.runtime_inputs.ssh_host or connection.host,
+        port=int(request.runtime_inputs.ssh_port or 22),
+        username=request.runtime_inputs.ssh_username or None,
+        password=request.secrets.ssh_password or None,
     )
     local_dir = Path(tempfile.mkdtemp(prefix="dba-assistant-remote-rdb-"))
     local_path = local_dir / Path(target_path).name
@@ -551,6 +534,152 @@ def _fetch_remote_rdb_via_ssh(
         return SSHAdaptor().fetch_file(ssh_config, target_path, local_path)
     except Exception as exc:  # noqa: BLE001
         return f"Remote RDB fetch failed: {exc}"
+
+
+def discover_remote_rdb_snapshot(
+    adaptor: RedisAdaptor,
+    connection: RedisConnectionConfig,
+    *,
+    remote_rdb_state: dict[str, Any] | None = None,
+    force_refresh: bool = False,
+) -> dict[str, object]:
+    if remote_rdb_state is not None and not force_refresh:
+        cached = remote_rdb_state.get("discovery")
+        if isinstance(cached, dict):
+            return cached
+
+    discovery = discover_remote_rdb(adaptor, connection)
+    if remote_rdb_state is not None:
+        remote_rdb_state["discovery"] = discovery
+    return discovery
+
+
+def resolve_remote_rdb_fetch_plan(
+    request: NormalizedRequest,
+    discovery: dict[str, object] | None,
+    *,
+    remote_rdb_path: str = "",
+) -> dict[str, str]:
+    user_override_path = ""
+    if request.runtime_inputs.remote_rdb_path_source == "user_override":
+        user_override_path = str(request.runtime_inputs.remote_rdb_path or "").strip()
+    if user_override_path:
+        return {
+            "remote_rdb_path": user_override_path,
+            "remote_rdb_path_source": "user_override",
+        }
+
+    discovered_path = str((discovery or {}).get("rdb_path") or "").strip()
+    discovered_source = str((discovery or {}).get("rdb_path_source") or "discovered").strip()
+    if discovered_path:
+        return {
+            "remote_rdb_path": discovered_path,
+            "remote_rdb_path_source": discovered_source or "discovered",
+        }
+
+    fallback_path = ""
+    fallback_source = ""
+    if request.runtime_inputs.remote_rdb_path:
+        fallback_path = str(request.runtime_inputs.remote_rdb_path).strip()
+        fallback_source = str(
+            request.runtime_inputs.remote_rdb_path_source or "fallback_default"
+        ).strip()
+    elif remote_rdb_path:
+        fallback_path = str(remote_rdb_path).strip()
+        fallback_source = "fallback_default"
+
+    return {
+        "remote_rdb_path": fallback_path,
+        "remote_rdb_path_source": fallback_source or "fallback_default",
+    }
+
+
+def resolve_remote_rdb_acquisition_plan(
+    request: NormalizedRequest,
+    discovery: dict[str, object] | None,
+    *,
+    acquisition_mode: str = "",
+) -> dict[str, str]:
+    mode = (acquisition_mode or "").strip() or (
+        "fresh_snapshot" if request.runtime_inputs.require_fresh_rdb_snapshot else "existing"
+    )
+    if mode not in {"existing", "fresh_snapshot"}:
+        mode = "existing"
+    path_plan = resolve_remote_rdb_fetch_plan(request, discovery)
+    return {
+        "acquisition_mode": mode,
+        "bgsave_required": "yes" if mode == "fresh_snapshot" else "no",
+        "redis_dir": str((discovery or {}).get("redis_dir") or "").strip(),
+        "dbfilename": str((discovery or {}).get("dbfilename") or "").strip(),
+        **path_plan,
+    }
+
+
+def ensure_remote_rdb_snapshot(
+    adaptor: RedisAdaptor,
+    connection: RedisConnectionConfig,
+    *,
+    discovery: dict[str, object],
+    remote_rdb_state: dict[str, Any] | None,
+    poll_interval_seconds: float = 0.2,
+    max_attempts: int = 150,
+) -> dict[str, object]:
+    previous_lastsave = _coerce_int(discovery.get("lastsave"))
+    already_in_progress = bool(discovery.get("bgsave_in_progress"))
+    if not already_in_progress:
+        adaptor.bgsave(connection)
+    persistence = _wait_for_bgsave_completion(
+        adaptor,
+        connection,
+        previous_lastsave=previous_lastsave,
+        poll_interval_seconds=poll_interval_seconds,
+        max_attempts=max_attempts,
+    )
+    refreshed = {
+        **discovery,
+        "lastsave": persistence.get("lastsave"),
+        "bgsave_in_progress": persistence.get("bgsave_in_progress"),
+    }
+    if remote_rdb_state is not None:
+        remote_rdb_state["discovery"] = refreshed
+    return refreshed
+
+
+def _wait_for_bgsave_completion(
+    adaptor: RedisAdaptor,
+    connection: RedisConnectionConfig,
+    *,
+    previous_lastsave: int | None,
+    poll_interval_seconds: float,
+    max_attempts: int,
+ ) -> dict[str, object]:
+    saw_in_progress = False
+    for _ in range(max_attempts):
+        persistence = adaptor.info(connection, section="persistence")
+        in_progress = bool(persistence.get("rdb_bgsave_in_progress"))
+        lastsave = _coerce_int(persistence.get("rdb_last_save_time"))
+        saw_in_progress = saw_in_progress or in_progress
+        if not in_progress and (
+            previous_lastsave is None
+            or lastsave is None
+            or lastsave > previous_lastsave
+            or saw_in_progress
+        ):
+            return {
+                "lastsave": lastsave,
+                "bgsave_in_progress": persistence.get("rdb_bgsave_in_progress"),
+            }
+        time.sleep(poll_interval_seconds)
+    raise TimeoutError("Timed out waiting for Redis BGSAVE to complete.")
+
+
+def _coerce_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _render_remote_rdb_analysis(

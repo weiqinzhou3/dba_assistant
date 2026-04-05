@@ -61,6 +61,32 @@ _MYSQL_UNQUOTED_QUERY_PATTERN = re.compile(
 )
 _MYSQL_TOKEN_PATTERN = re.compile(r"(?i)\bmysql\b")
 _REDIS_TOKEN_PATTERN = re.compile(r"(?i)\bredis\b")
+_SSH_TOKEN_PATTERN = re.compile(r"(?i)ssh")
+_SSH_SECTION_END_PATTERN = re.compile(r"[。；;!?]")
+_SSH_COMPACT_PATTERN = re.compile(
+    rf"(?i)\bssh\b\s+(?P<host>{_HOST_PATTERN})(?::(?P<port>\d{{1,5}}))?"
+    rf"\s+(?P<username>[^\s/,:，。；;\"']+)\s*/\s*(?P<password>[^\s,;，。；]+)"
+)
+_SSH_HOST_INLINE_PATTERN = re.compile(
+    rf"(?i)\bssh\b(?:\s+(?:host|server|主机|主机地址))?\s*(?P<host>{_HOST_PATTERN})"
+    rf"(?::(?P<port>\d{{1,5}}))?"
+)
+_SSH_HOST_FIELD_PATTERN = re.compile(
+    rf"(?i)(?:主机地址|ssh\s+host|ssh\s+server|host|server|主机)\s*"
+    rf"(?:是|为|：|:)?\s*(?P<host>{_HOST_PATTERN})(?::(?P<port>\d{{1,5}}))?"
+)
+_SSH_PORT_PATTERN = re.compile(
+    r"(?i)(?:ssh\s*)?(?:port|端口)\s*(?:是|为|：|:)?\s*(?P<port>\d{1,5})"
+)
+_SSH_USERNAME_PATTERN = re.compile(
+    r"(?i)(?:ssh\s*)?(?:用户名|username|user)\s*(?:是|为|：|:)?\s*(?P<username>[^\s,;，。/\"']+)"
+)
+_SSH_PASSWORD_PATTERN = re.compile(
+    rf"(?i)(?:ssh\s*)?(?:密码(?:也是)?|password)\s*(?:是|为|：|:)?\s*(?P<password>\"[^\"]+\"|'[^']+'|[^\s,;，。；]+)"
+)
+_LATEST_RDB_PATTERN = re.compile(
+    r"(?i)(?:最新(?:的)?\s*(?:rdb|快照)|latest\s+(?:rdb|snapshot)|fresh\s+snapshot|生成最新快照)"
+)
 
 
 def _build_profile_alternation() -> str:
@@ -127,10 +153,21 @@ def normalize_raw_request(
     default_output_mode: str,
     input_paths: list[Path] | tuple[Path, ...] | None = None,
 ) -> NormalizedRequest:
-    redis_password_match, redis_password_pattern = _extract_password(raw_prompt, scope="redis")
-    mysql_password_match, mysql_password_pattern = _extract_password(raw_prompt, scope="mysql")
+    ssh_details = _extract_ssh_connection(raw_prompt)
+    excluded_spans = _password_excluded_spans(ssh_details)
+    redis_password_match, redis_password_pattern = _extract_password(
+        raw_prompt,
+        scope="redis",
+        excluded_spans=excluded_spans,
+    )
+    mysql_password_match, mysql_password_pattern = _extract_password(
+        raw_prompt,
+        scope="mysql",
+        excluded_spans=excluded_spans,
+    )
 
     prompt = raw_prompt
+    prompt = _strip_span(prompt, ssh_details.get("password_span") if ssh_details else None)
     prompt = _strip_password_match(prompt, mysql_password_match, mysql_password_pattern)
     prompt = _strip_password_match(prompt, redis_password_match, redis_password_pattern)
     prompt = _WHITESPACE_PATTERN.sub(" ", prompt).strip()
@@ -166,15 +203,20 @@ def normalize_raw_request(
             output_path=output_path,
             input_paths=effective_input_paths,
             input_kind=input_kind,
+            ssh_host=ssh_details.get("host") if ssh_details else None,
+            ssh_port=ssh_details.get("port") if ssh_details else None,
+            ssh_username=ssh_details.get("username") if ssh_details else None,
             mysql_host=mysql_host,
             mysql_port=mysql_port or 3306,
             mysql_user=mysql_user,
             mysql_database=mysql_database,
             mysql_table=mysql_table,
             mysql_query=mysql_query,
+            require_fresh_rdb_snapshot=_extract_latest_rdb_request(prompt),
         ),
         secrets=Secrets(
             redis_password=_clean_secret(redis_password_match.group("password")) if redis_password_match else None,
+            ssh_password=_clean_secret(ssh_details["password"]) if ssh_details and ssh_details.get("password") else None,
             mysql_password=_clean_secret(mysql_password_match.group("password")) if mysql_password_match else None,
         ),
         rdb_overrides=_extract_rdb_overrides(prompt, route_name=route_name),
@@ -185,9 +227,12 @@ def _extract_password(
     raw_prompt: str,
     *,
     scope: str,
+    excluded_spans: tuple[tuple[int, int], ...] = (),
 ) -> tuple[re.Match[str] | None, re.Pattern[str] | None]:
     for pattern in _PASSWORD_PATTERNS:
         for match in pattern.finditer(raw_prompt):
+            if _span_overlaps_excluded(match.span(), excluded_spans):
+                continue
             if _classify_secret_scope(raw_prompt, match.start()) == scope:
                 return match, pattern
     return None, None
@@ -203,6 +248,13 @@ def _strip_password_match(
     return pattern.sub(" ", prompt, count=1)
 
 
+def _strip_span(prompt: str, span: tuple[int, int] | None) -> str:
+    if span is None:
+        return prompt
+    start, end = span
+    return f"{prompt[:start]} {prompt[end:]}"
+
+
 def _extract_rdb_overrides(prompt: str, *, route_name: str | None = None) -> RdbOverrides:
     profile_name = _extract_profile_name(prompt)
     focus_prefixes = _extract_focus_prefixes(prompt)
@@ -213,6 +265,103 @@ def _extract_rdb_overrides(prompt: str, *, route_name: str | None = None) -> Rdb
         focus_prefixes=focus_prefixes,
         top_n=top_n,
     )
+
+
+def _extract_ssh_connection(raw_prompt: str) -> dict[str, object] | None:
+    context_data = _extract_ssh_context(raw_prompt)
+    if context_data is None:
+        return None
+
+    context, offset = context_data
+    host = None
+    port = None
+    username = None
+    password = None
+    password_span = None
+
+    compact_match = _SSH_COMPACT_PATTERN.search(context)
+    if compact_match is not None:
+        host = compact_match.group("host")
+        port_value = compact_match.group("port")
+        port = int(port_value) if port_value else 22
+        username = compact_match.group("username")
+        password = compact_match.group("password")
+        password_span = (
+            offset + compact_match.start("password"),
+            offset + compact_match.end("password"),
+        )
+    else:
+        host_match = _SSH_HOST_INLINE_PATTERN.search(context) or _SSH_HOST_FIELD_PATTERN.search(context)
+        if host_match is not None:
+            host = host_match.group("host")
+            port_value = host_match.group("port")
+            if port_value:
+                port = int(port_value)
+
+        port_match = _SSH_PORT_PATTERN.search(context)
+        if port_match is not None:
+            port = int(port_match.group("port"))
+
+        username_match = _SSH_USERNAME_PATTERN.search(context)
+        if username_match is not None:
+            username = username_match.group("username")
+
+        password_match = _SSH_PASSWORD_PATTERN.search(context)
+        if password_match is not None:
+            password = password_match.group("password")
+            password_span = (
+                offset + password_match.start("password"),
+                offset + password_match.end("password"),
+            )
+
+    if host is None and username is None and password is None:
+        return None
+
+    return {
+        "host": host,
+        "port": port or 22,
+        "username": username,
+        "password": password,
+        "password_span": password_span,
+        "context_span": (offset, offset + len(context)),
+    }
+
+
+def _extract_ssh_context(raw_prompt: str) -> tuple[str, int] | None:
+    match = _SSH_TOKEN_PATTERN.search(raw_prompt)
+    if match is None:
+        return None
+
+    start = match.start()
+    tail = raw_prompt[start:]
+    end_match = _SSH_SECTION_END_PATTERN.search(tail)
+    if end_match is None:
+        return tail, start
+    return tail[: end_match.start()], start
+
+
+def _password_excluded_spans(ssh_details: dict[str, object] | None) -> tuple[tuple[int, int], ...]:
+    if ssh_details is None:
+        return ()
+    context_span = ssh_details.get("context_span")
+    if not isinstance(context_span, tuple):
+        return ()
+    return (context_span,)
+
+
+def _span_overlaps_excluded(
+    span: tuple[int, int],
+    excluded_spans: tuple[tuple[int, int], ...],
+) -> bool:
+    start, end = span
+    for excluded_start, excluded_end in excluded_spans:
+        if start < excluded_end and end > excluded_start:
+            return True
+    return False
+
+
+def _extract_latest_rdb_request(prompt: str) -> bool:
+    return _LATEST_RDB_PATTERN.search(prompt) is not None
 
 
 def _extract_profile_name(prompt: str) -> str | None:

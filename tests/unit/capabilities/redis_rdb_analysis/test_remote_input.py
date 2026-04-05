@@ -19,7 +19,7 @@ class FakeRedisAdaptor:
         raise AssertionError(f"unexpected pattern: {pattern}")
 
 
-def test_discover_remote_rdb_reports_path_and_requires_confirmation() -> None:
+def test_discover_remote_rdb_reports_path_and_source() -> None:
     adaptor = FakeRedisAdaptor()
     connection = RedisConnectionConfig(host="redis.example", port=6379)
 
@@ -28,7 +28,10 @@ def test_discover_remote_rdb_reports_path_and_requires_confirmation() -> None:
     assert discovery == {
         "lastsave": 1710000000,
         "bgsave_in_progress": 0,
+        "redis_dir": "/data/redis",
+        "dbfilename": "dump.rdb",
         "rdb_path": "/data/redis/dump.rdb",
+        "rdb_path_source": "discovered",
         "requires_confirmation": True,
     }
     assert adaptor.calls == [

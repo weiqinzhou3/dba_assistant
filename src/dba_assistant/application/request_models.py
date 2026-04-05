@@ -19,6 +19,8 @@ class RuntimeInputs:
     ssh_port: int | None = None
     ssh_username: str | None = None
     remote_rdb_path: str | None = None
+    remote_rdb_path_source: str | None = None
+    require_fresh_rdb_snapshot: bool = False
     mysql_host: str | None = None
     mysql_port: int = 3306
     mysql_user: str | None = None

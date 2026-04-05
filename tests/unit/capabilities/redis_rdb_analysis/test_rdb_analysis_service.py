@@ -150,9 +150,8 @@ def test_analyze_rdb_database_backed_route_stages_rows_and_reloads_mysql_dataset
 
 
 @pytest.mark.skipif(not HDT_BINARY.exists(), reason="HDT3213/rdb binary is not available in this workspace")
-def test_analyze_rdb_uses_hdt_parser_strategy_for_v11_fixture(monkeypatch) -> None:
+def test_analyze_rdb_uses_hdt_parser_strategy_for_v11_fixture() -> None:
     parser_strategy_module.build_default_rdb_parser_strategy.cache_clear()
-    monkeypatch.setenv("DBA_ASSISTANT_HDT_RDB_BIN", str(HDT_BINARY.resolve()))
 
     request = RdbAnalysisRequest(
         prompt="analyze a Redis 7 function dump",
@@ -173,6 +172,8 @@ def test_analyze_rdb_uses_hdt_parser_strategy_for_v11_fixture(monkeypatch) -> No
     assert isinstance(result, AnalysisReport)
     assert result.metadata["route"] == "direct_rdb_analysis"
     assert result.metadata["path"] == "3c"
+    assert result.metadata["parser_strategy"] == "HdtRdbCliStrategy"
+    assert result.metadata["parser_binary"] == str(HDT_BINARY.resolve())
     assert result.summary == "1 samples, 0 keys, 0 bytes."
 
     parser_strategy_module.build_default_rdb_parser_strategy.cache_clear()

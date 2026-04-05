@@ -172,6 +172,42 @@ def test_handle_request_applies_ssh_overrides(monkeypatch) -> None:
     assert n.secrets.ssh_password == "secret"
 
 
+def test_handle_request_marks_remote_rdb_path_override_as_user_override(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    config = SimpleNamespace(runtime=SimpleNamespace(default_output_mode="summary"), model=None)
+
+    monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
+    monkeypatch.setattr(
+        adapter_module,
+        "normalize_raw_request",
+        lambda raw_prompt, *, default_output_mode, input_paths=(): NormalizedRequest(
+            raw_prompt=raw_prompt,
+            prompt=raw_prompt,
+            runtime_inputs=RuntimeInputs(output_mode="summary", input_paths=tuple(input_paths)),
+            secrets=Secrets(),
+            rdb_overrides=RdbOverrides(),
+        ),
+    )
+
+    def fake_run_orchestrated(normalized, *, config, approval_handler):
+        captured["normalized"] = normalized
+        return "ok"
+
+    monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
+
+    request = InterfaceRequest(
+        prompt="test",
+        remote_rdb_path="/custom/override.rdb",
+        require_fresh_rdb_snapshot=True,
+    )
+    handle_request(request, approval_handler=AutoApproveHandler())
+
+    n = captured["normalized"]
+    assert n.runtime_inputs.remote_rdb_path == "/custom/override.rdb"
+    assert n.runtime_inputs.remote_rdb_path_source == "user_override"
+    assert n.runtime_inputs.require_fresh_rdb_snapshot is True
+
+
 def test_handle_request_keeps_prompt_first_but_allows_explicit_overrides(monkeypatch) -> None:
     captured: dict[str, object] = {}
     config = SimpleNamespace(runtime=SimpleNamespace(default_output_mode="summary"), model=None)

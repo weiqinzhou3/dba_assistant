@@ -12,7 +12,7 @@ from deepagents import create_deep_agent
 from langgraph.types import Command
 
 from dba_assistant.adaptors.mysql_adaptor import MySQLConnectionConfig
-from dba_assistant.adaptors.redis_adaptor import RedisConnectionConfig
+from dba_assistant.adaptors.redis_adaptor import RedisAdaptor, RedisConnectionConfig
 from dba_assistant.application.request_models import NormalizedRequest
 from dba_assistant.deep_agent_integration.config import AppConfig
 from dba_assistant.deep_agent_integration.model_provider import build_model
@@ -25,7 +25,12 @@ from dba_assistant.deep_agent_integration.runtime_support import (
 )
 from dba_assistant.interface.hitl import HumanApprovalHandler
 from dba_assistant.interface.types import ApprovalRequest, ApprovalStatus
-from dba_assistant.orchestrator.tools import build_all_tools
+from dba_assistant.orchestrator.tools import (
+    build_all_tools,
+    resolve_remote_rdb_acquisition_plan,
+    discover_remote_rdb_snapshot,
+    resolve_remote_rdb_fetch_plan,
+)
 
 SYSTEM_PROMPT = """\
 You are DBA Assistant, a specialized database administration assistant focused on Redis diagnostics and analysis.
@@ -34,7 +39,7 @@ Available capabilities (use the corresponding tool):
 1. **analyze_local_rdb** — Analyze local Redis RDB dump files. Use when local .rdb file paths are provided.
 2. **analyze_preparsed_dataset** — Analyze a preparsed dataset from local JSON or MySQL-backed source.
 3. **discover_remote_rdb** — Read-only discovery of remote Redis RDB location and persistence info.
-4. **fetch_remote_rdb_via_ssh** — Fetch a remote RDB via SSH (requires human approval) then continue analysis.
+4. **fetch_remote_rdb_via_ssh** — Fetch a remote RDB via SSH (requires human approval) and, when needed, trigger BGSAVE for a fresh snapshot before analysis.
 5. **redis_ping / redis_info / redis_config_get / redis_slowlog_get / redis_client_list** — \
 Live read-only Redis inspection.
 6. **mysql_read_query** — Execute a bounded read-only SQL query against MySQL.
@@ -45,6 +50,7 @@ Live read-only Redis inspection.
 Rules:
 - All Redis operations are strictly read-only.
 - For remote RDB: call discover_remote_rdb first, then fetch_remote_rdb_via_ssh.
+- When the user asks for the latest/fresh RDB snapshot, use fetch_remote_rdb_via_ssh with acquisition_mode='fresh_snapshot'.
 - MySQL read operations (mysql_read_query, load_preparsed_dataset_from_mysql) are lower-risk.
 - MySQL write operations (stage_rdb_rows_to_mysql) require human approval before execution.
 - Use the profile the user requests (generic, rcs). Default to generic.
@@ -61,9 +67,13 @@ def build_unified_agent(
     """Build the unified Deep Agent with all available tools."""
     connection = _build_connection(request, config)
     mysql_connection = _build_mysql_connection(request)
+    remote_rdb_state: dict[str, Any] = {}
 
     tools = build_all_tools(
-        request, connection=connection, mysql_connection=mysql_connection,
+        request,
+        connection=connection,
+        mysql_connection=mysql_connection,
+        remote_rdb_state=remote_rdb_state,
     )
 
     model = build_model(config.model)
@@ -73,11 +83,14 @@ def build_unified_agent(
     interrupt_on: dict[str, Any] = {
         "fetch_remote_rdb_via_ssh": {
             "allowed_decisions": ["approve", "reject"],
-            "description": _build_remote_rdb_interrupt_description(request),
-        },
-        "fetch_and_analyze_remote_rdb": {
-            "allowed_decisions": ["approve", "reject"],
-            "description": _build_remote_rdb_interrupt_description(request),
+            "description": _build_remote_rdb_interrupt_description(
+                request,
+                path_resolution_resolver=_make_remote_rdb_path_resolution_resolver(
+                    request,
+                    connection=connection,
+                    remote_rdb_state=remote_rdb_state,
+                ),
+            ),
         },
     }
     if mysql_connection is not None:
@@ -178,14 +191,23 @@ def _build_user_message(request: NormalizedRequest) -> str:
             f"Redis connection: {request.runtime_inputs.redis_host}:"
             f"{request.runtime_inputs.redis_port}"
         )
+    if request.secrets.redis_password:
+        context_lines.append("Redis password: present via secure context")
     if request.runtime_inputs.ssh_host:
         ssh_port = request.runtime_inputs.ssh_port or 22
         ssh_user = request.runtime_inputs.ssh_username or "unspecified"
         context_lines.append(
             f"SSH connection: {request.runtime_inputs.ssh_host}:{ssh_port} as {ssh_user}"
         )
+    if request.secrets.ssh_password:
+        context_lines.append("SSH password: present via secure context")
     if request.runtime_inputs.remote_rdb_path:
-        context_lines.append(f"Remote RDB path override: {request.runtime_inputs.remote_rdb_path}")
+        source = request.runtime_inputs.remote_rdb_path_source or "user_override"
+        context_lines.append(
+            f"Remote RDB path override: {request.runtime_inputs.remote_rdb_path} ({source})"
+        )
+    if request.runtime_inputs.require_fresh_rdb_snapshot:
+        context_lines.append("Remote RDB acquisition mode: fresh_snapshot")
 
     if request.runtime_inputs.mysql_host:
         context_lines.append(
@@ -256,7 +278,44 @@ def _handle_interrupts(
     return {"decisions": decisions}
 
 
-def _build_remote_rdb_interrupt_description(request: NormalizedRequest):
+def _make_remote_rdb_path_resolution_resolver(
+    request: NormalizedRequest,
+    *,
+    connection: RedisConnectionConfig | None,
+    remote_rdb_state: dict[str, Any],
+):
+    if connection is None:
+        return lambda tool_args: resolve_remote_rdb_acquisition_plan(
+            request,
+            None,
+            acquisition_mode=str(tool_args.get("acquisition_mode", "")),
+        )
+
+    adaptor = RedisAdaptor()
+
+    def resolve_from_discovery(tool_args: dict[str, Any]) -> dict[str, str]:
+        try:
+            discovery = discover_remote_rdb_snapshot(
+                adaptor,
+                connection,
+                remote_rdb_state=remote_rdb_state,
+            )
+        except Exception:  # noqa: BLE001
+            discovery = {}
+        return resolve_remote_rdb_acquisition_plan(
+            request,
+            discovery,
+            acquisition_mode=str(tool_args.get("acquisition_mode", "")),
+        )
+
+    return resolve_from_discovery
+
+
+def _build_remote_rdb_interrupt_description(
+    request: NormalizedRequest,
+    *,
+    path_resolution_resolver=None,
+):
     target = (
         f"{request.runtime_inputs.redis_host}:{request.runtime_inputs.redis_port}"
         if request.runtime_inputs.redis_host
@@ -274,14 +333,37 @@ def _build_remote_rdb_interrupt_description(request: NormalizedRequest):
         runtime: Any,
     ) -> str:
         args = tool_call.get("args", {})
+        resolution = (
+            path_resolution_resolver(args)
+            if path_resolution_resolver is not None
+            else resolve_remote_rdb_acquisition_plan(
+                request,
+                None,
+                acquisition_mode=str(args.get("acquisition_mode", "")),
+            )
+        )
         profile_name = args.get("profile_name", request.rdb_overrides.profile_name or "generic")
         output_mode = args.get("output_mode", request.runtime_inputs.output_mode or "summary")
         report_format = args.get("report_format", request.runtime_inputs.report_format or output_mode)
         output_path = args.get("output_path") or request.runtime_inputs.output_path or "stdout"
+        redis_dir = resolution.get("redis_dir") or "unresolved"
+        dbfilename = resolution.get("dbfilename") or "unresolved"
+        remote_rdb_path = resolution.get("remote_rdb_path") or "unresolved"
+        remote_rdb_path_source = resolution.get("remote_rdb_path_source") or "fallback_default"
+        acquisition_mode = resolution.get("acquisition_mode") or "existing"
+        bgsave_required = resolution.get("bgsave_required") or "no"
+        ssh_username = request.runtime_inputs.ssh_username or "unspecified"
         return (
             "Remote RDB acquisition requires human approval.\n\n"
             f"Target Redis: {target}\n"
             f"SSH target: {ssh_target}\n"
+            f"SSH username: {ssh_username}\n"
+            f"Redis dir: {redis_dir}\n"
+            f"Redis dbfilename: {dbfilename}\n"
+            f"Remote RDB path: {remote_rdb_path}\n"
+            f"remote_rdb_path_source: {remote_rdb_path_source}\n"
+            f"Acquisition mode: {acquisition_mode}\n"
+            f"BGSAVE required: {bgsave_required}\n"
             "The agent wants to fetch and analyze a remote Redis RDB.\n"
             f"Profile: {profile_name}\n"
             f"Output mode: {output_mode}\n"

@@ -62,7 +62,7 @@ The unified agent is built in `src/dba_assistant/orchestrator/agent.py`.
 It now explicitly includes:
 
 - `memory` from repository `AGENTS.md`
-- `skills` from `src/dba_assistant/skills/`
+- `skills` from repository-root `skills/`
 - the full tool list from `src/dba_assistant/orchestrator/tools.py`
 
 That means the runtime is no longer “CLI routes to Phase 2 or Phase 3.” The real shape is:
@@ -126,7 +126,7 @@ At the unified-agent level, the relevant Phase 3 tools are:
   - local `.rdb` analysis plus report rendering
 - `discover_remote_rdb`
   - read-only remote Redis persistence discovery
-- `fetch_and_analyze_remote_rdb`
+- `fetch_remote_rdb_via_ssh`
   - approval-gated remote RDB acquisition, SSH fetch, then continued analysis
 
 And the Phase 2 live inspection tools remain available alongside them:
@@ -141,7 +141,29 @@ That mixed tool set is intentional. It supports the target architecture:
 
 `一个总 Deep Agent -> skills/tools 自由编排`
 
-## 7. Exact Example
+## 7. RDB Parser Runtime
+
+Phase 3 RDB parsing now prefers `HDT3213/rdb` through `src/dba_assistant/parsers/rdb_parser_strategy.py`.
+
+- default order is `HdtRdbCliStrategy` first, then `LegacyRdbtoolsStrategy` as fallback
+- the selected parser strategy is written into analysis metadata as `parser_strategy`
+- if the HDT CLI is selected, the resolved binary path is written as `parser_binary`
+
+Binary discovery order is:
+
+1. `DBA_ASSISTANT_HDT_RDB_BIN`
+2. repository-local `.tools/bin/rdb`
+3. `rdb` from `PATH`
+
+Bootstrap for local development and CI:
+
+```bash
+./scripts/install_hdt_rdb.sh
+```
+
+That script installs `github.com/hdt3213/rdb` into `.tools/bin/rdb`, which is the repository-local default path.
+
+## 8. Exact Example
 
 Request:
 
@@ -162,7 +184,7 @@ the actual flow is:
 
 That is the current architectural contract for Phase 3.
 
-## 8. Prompt-First Source Extraction
+## 9. Prompt-First Source Extraction
 
 Prompt parsing is now expected to extract the most common source descriptions directly into the shared contract:
 

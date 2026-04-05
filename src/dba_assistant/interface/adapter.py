@@ -80,7 +80,17 @@ def _apply_overrides(
         runtime_inputs = replace(runtime_inputs, ssh_username=request.ssh_username)
 
     if request.remote_rdb_path is not None:
-        runtime_inputs = replace(runtime_inputs, remote_rdb_path=request.remote_rdb_path)
+        runtime_inputs = replace(
+            runtime_inputs,
+            remote_rdb_path=request.remote_rdb_path,
+            remote_rdb_path_source=request.remote_rdb_path_source or "user_override",
+        )
+
+    if request.require_fresh_rdb_snapshot is not None:
+        runtime_inputs = replace(
+            runtime_inputs,
+            require_fresh_rdb_snapshot=request.require_fresh_rdb_snapshot,
+        )
 
     if request.mysql_host is not None:
         runtime_inputs = replace(runtime_inputs, mysql_host=request.mysql_host)

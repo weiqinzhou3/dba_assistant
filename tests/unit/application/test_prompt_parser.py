@@ -590,6 +590,57 @@ def test_normalize_raw_request_extracts_both_redis_and_mysql_targets_from_prompt
     assert request.secrets.mysql_password == "secret123"
 
 
+def test_normalize_raw_request_extracts_ssh_fields_from_chinese_prompt() -> None:
+    request = normalize_raw_request(
+        "分析 Redis 192.168.23.54:6379。SSH信息如下：主机地址 192.168.23.54，用户名是 root，密码也是 root",
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.redis_host == "192.168.23.54"
+    assert request.runtime_inputs.ssh_host == "192.168.23.54"
+    assert request.runtime_inputs.ssh_port == 22
+    assert request.runtime_inputs.ssh_username == "root"
+    assert request.secrets.ssh_password == "root"
+
+
+def test_normalize_raw_request_extracts_ssh_fields_from_compact_prompt() -> None:
+    request = normalize_raw_request(
+        "通过 SSH 192.168.23.54 root/root 拉取远端 RDB，并分析 Redis 192.168.23.54:6379",
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.ssh_host == "192.168.23.54"
+    assert request.runtime_inputs.ssh_port == 22
+    assert request.runtime_inputs.ssh_username == "root"
+    assert request.secrets.ssh_password == "root"
+
+
+def test_normalize_raw_request_extracts_ssh_fields_from_english_prompt() -> None:
+    request = normalize_raw_request(
+        "Analyze Redis 192.168.23.54:6379 and ssh host 192.168.23.54 user root password root",
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.ssh_host == "192.168.23.54"
+    assert request.runtime_inputs.ssh_port == 22
+    assert request.runtime_inputs.ssh_username == "root"
+    assert request.secrets.ssh_password == "root"
+
+
+def test_normalize_raw_request_keeps_redis_and_ssh_passwords_separate() -> None:
+    request = normalize_raw_request(
+        "Redis 192.168.23.54:6379 密码是 123456。SSH信息如下：主机地址 192.168.23.54，用户名是 root，密码也是 root。如果有必要请拉取一份最新的 rdb 文件。",
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.redis_host == "192.168.23.54"
+    assert request.secrets.redis_password == "123456"
+    assert request.runtime_inputs.ssh_host == "192.168.23.54"
+    assert request.runtime_inputs.ssh_username == "root"
+    assert request.secrets.ssh_password == "root"
+    assert request.runtime_inputs.require_fresh_rdb_snapshot is True
+
+
 def test_normalize_raw_request_does_not_route_on_bare_mysql_token() -> None:
     for prompt in (
         "按 generic profile 分析这个 rdb，连接 mysql 数据库并输出 summary",

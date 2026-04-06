@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from dba_assistant.application.request_models import NormalizedRequest, RdbOverrides, RuntimeInputs, Secrets
 from dba_assistant.interface import adapter as adapter_module
 from dba_assistant.interface.adapter import handle_request
-from dba_assistant.interface.hitl import AutoApproveHandler
+from dba_assistant.interface.hitl import AuditedApprovalHandler, AutoApproveHandler
 from dba_assistant.interface.types import InterfaceRequest
 
 
@@ -43,7 +43,8 @@ def test_handle_request_normalizes_and_delegates_to_orchestrator(monkeypatch) ->
 
     assert result == "orchestrated result"
     assert captured["prompt"] == "analyze rdb"
-    assert captured["handler"] is handler
+    assert isinstance(captured["handler"], AuditedApprovalHandler)
+    assert captured["handler"]._delegate is handler
 
 
 def test_handle_request_applies_overrides(monkeypatch) -> None:

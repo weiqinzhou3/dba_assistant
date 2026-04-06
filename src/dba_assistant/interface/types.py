@@ -7,6 +7,12 @@ from pathlib import Path
 from typing import Any
 
 
+class InterfaceSurface(str, Enum):
+    CLI = "cli"
+    API = "api"
+    WEBUI = "webui"
+
+
 class ApprovalStatus(str, Enum):
     APPROVED = "approved"
     DENIED = "denied"
@@ -17,6 +23,7 @@ class InterfaceRequest:
     """Raw request from any interface (CLI, Web, API)."""
 
     prompt: str
+    surface: InterfaceSurface = InterfaceSurface.CLI
     input_paths: list[Path] = field(default_factory=list)
     output_path: Path | None = None
     config_path: str | None = None
@@ -56,3 +63,4 @@ class ApprovalResponse:
 
     status: ApprovalStatus
     action: str
+    reason: str | None = None

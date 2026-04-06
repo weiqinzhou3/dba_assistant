@@ -1,4 +1,6 @@
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from dba_assistant import cli
 from dba_assistant.interface import adapter as adapter_module
@@ -176,3 +178,86 @@ def test_cli_single_run_can_prompt_for_approval_when_orchestrator_requests_it(
     assert exit_code == 0
     assert "[Approval Required]" in output
     assert "continued after approval" in output
+
+
+def test_cli_ask_produces_execution_audit_record(monkeypatch, tmp_path, capsys) -> None:
+    from dba_assistant.application.request_models import NormalizedRequest, RdbOverrides, RuntimeInputs, Secrets
+    from dba_assistant.core.observability import get_current_execution_session, observe_tool_call, reset_observability_state
+    from dba_assistant.deep_agent_integration.config import ObservabilityConfig
+
+    observability = ObservabilityConfig(
+        enabled=True,
+        level="INFO",
+        console_enabled=False,
+        log_dir=tmp_path / "logs",
+        app_log_file="app.log.jsonl",
+        audit_log_file="audit.jsonl",
+    )
+    config = SimpleNamespace(
+        runtime=SimpleNamespace(default_output_mode="summary"),
+        model=None,
+        observability=observability,
+    )
+
+    monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
+    monkeypatch.setattr(
+        adapter_module,
+        "normalize_raw_request",
+        lambda raw_prompt, *, default_output_mode, input_paths=(): NormalizedRequest(
+            raw_prompt=raw_prompt,
+            prompt=raw_prompt,
+            runtime_inputs=RuntimeInputs(
+                output_mode="report",
+                report_format="docx",
+                output_path=tmp_path / "outputs" / "audit-target.docx",
+                input_paths=(Path("/tmp/sample.rdb"),),
+                input_kind="local_rdb",
+            ),
+            secrets=Secrets(redis_password="super-secret"),
+            rdb_overrides=RdbOverrides(profile_name="generic"),
+        ),
+    )
+
+    def fake_run_orchestrated(normalized, *, config, approval_handler):
+        result = observe_tool_call(
+            "analyze_local_rdb",
+            {"redis_password": "super-secret", "input_paths": ["/tmp/sample.rdb"]},
+            lambda: "report generated",
+        )
+        session = get_current_execution_session()
+        assert session is not None
+        session.record_artifact(
+            output_mode="report",
+            output_path=tmp_path / "outputs" / "audit-target.docx",
+            artifact_id="artifact-cli-1",
+            report_metadata={"route": "direct_rdb_analysis", "rows_processed": "10"},
+        )
+        return result
+
+    monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
+
+    reset_observability_state()
+    exit_code = cli.main(["ask", "analyze redis password=super-secret"])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert output == "report generated\n"
+
+    audit_path = observability.audit_log_path
+    records = [
+        json.loads(line)
+        for line in audit_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    completion = [record for record in records if record["event_type"] == "execution_completed"]
+
+    assert len(completion) == 1
+    record = completion[0]
+    assert record["interface_surface"] == "cli"
+    assert record["final_status"] == "success"
+    assert record["selected_capability"] == "analyze_local_rdb"
+    assert record["tool_invocation_sequence"][0]["tool_name"] == "analyze_local_rdb"
+    assert record["output_mode"] == "report"
+    assert record["output_path"] == str(tmp_path / "outputs" / "audit-target.docx")
+    assert record["report_metadata"]["route"] == "direct_rdb_analysis"
+    assert "super-secret" not in json.dumps(records, ensure_ascii=False)

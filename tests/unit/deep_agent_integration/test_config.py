@@ -5,6 +5,7 @@ import pytest
 
 from dba_assistant.deep_agent_integration.config import (
     DEFAULT_CONFIG_PATH,
+    REPO_ROOT,
     ProviderKind,
     SUPPORTED_PRESET_NAMES,
     load_app_config,
@@ -32,6 +33,13 @@ def test_load_app_config_reads_repository_default_shape(tmp_path: Path) -> None:
         runtime:
           default_output_mode: summary
           redis_socket_timeout: 6.5
+        observability:
+          enabled: true
+          level: INFO
+          console_enabled: false
+          log_dir: outputs/custom-logs
+          app_log_file: custom-app.jsonl
+          audit_log_file: custom-audit.jsonl
         """,
     )
 
@@ -47,6 +55,12 @@ def test_load_app_config_reads_repository_default_shape(tmp_path: Path) -> None:
     assert config.model.api_key == "ollama"
     assert config.runtime.default_output_mode == "summary"
     assert config.runtime.redis_socket_timeout == 6.5
+    assert config.observability.enabled is True
+    assert config.observability.console_enabled is False
+    assert config.observability.level == "INFO"
+    assert config.observability.log_dir == REPO_ROOT / "outputs" / "custom-logs"
+    assert config.observability.app_log_path == REPO_ROOT / "outputs" / "custom-logs" / "custom-app.jsonl"
+    assert config.observability.audit_log_path == REPO_ROOT / "outputs" / "custom-logs" / "custom-audit.jsonl"
 
 
 def test_load_app_config_uses_repo_default_path_outside_repo_root(
@@ -90,6 +104,9 @@ def test_load_app_config_supports_dashscope_preset_values(tmp_path: Path) -> Non
     assert config.model.model_name == "qwen3.5-flash"
     assert config.model.base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
     assert config.model.api_key == "replace-with-real-api-key"
+    assert config.observability.log_dir == REPO_ROOT / "outputs" / "logs"
+    assert config.observability.app_log_path == REPO_ROOT / "outputs" / "logs" / "app.log.jsonl"
+    assert config.observability.audit_log_path == REPO_ROOT / "outputs" / "logs" / "audit.jsonl"
 
 
 def test_load_app_config_requires_existing_file(tmp_path: Path) -> None:
@@ -149,3 +166,63 @@ def test_load_app_config_rejects_bad_root_shape(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="document root"):
         load_app_config(config_path)
+
+
+def test_load_app_config_supports_absolute_observability_paths(tmp_path: Path) -> None:
+    absolute_log_dir = tmp_path / "absolute-logs"
+    config_path = tmp_path / "config.yaml"
+    _write_config(
+        config_path,
+        f"""
+        model:
+          preset_name: ollama_local
+          provider_kind: openai_compatible
+          model_name: qwen3:8b
+          base_url: http://127.0.0.1:11434/v1
+          api_key: ollama
+        runtime:
+          default_output_mode: summary
+          redis_socket_timeout: 5.0
+        observability:
+          enabled: true
+          level: DEBUG
+          console_enabled: true
+          log_dir: {absolute_log_dir}
+          app_log_file: app.jsonl
+          audit_log_file: audit.jsonl
+        """,
+    )
+
+    config = load_app_config(config_path)
+
+    assert config.observability.level == "DEBUG"
+    assert config.observability.log_dir == absolute_log_dir
+    assert config.observability.app_log_path == absolute_log_dir / "app.jsonl"
+    assert config.observability.audit_log_path == absolute_log_dir / "audit.jsonl"
+
+
+def test_load_app_config_uses_reasonable_observability_defaults_when_omitted(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    _write_config(
+        config_path,
+        """
+        model:
+          preset_name: ollama_local
+          provider_kind: openai_compatible
+          model_name: qwen3:8b
+          base_url: http://127.0.0.1:11434/v1
+          api_key: ollama
+        runtime:
+          default_output_mode: summary
+          redis_socket_timeout: 5.0
+        """,
+    )
+
+    config = load_app_config(config_path)
+
+    assert config.observability.enabled is True
+    assert config.observability.level == "INFO"
+    assert config.observability.console_enabled is True
+    assert config.observability.log_dir == REPO_ROOT / "outputs" / "logs"
+    assert config.observability.app_log_path == REPO_ROOT / "outputs" / "logs" / "app.log.jsonl"
+    assert config.observability.audit_log_path == REPO_ROOT / "outputs" / "logs" / "audit.jsonl"

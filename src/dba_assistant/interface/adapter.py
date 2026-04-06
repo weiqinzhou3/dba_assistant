@@ -14,9 +14,11 @@ from dba_assistant.application.request_models import (
     DEFAULT_MYSQL_USER,
     NormalizedRequest,
 )
+from dba_assistant.core.observability import bootstrap_observability, start_execution_session
+from dba_assistant.core.observability.sanitizer import sanitize_mapping, summarize_prompt
 from dba_assistant.core.reporter.output_path_policy import ensure_report_output_path
-from dba_assistant.deep_agent_integration.config import load_app_config
-from dba_assistant.interface.hitl import HumanApprovalHandler
+from dba_assistant.deep_agent_integration.config import ObservabilityConfig, load_app_config
+from dba_assistant.interface.hitl import AuditedApprovalHandler, HumanApprovalHandler
 from dba_assistant.interface.types import InterfaceRequest
 from dba_assistant.orchestrator.agent import run_orchestrated
 
@@ -35,6 +37,7 @@ def handle_request(
     5. Return formatted output
     """
     config = load_app_config(request.config_path)
+    bootstrap_observability(getattr(config, "observability", ObservabilityConfig()))
 
     normalized = normalize_raw_request(
         request.prompt,
@@ -50,8 +53,15 @@ def handle_request(
             normalized.runtime_inputs.report_format,
         ),
     )
+    raw_request_summary = _summarize_interface_request(request)
+    audited_handler = AuditedApprovalHandler(approval_handler)
 
-    return run_orchestrated(normalized, config=config, approval_handler=approval_handler)
+    with start_execution_session(
+        interface_surface=request.surface,
+        normalized_request=normalized,
+        raw_request_summary=raw_request_summary,
+    ):
+        return run_orchestrated(normalized, config=config, approval_handler=audited_handler)
 
 
 def _apply_overrides(
@@ -150,3 +160,34 @@ def _apply_conventional_defaults(normalized: NormalizedRequest) -> NormalizedReq
         )
 
     return replace(normalized, runtime_inputs=runtime_inputs)
+
+
+def _summarize_interface_request(request: InterfaceRequest) -> dict[str, object]:
+    return sanitize_mapping(
+        {
+            "surface": request.surface.value,
+            "prompt_summary": summarize_prompt(request.prompt),
+            "input_paths": [str(path) for path in request.input_paths],
+            "output_path": None if request.output_path is None else str(request.output_path),
+            "config_path": request.config_path,
+            "profile": request.profile,
+            "report_format": request.report_format,
+            "input_kind": request.input_kind,
+            "path_mode": request.path_mode,
+            "ssh_host": request.ssh_host,
+            "ssh_port": request.ssh_port,
+            "ssh_username": request.ssh_username,
+            "remote_rdb_path": request.remote_rdb_path,
+            "mysql_host": request.mysql_host,
+            "mysql_port": request.mysql_port,
+            "mysql_user": request.mysql_user,
+            "mysql_database": request.mysql_database,
+            "mysql_table": request.mysql_table,
+            "mysql_query": request.mysql_query,
+            "secret_presence": {
+                "redis_password": bool(request.redis_password),
+                "ssh_password": bool(request.ssh_password),
+                "mysql_password": bool(request.mysql_password),
+            },
+        }
+    )

@@ -19,6 +19,7 @@ from dba_assistant.application.request_models import (
     DEFAULT_MYSQL_USER,
     NormalizedRequest,
 )
+from dba_assistant.core.observability import get_current_execution_session
 from dba_assistant.deep_agent_integration.config import AppConfig
 from dba_assistant.deep_agent_integration.model_provider import build_model
 from dba_assistant.deep_agent_integration.runtime_support import (
@@ -160,12 +161,21 @@ def run_orchestrated(
         while interrupts := _extract_interrupts(result):
             resume_payload = _handle_interrupts(interrupts, approval_handler)
             if resume_payload is None:
+                session = get_current_execution_session()
+                if session is not None:
+                    session.mark_status("denied", detail="user rejected approval request")
                 return "Operation denied by user."
             result = agent.invoke(Command(resume=resume_payload), config=run_config)
 
         if not _should_force_runtime_approval(agent, request, result):
             break
         if approval_retry_count >= 1:
+            session = get_current_execution_session()
+            if session is not None:
+                session.mark_status(
+                    "failure",
+                    detail="model asked for approval in plain text instead of using interrupt_on",
+                )
             return (
                 "Internal policy violation: the model asked for approval in plain text "
                 "instead of invoking the approval-gated tool fetch_remote_rdb_via_ssh."

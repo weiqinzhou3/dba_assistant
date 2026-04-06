@@ -7,6 +7,8 @@ are captured at construction time — the LLM never sees raw secrets.
 from __future__ import annotations
 
 from dataclasses import replace
+from functools import wraps
+import inspect
 import json
 import tempfile
 import time
@@ -28,6 +30,7 @@ from dba_assistant.application.request_models import (
     LARGE_RDB_WARNING_BYTES,
     build_default_mysql_table_name,
 )
+from dba_assistant.core.observability import observe_tool_call
 from dba_assistant.core.reporter.output_path_policy import ensure_report_output_path
 from dba_assistant.core.reporter.types import OutputMode, ReportFormat, ReportOutputConfig
 from dba_assistant.interface.hitl import HumanApprovalHandler
@@ -121,7 +124,7 @@ def build_all_tools(
             )
         )
 
-    return tools
+    return [_instrument_tool(tool) for tool in tools]
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +248,27 @@ def _make_analyze_local_rdb_tool(
             "focus_prefixes (optional, comma-separated key prefixes like 'cache:*,session:*')."
         ),
     )
+
+
+def _instrument_tool(tool):
+    if getattr(tool, "_dba_observed_tool", False):
+        return tool
+
+    signature = inspect.signature(tool)
+
+    @wraps(tool)
+    def wrapped_tool(*args, **kwargs):
+        bound = signature.bind_partial(*args, **kwargs)
+        bound.apply_defaults()
+        return observe_tool_call(
+            getattr(tool, "__name__", "tool_execution"),
+            dict(bound.arguments),
+            lambda: tool(*args, **kwargs),
+        )
+
+    wrapped_tool.__signature__ = signature
+    wrapped_tool._dba_observed_tool = True
+    return wrapped_tool
 
 
 def _make_analyze_preparsed_dataset_tool(

@@ -262,11 +262,14 @@ class StreamingAggregateCollector:
                 file_rows += 1
                 if file_rows >= next_progress_mark:
                     logger.info(
-                        "redis_rdb_stream_progress path=%s parser_strategy=%s rows_processed=%d peak_memory_bytes_estimate=%s",
-                        path,
-                        streamed.strategy_name,
-                        file_rows,
-                        _peak_memory_bytes_estimate(),
+                        "streaming aggregate progress",
+                        extra={
+                            "event_name": "redis_rdb_stream_progress",
+                            "path": str(path),
+                            "parser_strategy": streamed.strategy_name,
+                            "rows_processed": file_rows,
+                            "peak_memory_bytes_estimate": _peak_memory_bytes_estimate(),
+                        },
                     )
                     next_progress_mark += self._progress_log_interval
 
@@ -276,13 +279,17 @@ class StreamingAggregateCollector:
                 f"path={path} rows={file_rows} elapsed={file_elapsed:.3f}s rows_per_sec={file_rows_per_second:.2f}"
             )
             logger.info(
-                "redis_rdb_stream_phase phase=parse_aggregate path=%s parser_strategy=%s rows_processed=%d rows_per_sec=%.2f elapsed_seconds=%.3f peak_memory_bytes_estimate=%s",
-                path,
-                streamed.strategy_name,
-                file_rows,
-                file_rows_per_second,
-                file_elapsed,
-                _peak_memory_bytes_estimate(),
+                "streaming aggregate phase complete",
+                extra={
+                    "event_name": "redis_rdb_stream_phase",
+                    "phase": "parse_aggregate",
+                    "path": str(path),
+                    "parser_strategy": streamed.strategy_name,
+                    "rows_processed": file_rows,
+                    "rows_per_sec": round(file_rows_per_second, 2),
+                    "elapsed_seconds": round(file_elapsed, 3),
+                    "peak_memory_bytes_estimate": _peak_memory_bytes_estimate(),
+                },
             )
 
         total_elapsed = perf_counter() - total_start
@@ -290,11 +297,15 @@ class StreamingAggregateCollector:
         total_rows_per_second = total_rows / total_elapsed if total_elapsed > 0 else 0.0
         peak_memory = _peak_memory_bytes_estimate()
         logger.info(
-            "redis_rdb_stream_phase phase=parse_aggregate_total rows_processed=%d rows_per_sec=%.2f elapsed_seconds=%.3f peak_memory_bytes_estimate=%s",
-            total_rows,
-            total_rows_per_second,
-            total_elapsed,
-            peak_memory,
+            "streaming aggregate total complete",
+            extra={
+                "event_name": "redis_rdb_stream_phase",
+                "phase": "parse_aggregate_total",
+                "rows_processed": total_rows,
+                "rows_per_sec": round(total_rows_per_second, 2),
+                "elapsed_seconds": round(total_elapsed, 3),
+                "peak_memory_bytes_estimate": peak_memory,
+            },
         )
         metadata = {
             "analysis_mode": "streaming_summary",

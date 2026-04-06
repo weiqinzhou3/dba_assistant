@@ -17,6 +17,9 @@ from dba_assistant.capabilities.redis_rdb_analysis.collectors.path_b_mysql_prepa
 from dba_assistant.capabilities.redis_rdb_analysis.collectors.path_c_direct_parser_collector import (
     PathCDirectParserCollector,
 )
+from dba_assistant.capabilities.redis_rdb_analysis.collectors.streaming_aggregate_collector import (
+    StreamingAggregateCollector,
+)
 from dba_assistant.capabilities.redis_rdb_analysis.path_router import choose_path
 from dba_assistant.parsers.rdb_parser_strategy import (
     StreamedRowsResult,
@@ -36,6 +39,8 @@ from dba_assistant.capabilities.redis_rdb_analysis.types import (
     RdbAnalysisRequest,
     phase_label_for_route_name,
 )
+
+LARGE_RDB_AUTO_SUMMARY_THRESHOLD_BYTES = 512 * 1024 * 1024
 
 
 def analyze_rdb(
@@ -78,8 +83,18 @@ def analyze_rdb(
         )
 
     selected_route = choose_path(request)
+    local_paths = [
+        Path(sample.source)
+        for sample in request.inputs
+        if sample.kind is InputSourceKind.LOCAL_RDB
+    ]
+    large_rdb_protection = _should_enable_large_rdb_summary(
+        request,
+        selected_route=selected_route,
+        local_paths=local_paths,
+    )
     effective_profile = profile or resolve_profile(
-        request.profile_name,
+        "large_rdb_summary" if large_rdb_protection else request.profile_name,
         RdbOverrides(**request.profile_overrides),
     )
     if selected_route == DATABASE_BACKED_ANALYSIS:
@@ -137,6 +152,40 @@ def analyze_rdb(
             "mysql_progress": " | ".join(staging.progress),
             **parser_metadata,
         }
+        legacy_path_label = phase_label_for_route_name(selected_route)
+        if legacy_path_label is not None:
+            metadata["path"] = legacy_path_label
+        return AnalysisReport(
+            title=report.title,
+            summary=report.summary,
+            sections=report.sections,
+            metadata=metadata,
+            language=report.language,
+        )
+
+    if selected_route == DIRECT_RDB_ANALYSIS and path_c_collector is None:
+        collector = StreamingAggregateCollector(
+            stream_parser=_stream_direct_rdb_rows,
+            profile=effective_profile,
+        )
+        aggregated = collector.collect(local_paths)
+        report = assemble_report(
+            aggregated.analysis_result,
+            profile=effective_profile,
+            title=report_title(request.report_language),
+            language=request.report_language,
+        )
+        metadata = {
+            **report.metadata,
+            "input_count": str(len(local_paths)),
+            "route": selected_route,
+            **aggregated.metadata,
+        }
+        if large_rdb_protection:
+            metadata["large_rdb_protection"] = "enabled"
+            metadata["large_rdb_threshold_bytes"] = str(LARGE_RDB_AUTO_SUMMARY_THRESHOLD_BYTES)
+            metadata["large_rdb_input_bytes"] = str(_total_input_bytes(local_paths))
+        metadata.update(parser_metadata)
         legacy_path_label = phase_label_for_route_name(selected_route)
         if legacy_path_label is not None:
             metadata["path"] = legacy_path_label
@@ -237,6 +286,56 @@ def _stream_rdb_rows(path: Path):
             strategy_name=metadata.get("parser_strategy", "materialized_fallback"),
             strategy_detail=metadata.get("parser_binary"),
         )
+
+
+_DEFAULT_PARSE_RDB_ROWS = _parse_rdb_rows
+
+
+def _stream_direct_rdb_rows(path: Path) -> StreamedRowsResult:
+    if _parse_rdb_rows is not _DEFAULT_PARSE_RDB_ROWS:
+        parsed = _parse_rdb_rows(path)
+        metadata: dict[str, str] = {}
+        rows = parsed
+        if isinstance(parsed, tuple):
+            rows, metadata = parsed
+        return StreamedRowsResult(
+            rows=iter(rows),
+            strategy_name=metadata.get("parser_strategy", "materialized_override"),
+            strategy_detail=metadata.get("parser_binary"),
+        )
+    return _stream_rdb_rows(path)
+
+
+def _should_enable_large_rdb_summary(
+    request: RdbAnalysisRequest,
+    *,
+    selected_route: str,
+    local_paths: list[Path],
+) -> bool:
+    if selected_route != DIRECT_RDB_ANALYSIS:
+        return False
+    if request.path_mode != "auto":
+        return False
+    if request.profile_name.strip().lower() != "generic":
+        return False
+    overrides = RdbOverrides(**request.profile_overrides)
+    if overrides.focus_only or overrides.focus_prefixes:
+        return False
+    return any(
+        _safe_stat_size(path) > LARGE_RDB_AUTO_SUMMARY_THRESHOLD_BYTES
+        for path in local_paths
+    )
+
+
+def _safe_stat_size(path: Path) -> int:
+    try:
+        return int(path.stat().st_size)
+    except OSError:
+        return 0
+
+
+def _total_input_bytes(paths: list[Path]) -> int:
+    return sum(_safe_stat_size(path) for path in paths)
 
 
 def _require_remote_rdb_path(discovery: object) -> str:

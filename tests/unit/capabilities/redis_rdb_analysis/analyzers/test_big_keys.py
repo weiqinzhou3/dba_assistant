@@ -1,3 +1,5 @@
+import builtins
+
 from dba_assistant.capabilities.redis_rdb_analysis.analyzers.big_keys import analyze_big_keys
 from dba_assistant.capabilities.redis_rdb_analysis.types import (
     InputSourceKind,
@@ -71,3 +73,35 @@ def test_analyze_big_keys_keeps_empty_type_sections_consistent() -> None:
     result = analyze_big_keys(dataset)
 
     assert result["top_stream_keys"]["rows"] == []
+
+
+def test_analyze_big_keys_does_not_depend_on_global_sorted(monkeypatch) -> None:
+    dataset = NormalizedRdbDataset(
+        samples=[SampleInput(source="/tmp/a.rdb", kind=InputSourceKind.LOCAL_RDB)],
+        records=[
+            KeyRecord("sample-1", "cache:9", "string", 9, False, None, ("cache",)),
+            KeyRecord("sample-1", "cache:1", "string", 1, False, None, ("cache",)),
+            KeyRecord("sample-1", "loan:5", "hash", 5, False, None, ("loan",)),
+        ],
+    )
+
+    def fail_sorted(*_args, **_kwargs):
+        raise AssertionError("analyze_big_keys should not require builtins.sorted over the full dataset")
+
+    monkeypatch.setattr(builtins, "sorted", fail_sorted)
+
+    result = analyze_big_keys(
+        dataset,
+        top_n={
+            "top_big_keys": 2,
+            "string_big_keys": 2,
+            "hash_big_keys": 1,
+            "list_big_keys": 1,
+            "set_big_keys": 1,
+            "zset_big_keys": 1,
+            "stream_big_keys": 1,
+            "other_big_keys": 1,
+        },
+    )
+
+    assert result["top_big_keys"]["rows"] == [["cache:9", "string", "9"], ["loan:5", "hash", "5"]]

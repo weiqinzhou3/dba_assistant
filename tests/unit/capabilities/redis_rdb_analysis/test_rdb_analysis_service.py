@@ -852,6 +852,113 @@ def test_analyze_rdb_database_backed_route_uses_one_shared_staging_table_for_mul
     assert result.metadata["route"] == "database_backed_analysis"
 
 
+def test_analyze_rdb_database_backed_route_prefers_stream_rows_result_over_parse_rows_result(
+    monkeypatch,
+) -> None:
+    rows = [
+        {"key_name": "cache:1", "key_type": "string", "size_bytes": 300, "has_expiration": False, "ttl_seconds": None},
+        {"key_name": "cache:2", "key_type": "hash", "size_bytes": 200, "has_expiration": True, "ttl_seconds": 60},
+    ]
+    request = RdbAnalysisRequest(
+        prompt="analyze this rdb via mysql",
+        inputs=[SampleInput(source=Path("/tmp/dump.rdb"), kind=InputSourceKind.LOCAL_RDB)],
+        path_mode="database_backed_analysis",
+    )
+
+    class FakeStrategy:
+        def parse_rows_result(self, _path: Path):
+            raise AssertionError("database-backed analysis should not call parse_rows_result")
+
+        def stream_rows_result(self, _path: Path):
+            return StreamedRowsResult(rows=iter(rows), strategy_name="fake-stream-strategy")
+
+    monkeypatch.setattr(
+        "dba_assistant.skills.redis_rdb_analysis.service.build_default_rdb_parser_strategy",
+        lambda: FakeStrategy(),
+    )
+
+    staged_rows: list[dict[str, object]] = []
+
+    def fake_stage_rdb_rows_to_mysql(
+        table_name: str,
+        parsed_rows: list[dict[str, object]],
+        *,
+        source_file: str = "manual",
+        run_id: str = "manual",
+    ) -> dict[str, object]:
+        del table_name, source_file, run_id
+        staged_rows.extend(parsed_rows)
+        return {"staged": len(parsed_rows), "run_id": "fake-run"}
+
+    result = analyze_rdb(
+        request,
+        profile=None,
+        remote_discovery=lambda *_args, **_kwargs: {"rdb_path": "/data/redis/dump.rdb"},
+        stage_rdb_rows_to_mysql=fake_stage_rdb_rows_to_mysql,
+        analyze_staged_rdb_rows=_build_mysql_side_analysis(rows),
+    )
+
+    assert isinstance(result, AnalysisReport)
+    assert staged_rows == rows
+    assert result.metadata["parser_strategy"] == "fake-stream-strategy"
+
+
+def test_analyze_rdb_large_local_file_auto_uses_streaming_large_summary_profile(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    large_rdb = tmp_path / "large.rdb"
+    with large_rdb.open("wb") as handle:
+        handle.truncate(513 * 1024 * 1024)
+
+    rows = [
+        {"key_name": "cache:1", "key_type": "string", "size_bytes": 300, "has_expiration": False, "ttl_seconds": None},
+        {"key_name": "loan:1", "key_type": "hash", "size_bytes": 200, "has_expiration": True, "ttl_seconds": 60},
+        {"key_name": "queue:1", "key_type": "list", "size_bytes": 100, "has_expiration": False, "ttl_seconds": None},
+    ]
+    request = RdbAnalysisRequest(
+        prompt="analyze this rdb",
+        inputs=[SampleInput(source=large_rdb, kind=InputSourceKind.LOCAL_RDB)],
+        path_mode="auto",
+    )
+
+    monkeypatch.setattr(
+        "dba_assistant.skills.redis_rdb_analysis.service._stream_rdb_rows",
+        lambda _path: _streamed_rows(rows),
+    )
+
+    class FailIfUsedCollector:
+        def __init__(self, *args, **kwargs) -> None:
+            raise AssertionError("large-file direct analysis should bypass PathCDirectParserCollector")
+
+    monkeypatch.setattr(
+        "dba_assistant.skills.redis_rdb_analysis.service.PathCDirectParserCollector",
+        FailIfUsedCollector,
+    )
+
+    result = analyze_rdb(
+        request,
+        profile=None,
+        remote_discovery=lambda *_args, **_kwargs: {"rdb_path": "/data/redis/dump.rdb"},
+    )
+
+    assert isinstance(result, AnalysisReport)
+    assert result.metadata["route"] == "direct_rdb_analysis"
+    assert result.metadata["profile"] == "large_rdb_summary"
+    assert result.metadata["large_rdb_protection"] == "enabled"
+    assert all(
+        section.id not in {"sample_overview", "top_string_keys", "top_hash_keys", "focused_prefix_analysis"}
+        for section in result.sections
+    )
+    assert {section.id for section in result.sections} >= {
+        "overall_summary",
+        "key_type_summary",
+        "expiration_summary",
+        "prefix_top_summary",
+        "top_big_keys",
+    }
+
+
 def test_analyze_rdb_remote_discovery_requires_rdb_path() -> None:
     request = RdbAnalysisRequest(
         prompt="analyze remote redis",

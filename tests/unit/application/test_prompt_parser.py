@@ -541,12 +541,38 @@ def test_normalize_requested_prefixes_applies_generic_suffix_completion_and_keep
     )
 
 
+def test_normalize_requested_prefixes_skips_top_n_and_output_tokens() -> None:
+    assert normalize_requested_prefixes(
+        ("top10", "docx", "word", "summary", "tag", "session:data", "uv")
+    ) == (
+        "tag:*",
+        "session:data:*",
+        "uv:*",
+    )
+
+
 def test_normalize_raw_request_extracts_multiple_prefixes_from_explicit_prefix_phrases() -> None:
     cases = {
         "前缀为tag和前缀为store": ("tag:*", "store:*"),
         "前缀是signin和store": ("signin:*", "store:*"),
         "重点分析两个前缀，一个是signin，一个是store": ("signin:*", "store:*"),
+        "只看order和mq的key": ("order:*", "mq:*"),
         "关注user:profile和session:data": ("user:profile:*", "session:data:*"),
+        "重点分析前缀为uv前缀的key": ("uv:*",),
+    }
+
+    for prompt, expected in cases.items():
+        request = normalize_raw_request(prompt, default_output_mode="summary")
+        assert request.rdb_overrides.focus_prefixes == expected
+
+
+def test_normalize_raw_request_extracts_bare_prefix_lists_when_prompt_is_prefix_driven() -> None:
+    cases = {
+        "tag 和 store": ("tag:*", "store:*"),
+        "signin 和 store": ("signin:*", "store:*"),
+        "loan、cis、tag": ("loan:*", "cis:*", "tag:*"),
+        "user:profile 和 session:data": ("user:profile:*", "session:data:*"),
+        "使用 rcs profile，tag 和 store": ("tag:*", "store:*"),
     }
 
     for prompt, expected in cases.items():
@@ -584,6 +610,28 @@ def test_normalize_raw_request_extracts_generic_top_n_even_when_combined_with_fo
         "other_big_keys": 10,
         "focused_prefix_top_keys": 10,
     }
+
+
+def test_normalize_raw_request_does_not_treat_top_n_or_docx_as_focus_prefixes() -> None:
+    request = normalize_raw_request(
+        "只需要 top10 的 tag 和 store key，输出 docx",
+        default_output_mode="summary",
+    )
+
+    assert request.rdb_overrides.focus_prefixes == ("tag:*", "store:*")
+    assert request.rdb_overrides.top_n == {
+        "prefix_top": 10,
+        "top_big_keys": 10,
+        "string_big_keys": 10,
+        "hash_big_keys": 10,
+        "list_big_keys": 10,
+        "set_big_keys": 10,
+        "zset_big_keys": 10,
+        "stream_big_keys": 10,
+        "other_big_keys": 10,
+        "focused_prefix_top_keys": 10,
+    }
+    assert request.runtime_inputs.report_format == "docx"
 
 
 def test_normalize_raw_request_ignores_out_of_range_top_n_overrides() -> None:

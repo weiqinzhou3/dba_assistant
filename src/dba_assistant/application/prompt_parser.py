@@ -109,22 +109,27 @@ def _build_profile_alternation() -> str:
 
 
 _PROFILE_ALT = _build_profile_alternation()
+_WITH_PROFILE_PATTERN = re.compile(
+    rf"(?i)\bwith\s+(?:the\s+)?(?P<profile>{_PROFILE_ALT}|generic)\s+profile(?![a-z0-9_])"
+)
+_USE_PROFILE_PATTERN = re.compile(
+    rf"(?i)\b(?:use|using|choose|select)\s+(?:the\s+)?(?P<profile>{_PROFILE_ALT}|generic)\s+"
+    rf"(?:profile|template|report(?:\s+style)?|config)(?![a-z0-9_])"
+)
+_USE_PROFILE_CHINESE_PATTERN = re.compile(
+    rf"(?i)(?:使用|指定|按|用|采用|选择|按照)\s*(?P<profile>{_PROFILE_ALT}|通用)\s*"
+    rf"(?:profile|模板|报告(?:风格)?|配置)(?![a-z0-9_])"
+)
 _PROFILE_HINT_PATTERNS = (
-    re.compile(
-        rf"(?i)\bwith\s+(?:the\s+)?(?P<profile>{_PROFILE_ALT}|generic)\s+profile(?![a-z0-9_])"
-    ),
-    re.compile(
-        rf"(?i)\b(?:use|using|choose|select)\s+(?:the\s+)?(?P<profile>{_PROFILE_ALT}|generic)\s+"
-        rf"(?:profile|template|report(?:\s+style)?|config)(?![a-z0-9_])"
-    ),
-    re.compile(
-        rf"(?i)(?:使用|指定|按|用|采用|选择|按照)\s*(?P<profile>{_PROFILE_ALT}|通用)\s*"
-        rf"(?:profile|模板|报告(?:风格)?|配置)(?![a-z0-9_])"
-    ),
+    _WITH_PROFILE_PATTERN,
+    _USE_PROFILE_PATTERN,
+    _USE_PROFILE_CHINESE_PATTERN,
 )
 _RAW_PREFIX_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_.-]+(?::[A-Za-z0-9_.-]+)*(?::\*)?")
 _PREFIX_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_.-]+(?::[A-Za-z0-9_.-]+)*:\*")
 _PREFIX_CANDIDATE_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+(?::[A-Za-z0-9_.-]+)*(?::\*)?$")
+_PREFIX_LIST_SEPARATOR_PATTERN = re.compile(r"(?i)\s*(?:和|以及|、|,|，|\band\b)\s*")
+_TOP_N_LITERAL_PATTERN = re.compile(r"(?i)^top\d+$")
 _PREFIX_KEYWORD_PATTERN = re.compile(r"(?i)\bkeys?\b|键|前缀|详情")
 _PREFIX_INTENT_OPENERS = (
     "只需要输出",
@@ -154,22 +159,28 @@ _PREFIX_TOKEN_STOPWORDS = {
     "all",
     "analysis",
     "and",
+    "docx",
     "detail",
     "details",
     "focus",
     "generic",
+    "html",
     "key",
     "keys",
     "need",
     "only",
     "output",
+    "pdf",
     "prefix",
     "profile",
     "rcs",
     "report",
+    "summary",
     "the",
     "top",
+    "word",
 }
+_REPORT_FORMAT_TOKENS = {"docx", "word", "summary", "pdf", "html"}
 _FOCUS_ONLY_PATTERNS = (
     re.compile(r"其他(?:分析结果|结果|内容|章节|报告中其他(?:的)?内容)?都不需要"),
     re.compile(r"报告中其他(?:的)?都不需要"),
@@ -477,7 +488,7 @@ def _extract_remote_rdb_path(
 def _extract_profile_name(prompt: str) -> str | None:
     matches: list[tuple[int, str, bool]] = []
 
-    for pattern in _PROFILE_HINT_PATTERNS:
+    for pattern in _current_profile_hint_patterns():
         for match in pattern.finditer(prompt):
             profile = _normalize_profile_alias(match.group("profile"))
             matches.append((match.start(), profile, _has_negation_prefix(prompt, match.start())))
@@ -493,6 +504,14 @@ def _extract_profile_name(prompt: str) -> str | None:
             continue
         value = profile
     return value
+
+
+def _current_profile_hint_patterns() -> tuple[re.Pattern[str], ...]:
+    return (
+        _WITH_PROFILE_PATTERN,
+        _USE_PROFILE_PATTERN,
+        _USE_PROFILE_CHINESE_PATTERN,
+    )
 
 
 def _extract_focus_prefixes(prompt: str) -> tuple[str, ...]:
@@ -520,6 +539,8 @@ def _extract_focus_prefixes(prompt: str) -> tuple[str, ...]:
         if not (_mentions_prefix_context(clause) or clause_prefixes):
             carry_prefix_context = False
 
+    if not prefixes:
+        return _extract_bare_prefix_list(prompt)
     return tuple(prefixes)
 
 
@@ -802,11 +823,16 @@ def normalize_prefix_token(token: str) -> str | None:
     if not cleaned:
         return None
     cleaned = _WHITESPACE_PATTERN.sub("", cleaned)
+    lowered = cleaned.lower()
     if not _PREFIX_CANDIDATE_PATTERN.fullmatch(cleaned):
         return None
     if not re.search(r"[A-Za-z]", cleaned):
         return None
-    if cleaned.lower() in _PREFIX_TOKEN_STOPWORDS:
+    if lowered in _PREFIX_TOKEN_STOPWORDS:
+        return None
+    if lowered in _REPORT_FORMAT_TOKENS:
+        return None
+    if _TOP_N_LITERAL_PATTERN.fullmatch(cleaned):
         return None
     if cleaned.endswith(":*"):
         return cleaned
@@ -850,6 +876,53 @@ def _extract_generic_top_n_from_clause(clause: str) -> int | None:
             if _is_valid_top_n(count):
                 return count
     return None
+
+
+def _extract_bare_prefix_list(prompt: str) -> tuple[str, ...]:
+    stripped_prompt = prompt
+    for pattern in _current_profile_hint_patterns():
+        stripped_prompt = pattern.sub(" ", stripped_prompt)
+    stripped_prompt = _REPORT_OUTPUT_PATTERN.sub(" ", stripped_prompt)
+
+    if _PREFIX_LIST_SEPARATOR_PATTERN.search(stripped_prompt) is None:
+        return ()
+
+    segments = [
+        segment.strip()
+        for segment in _PREFIX_LIST_SEPARATOR_PATTERN.split(stripped_prompt)
+        if segment.strip()
+    ]
+    if len(segments) < 2:
+        return ()
+
+    prefixes: list[str] = []
+    seen: set[str] = set()
+    for segment in segments:
+        normalized = _extract_single_prefix_segment(segment)
+        if normalized is None:
+            return ()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        prefixes.append(normalized)
+    return tuple(prefixes)
+
+
+def _extract_single_prefix_segment(segment: str) -> str | None:
+    matches = list(_RAW_PREFIX_TOKEN_PATTERN.finditer(segment))
+    if len(matches) != 1:
+        return None
+
+    token_match = matches[0]
+    normalized = normalize_prefix_token(token_match.group(0))
+    if normalized is None:
+        return None
+
+    skeleton = f"{segment[:token_match.start()]} {segment[token_match.end():]}"
+    skeleton = re.sub(r"[\s`'\"()\[\]{}:：]+", "", skeleton)
+    if skeleton:
+        return None
+    return normalized
 
 
 def _generic_top_match_is_section_specific(clause: str, match_start: int) -> bool:

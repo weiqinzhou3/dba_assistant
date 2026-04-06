@@ -295,6 +295,7 @@ def test_analyze_rdb_mysql_backed_prefix_detail_uses_canonical_dataset_without_v
         ("tag:*", "前缀 tag:* 详情", 1),
         ("signin:*", "前缀 signin:* 详情", 1),
         ("store:*", "前缀 store:* 详情", 1),
+        ("uv:*", "前缀 uv:* 详情", 1),
         ("session:data:*", "前缀 session:data:* 详情", 1),
     ),
 )
@@ -308,6 +309,7 @@ def test_analyze_rdb_mysql_backed_prefix_details_support_arbitrary_prefixes_with
         {"key_name": "tag:1", "key_type": "string", "size_bytes": 120, "has_expiration": False, "ttl_seconds": None},
         {"key_name": "signin:1", "key_type": "hash", "size_bytes": 110, "has_expiration": True, "ttl_seconds": 60},
         {"key_name": "store:1", "key_type": "string", "size_bytes": 100, "has_expiration": False, "ttl_seconds": None},
+        {"key_name": "uv:1", "key_type": "string", "size_bytes": 95, "has_expiration": False, "ttl_seconds": None},
         {"key_name": "session:data:1", "key_type": "string", "size_bytes": 90, "has_expiration": False, "ttl_seconds": None},
     ]
     request = RdbAnalysisRequest(

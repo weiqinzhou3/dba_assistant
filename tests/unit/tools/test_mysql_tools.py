@@ -130,7 +130,7 @@ def test_stage_rdb_rows_to_mysql_preserves_null_bool_and_int_params() -> None:
 
     stage_rdb_rows_to_mysql(adaptor, config, "staging_t", rows)
 
-    assert conn.params == [("cache:1", "string", 123, False, None)]
+    assert conn.params == [("manual", "manual", "cache:1", "string", 123, 0, None)]
 
 
 def test_stage_rdb_rows_empty_returns_zero() -> None:

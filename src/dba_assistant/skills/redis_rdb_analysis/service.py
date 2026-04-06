@@ -19,6 +19,7 @@ from dba_assistant.capabilities.redis_rdb_analysis.collectors.path_c_direct_pars
 )
 from dba_assistant.capabilities.redis_rdb_analysis.path_router import choose_path
 from dba_assistant.parsers.rdb_parser_strategy import (
+    StreamedRowsResult,
     build_default_rdb_parser_strategy,
 )
 from dba_assistant.capabilities.redis_rdb_analysis.profile_resolver import resolve_profile
@@ -46,6 +47,7 @@ def analyze_rdb(
     stage_rdb_rows_to_mysql=None,
     load_preparsed_dataset_from_mysql=None,
     mysql_read_query=None,
+    analyze_staged_rdb_rows=None,
     path_b_collector=None,
     path_c_collector=None,
 ) -> ConfirmationRequest | AnalysisReport:
@@ -58,6 +60,13 @@ def analyze_rdb(
             parser_metadata.update(metadata)
             return rows
         return parsed
+
+    def tracked_stream_parser(path: Path):
+        parsed = _stream_rdb_rows(path)
+        parser_metadata["parser_strategy"] = parsed.strategy_name
+        if parsed.strategy_detail:
+            parser_metadata["parser_binary"] = parsed.strategy_detail
+        return parsed.rows
 
     if any(sample.kind is InputSourceKind.REMOTE_REDIS for sample in request.inputs):
         discovery = remote_discovery(request)
@@ -73,6 +82,72 @@ def analyze_rdb(
         request.profile_name,
         RdbOverrides(**request.profile_overrides),
     )
+    if selected_route == DATABASE_BACKED_ANALYSIS:
+        if stage_rdb_rows_to_mysql is None or analyze_staged_rdb_rows is None:
+            raise ValueError(
+                "database_backed_analysis requires MySQL staging and MySQL-side aggregation support."
+            )
+        paths = [
+            Path(sample.source)
+            for sample in request.inputs
+            if sample.kind is not InputSourceKind.REMOTE_REDIS
+        ]
+        collector = path_a_collector or PathAMySQLBackedCollector(
+            stream_parser=tracked_stream_parser,
+            stage_rows_to_mysql=stage_rdb_rows_to_mysql,
+            table_name=request.mysql_table,
+        )
+        staging = collector.collect(paths)
+        sample_rows = [
+            [
+                sample.label or f"sample-{index}",
+                sample.kind.value,
+                str(sample.source),
+            ]
+            for index, sample in enumerate(request.inputs, start=1)
+            if sample.kind is not InputSourceKind.REMOTE_REDIS
+        ]
+        analysis_result = analyze_staged_rdb_rows(
+            staging,
+            profile=effective_profile,
+            sample_rows=sample_rows,
+        )
+        report = assemble_report(
+            analysis_result,
+            profile=effective_profile,
+            title=report_title(request.report_language),
+            language=request.report_language,
+        )
+        metadata = {
+            **report.metadata,
+            "input_count": str(len(sample_rows)),
+            "route": selected_route,
+            "mysql_database": staging.database_name or request.mysql_database or "",
+            "mysql_table": staging.table_name,
+            "mysql_run_id": staging.run_id,
+            "mysql_staged_rows": str(staging.row_count),
+            "mysql_stage_batch_size": str(staging.batch_size),
+            "mysql_multi_file_shared_table": "yes",
+            "mysql_full_table_reload": "disabled",
+            "mysql_cleanup_mode": staging.cleanup_mode,
+            "mysql_created_database": "yes" if staging.created_database else "no",
+            "mysql_created_table": "yes" if staging.created_table else "no",
+            "mysql_defaulted_database": "yes" if staging.defaulted_database else "no",
+            "mysql_defaulted_table": "yes" if staging.defaulted_table else "no",
+            "mysql_progress": " | ".join(staging.progress),
+            **parser_metadata,
+        }
+        legacy_path_label = phase_label_for_route_name(selected_route)
+        if legacy_path_label is not None:
+            metadata["path"] = legacy_path_label
+        return AnalysisReport(
+            title=report.title,
+            summary=report.summary,
+            sections=report.sections,
+            metadata=metadata,
+            language=report.language,
+        )
+
     dataset = _collect_dataset(
         request,
         selected_route=selected_route,
@@ -137,20 +212,6 @@ def _collect_dataset(
         collector = path_c_collector or PathCDirectParserCollector(parser=parser)
         return collector.collect(paths)
 
-    if selected_route == DATABASE_BACKED_ANALYSIS:
-        collector = path_a_collector
-        if collector is None:
-            if stage_rdb_rows_to_mysql is None or load_preparsed_dataset_from_mysql is None:
-                raise ValueError(
-                    "database_backed_analysis requires MySQL staging and dataset loading support."
-                )
-            collector = PathAMySQLBackedCollector(
-                parser=parser,
-                stage_rows_to_mysql=stage_rdb_rows_to_mysql,
-                load_preparsed_dataset_from_mysql=load_preparsed_dataset_from_mysql,
-            )
-        return collector.collect(paths)
-
     raise ValueError(f"Unsupported analysis route: {selected_route}")
 
 
@@ -160,6 +221,22 @@ def _parse_rdb_rows(path: Path) -> tuple[list[dict[str, object]], dict[str, str]
     if parsed.strategy_detail:
         metadata["parser_binary"] = parsed.strategy_detail
     return parsed.rows, metadata
+
+
+def _stream_rdb_rows(path: Path):
+    try:
+        return build_default_rdb_parser_strategy().stream_rows_result(path)
+    except Exception:
+        parsed = _parse_rdb_rows(path)
+        metadata: dict[str, str] = {}
+        rows = parsed
+        if isinstance(parsed, tuple):
+            rows, metadata = parsed
+        return StreamedRowsResult(
+            rows=iter(rows),
+            strategy_name=metadata.get("parser_strategy", "materialized_fallback"),
+            strategy_detail=metadata.get("parser_binary"),
+        )
 
 
 def _require_remote_rdb_path(discovery: object) -> str:

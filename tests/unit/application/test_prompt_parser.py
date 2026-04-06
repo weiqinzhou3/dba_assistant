@@ -436,6 +436,31 @@ def test_normalize_raw_request_extracts_generic_top_n_from_compact_chinese_and_e
         assert request.rdb_overrides.top_n == expected
 
 
+def test_normalize_raw_request_extracts_generic_top_n_from_position_independent_equivalent_forms() -> None:
+    expected = {
+        "prefix_top": 10,
+        "top_big_keys": 10,
+        "string_big_keys": 10,
+        "hash_big_keys": 10,
+        "list_big_keys": 10,
+        "set_big_keys": 10,
+        "zset_big_keys": 10,
+        "stream_big_keys": 10,
+        "other_big_keys": 10,
+        "focused_prefix_top_keys": 10,
+    }
+    for prompt in (
+        "只需要top 10",
+        "只需要 top 10",
+        "我只需要top10",
+        "只要前10",
+        "只输出前 10",
+        "报告只保留 top 10",
+    ):
+        request = normalize_raw_request(prompt, default_output_mode="summary")
+        assert request.rdb_overrides.top_n == expected
+
+
 def test_normalize_raw_request_extracts_section_specific_top_n_and_prefers_them_over_generic_top_n() -> None:
     request = normalize_raw_request(
         "top 10, string top 20, 前缀 top 30",
@@ -495,6 +520,31 @@ def test_normalize_raw_request_detects_focus_only_for_natural_prefix_key_request
     assert request.rdb_overrides.focus_prefixes == ("signin:*",)
 
 
+def test_normalize_raw_request_extracts_focus_only_prefix_and_top_n_independent_of_position() -> None:
+    expected_top_n = {
+        "prefix_top": 10,
+        "top_big_keys": 10,
+        "string_big_keys": 10,
+        "hash_big_keys": 10,
+        "list_big_keys": 10,
+        "set_big_keys": 10,
+        "zset_big_keys": 10,
+        "stream_big_keys": 10,
+        "other_big_keys": 10,
+        "focused_prefix_top_keys": 10,
+    }
+    for prompt in (
+        "前缀是signin前缀的key，只需要top 10 其他分析结果都不需要",
+        "前缀是signin前缀的key，top 10 其他分析结果都不需要",
+        "前缀是signin前缀的key，其他分析结果都不需要，只需要top 10",
+        "只需要top 10，前缀是signin前缀的key，其他分析结果都不需要",
+    ):
+        request = normalize_raw_request(prompt, default_output_mode="summary")
+        assert request.rdb_overrides.focus_only is True
+        assert request.rdb_overrides.focus_prefixes == ("signin:*",)
+        assert request.rdb_overrides.top_n == expected_top_n
+
+
 def test_normalize_raw_request_normalizes_all_requested_prefix_key_forms() -> None:
     cases = {
         "只看 order 和 mq 的 key 详情": ("order:*", "mq:*"),
@@ -543,7 +593,7 @@ def test_normalize_requested_prefixes_applies_generic_suffix_completion_and_keep
 
 def test_normalize_requested_prefixes_skips_top_n_and_output_tokens() -> None:
     assert normalize_requested_prefixes(
-        ("top10", "docx", "word", "summary", "tag", "session:data", "uv")
+        ("top10", "前10", "docx", "word", "profile", "rcs", "tag", "session:data", "uv")
     ) == (
         "tag:*",
         "session:data:*",

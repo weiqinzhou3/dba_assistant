@@ -647,6 +647,42 @@ def test_build_connection_threads_redis_password_into_connection() -> None:
     assert connection.password == "123456"
 
 
+def test_build_connection_uses_loopback_defaults_for_remote_redis_context() -> None:
+    request = _make_request(
+        prompt="inspect local redis",
+        runtime_inputs=RuntimeInputs(
+            input_kind="remote_redis",
+            output_mode="summary",
+        ),
+    )
+
+    connection = agent_module._build_connection(request, _make_config())
+
+    assert connection is not None
+    assert connection.host == "127.0.0.1"
+    assert connection.port == 6379
+    assert connection.db == 0
+
+
+def test_build_mysql_connection_uses_defaults_for_database_backed_analysis() -> None:
+    request = _make_request(
+        prompt="analyze this rdb via mysql",
+        runtime_inputs=RuntimeInputs(
+            path_mode="database_backed_analysis",
+            input_paths=(Path("/tmp/dump.rdb"),),
+            output_mode="summary",
+        ),
+    )
+
+    connection = agent_module._build_mysql_connection(request)
+
+    assert connection is not None
+    assert connection.host == "127.0.0.1"
+    assert connection.port == 3306
+    assert connection.user == "root"
+    assert connection.database == "dba_assistant_staging"
+
+
 def test_remote_rdb_path_resolution_resolver_surfaces_discovery_failure(monkeypatch) -> None:
     request = _make_request(
         runtime_inputs=RuntimeInputs(

@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from dba_assistant.adaptors.redis_adaptor import RedisConnectionConfig
 from dba_assistant.application.request_models import NormalizedRequest, RdbOverrides, RuntimeInputs, Secrets
 from dba_assistant.capabilities.redis_rdb_analysis.remote_input import RemoteRedisDiscoveryError
@@ -20,6 +22,42 @@ def _make_request(**overrides) -> NormalizedRequest:
     )
     defaults.update(overrides)
     return NormalizedRequest(**defaults)
+
+
+def _streamed_rows(rows: list[dict[str, object]]):
+    from dba_assistant.parsers.rdb_parser_strategy import StreamedRowsResult
+
+    return StreamedRowsResult(rows=iter(rows), strategy_name="test-stream")
+
+
+def _mysql_analysis_payload(*, sample_rows: list[list[str]]) -> dict[str, object]:
+    return {
+        "executive_summary": {"total_samples": len(sample_rows), "total_keys": 1, "total_bytes": 123},
+        "background": {"profile_name": "generic", "focus_prefix_count": 0},
+        "analysis_results": {"total_samples": len(sample_rows), "total_keys": 1, "total_bytes": 123},
+        "sample_overview": {"sample_rows": sample_rows},
+        "overall_summary": {"total_samples": len(sample_rows), "total_keys": 1, "total_bytes": 123},
+        "key_type_summary": {
+            "counts": {"string": 1},
+            "memory_bytes": {"string": 123},
+            "rows": [["string", "1", "123"]],
+        },
+        "key_type_memory_breakdown": {"rows": [["string", "123"]]},
+        "expiration_summary": {"expired_count": 0, "persistent_count": 1},
+        "non_expiration_summary": {"persistent_count": 1},
+        "prefix_top_summary": {"rows": [["cache:*", "1", "123"]]},
+        "prefix_expiration_breakdown": {"rows": []},
+        "top_big_keys": {"limit": 100, "rows": [["cache:1", "string", "123"]]},
+        "top_string_keys": {"limit": 100, "rows": [["cache:1", "123"]]},
+        "top_hash_keys": {"limit": 100, "rows": []},
+        "top_list_keys": {"limit": 100, "rows": []},
+        "top_set_keys": {"limit": 100, "rows": []},
+        "top_zset_keys": {"limit": 100, "rows": []},
+        "top_stream_keys": {"limit": 100, "rows": []},
+        "top_other_keys": {"limit": 100, "rows": []},
+        "focused_prefix_analysis": {"sections": []},
+        "conclusions": {},
+    }
 
 
 def test_build_all_tools_includes_local_rdb_without_connection() -> None:
@@ -321,6 +359,128 @@ def test_analyze_local_rdb_tool_returns_host_side_missing_path_error(monkeypatch
     )
 
 
+def test_make_phase3_analysis_service_does_not_json_round_trip_database_backed_rows(
+    monkeypatch,
+) -> None:
+    from dba_assistant.adaptors.mysql_adaptor import MySQLAdaptor, MySQLConnectionConfig
+    from dba_assistant.capabilities.redis_rdb_analysis.types import (
+        InputSourceKind,
+        RdbAnalysisRequest,
+        SampleInput,
+    )
+    from dba_assistant.interface.hitl import AutoApproveHandler
+
+    request = _make_request(
+        prompt="analyze this rdb via mysql",
+        runtime_inputs=RuntimeInputs(
+            output_mode="summary",
+            path_mode="database_backed_analysis",
+            input_paths=(Path("/tmp/dump.rdb"),),
+            mysql_host="db.example",
+            mysql_database="analysis_db",
+        ),
+    )
+    mysql_connection = MySQLConnectionConfig(
+        host="db.example",
+        port=3306,
+        user="root",
+        password="secret",
+        database="analysis_db",
+    )
+    service = build_all_tools.__globals__["_make_phase3_analysis_service"](
+        request=request,
+        mysql_adaptor=MySQLAdaptor(connect=lambda **_kw: object()),
+        mysql_connection=mysql_connection,
+        approval_handler=AutoApproveHandler(approve=True),
+    )
+
+    monkeypatch.setattr(
+        "dba_assistant.skills.redis_rdb_analysis.service._stream_rdb_rows",
+        lambda _path: __import__("dba_assistant.parsers.rdb_parser_strategy", fromlist=["StreamedRowsResult"]).StreamedRowsResult(
+            rows=iter(
+                [
+                    {
+                        "key_name": "cache:1",
+                        "key_type": "string",
+                        "size_bytes": 123,
+                        "has_expiration": False,
+                        "ttl_seconds": None,
+                    }
+                ]
+            ),
+            strategy_name="test-stream",
+        ),
+    )
+    monkeypatch.setattr(
+        "dba_assistant.capabilities.redis_rdb_analysis.service._parse_rdb_rows",
+        lambda _path: [
+            {
+                "key_name": "cache:1",
+                "key_type": "string",
+                "size_bytes": 123,
+                "has_expiration": False,
+                "ttl_seconds": None,
+            }
+        ],
+    )
+
+    original_dumps = build_all_tools.__globals__["json"].dumps
+
+    def fail_large_json(value, *args, **kwargs):
+        if isinstance(value, (list, dict)):
+            raise AssertionError("database_backed_analysis should not JSON-round-trip full row payloads")
+        return original_dumps(value, *args, **kwargs)
+
+    monkeypatch.setattr("dba_assistant.orchestrator.tools._database_exists", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr("dba_assistant.orchestrator.tools._table_exists", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._insert_staging_batch",
+        lambda _adaptor, _session, *, source_file, rows: len(rows),
+    )
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._analyze_staged",
+        lambda _adaptor, _session, *, profile, sample_rows: {
+            "executive_summary": {"total_samples": 1, "total_keys": 1, "total_bytes": 123},
+            "background": {"profile_name": profile.name, "focus_prefix_count": 0},
+            "analysis_results": {"total_samples": 1, "total_keys": 1, "total_bytes": 123},
+            "sample_overview": {"sample_rows": sample_rows},
+            "overall_summary": {"total_samples": 1, "total_keys": 1, "total_bytes": 123},
+            "key_type_summary": {
+                "counts": {"string": 1},
+                "memory_bytes": {"string": 123},
+                "rows": [["string", "1", "123"]],
+            },
+            "key_type_memory_breakdown": {"rows": [["string", "123"]]},
+            "expiration_summary": {"expired_count": 0, "persistent_count": 1},
+            "non_expiration_summary": {"persistent_count": 1},
+            "prefix_top_summary": {"rows": [["cache:*", "1", "123"]]},
+            "prefix_expiration_breakdown": {"rows": []},
+            "top_big_keys": {"limit": 100, "rows": [["cache:1", "string", "123"]]},
+            "top_string_keys": {"limit": 100, "rows": [["cache:1", "123"]]},
+            "top_hash_keys": {"limit": 100, "rows": []},
+            "top_list_keys": {"limit": 100, "rows": []},
+            "top_set_keys": {"limit": 100, "rows": []},
+            "top_zset_keys": {"limit": 100, "rows": []},
+            "top_stream_keys": {"limit": 100, "rows": []},
+            "top_other_keys": {"limit": 100, "rows": []},
+            "focused_prefix_analysis": {"sections": []},
+            "conclusions": {},
+        },
+    )
+    monkeypatch.setattr("dba_assistant.orchestrator.tools.json.dumps", fail_large_json)
+
+    analysis = service(
+        RdbAnalysisRequest(
+            prompt="analyze this rdb via mysql",
+            inputs=[SampleInput(source=Path("/tmp/dump.rdb"), kind=InputSourceKind.LOCAL_RDB)],
+            path_mode="database_backed_analysis",
+        )
+    )
+
+    assert analysis.metadata["route"] == "database_backed_analysis"
+    assert analysis.metadata["mysql_full_table_reload"] == "disabled"
+
+
 def test_analyze_local_rdb_tool_forces_local_input_kind_even_when_request_is_polluted(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
@@ -372,6 +532,8 @@ def test_analyze_local_rdb_with_mysql_route_does_not_fall_into_remote_discovery(
     rows_fixture = Path("tests/fixtures/rdb/direct/sample_key_records.json")
     rows = json.loads(rows_fixture.read_text(encoding="utf-8"))
     captured: dict[str, object] = {"approvals": 0}
+    source = Path("/tmp/dba-assistant-local-mysql-route.rdb")
+    source.write_text("fixture", encoding="utf-8")
 
     class ApproveHandler:
         def request_approval(self, request):
@@ -379,23 +541,29 @@ def test_analyze_local_rdb_with_mysql_route_does_not_fall_into_remote_discovery(
             return ApprovalResponse(status=ApprovalStatus.APPROVED, action=request.action)
 
     monkeypatch.setattr(
-        "dba_assistant.capabilities.redis_rdb_analysis.service._parse_rdb_rows",
-        lambda _path: rows,
+        "dba_assistant.skills.redis_rdb_analysis.service._stream_rdb_rows",
+        lambda _path: _streamed_rows(rows),
     )
     monkeypatch.setattr(
-        "dba_assistant.orchestrator.tools._stage_rows",
-        lambda _adaptor, _connection, table_name, parsed_rows: (
-            captured.setdefault("staged_table", table_name),
-            captured.setdefault("staged_count", len(parsed_rows)),
-            json.dumps({"table": table_name, "staged": len(parsed_rows)}),
+        "dba_assistant.orchestrator.tools._database_exists",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._table_exists",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._insert_staging_batch",
+        lambda _adaptor, _session, *, source_file, rows: (
+            captured.setdefault("staged_count", len(rows)),
+            len(rows),
         )[-1],
     )
     monkeypatch.setattr(
-        "dba_assistant.orchestrator.tools._load_dataset",
-        lambda _adaptor, _connection, table_name, limit="100000": (
-            captured.setdefault("loaded_table", table_name),
-            json.dumps({"source": f"mysql:{table_name}", "rows": rows}),
-        )[-1],
+        "dba_assistant.orchestrator.tools._analyze_staged",
+        lambda _adaptor, _session, *, profile, sample_rows: _mysql_analysis_payload(
+            sample_rows=sample_rows
+        ),
     )
 
     request = _make_request(
@@ -404,7 +572,7 @@ def test_analyze_local_rdb_with_mysql_route_does_not_fall_into_remote_discovery(
             output_mode="summary",
             input_kind="remote_redis",
             path_mode="database_backed_analysis",
-            input_paths=(Path("/tmp/dump.rdb"),),
+            input_paths=(source,),
             mysql_host="192.168.23.176",
             mysql_port=3306,
             mysql_user="root",
@@ -426,12 +594,11 @@ def test_analyze_local_rdb_with_mysql_route_does_not_fall_into_remote_discovery(
     )
     analyze_tool = next(t for t in tools if t.__name__ == "analyze_local_rdb")
 
-    result = analyze_tool(input_paths="/tmp/dump.rdb")
+    result = analyze_tool(input_paths=str(source))
 
     assert "KeyError" not in result
     assert captured["approvals"] == 1
     assert captured["staged_count"] == len(rows)
-    assert captured["loaded_table"] == captured["staged_table"]
     assert "样本" in result
 
 
@@ -443,6 +610,8 @@ def test_analyze_local_rdb_mysql_route_requires_approval_before_staging(monkeypa
     rows_fixture = Path("tests/fixtures/rdb/direct/sample_key_records.json")
     rows = json.loads(rows_fixture.read_text(encoding="utf-8"))
     captured: dict[str, object] = {"approvals": 0}
+    source = Path("/tmp/dba-assistant-local-mysql-deny.rdb")
+    source.write_text("fixture", encoding="utf-8")
 
     class DenyHandler:
         def request_approval(self, request):
@@ -451,12 +620,22 @@ def test_analyze_local_rdb_mysql_route_requires_approval_before_staging(monkeypa
             return ApprovalResponse(status=ApprovalStatus.DENIED, action=request.action)
 
     monkeypatch.setattr(
-        "dba_assistant.capabilities.redis_rdb_analysis.service._parse_rdb_rows",
-        lambda _path: rows,
+        "dba_assistant.skills.redis_rdb_analysis.service._stream_rdb_rows",
+        lambda _path: _streamed_rows(rows),
     )
     monkeypatch.setattr(
-        "dba_assistant.orchestrator.tools._stage_rows",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("stage write must not happen after denial")),
+        "dba_assistant.orchestrator.tools._database_exists",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._table_exists",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._insert_staging_batch",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("stage write must not happen after denial")
+        ),
     )
 
     request = _make_request(
@@ -464,7 +643,7 @@ def test_analyze_local_rdb_mysql_route_requires_approval_before_staging(monkeypa
         runtime_inputs=RuntimeInputs(
             output_mode="summary",
             path_mode="database_backed_analysis",
-            input_paths=(Path("/tmp/dump.rdb"),),
+            input_paths=(source,),
             mysql_host="192.168.23.176",
             mysql_port=3306,
             mysql_user="root",
@@ -482,9 +661,10 @@ def test_analyze_local_rdb_mysql_route_requires_approval_before_staging(monkeypa
     tools = build_all_tools(request, mysql_connection=mysql_connection, approval_handler=DenyHandler())
     analyze_tool = next(t for t in tools if t.__name__ == "analyze_local_rdb")
 
-    result = analyze_tool(input_paths="/tmp/dump.rdb")
+    result = analyze_tool(input_paths=str(source))
 
-    assert result == "Operation denied by user."
+    assert "Operation denied by user:" in result
+    assert "refused MySQL staging write" in result
     assert captured["approvals"] == 1
     assert captured["approval_request"].action == "stage_rdb_rows_to_mysql"
 
@@ -497,6 +677,8 @@ def test_analyze_local_rdb_mysql_route_stages_only_after_approval(monkeypatch) -
     rows_fixture = Path("tests/fixtures/rdb/direct/sample_key_records.json")
     rows = json.loads(rows_fixture.read_text(encoding="utf-8"))
     captured: dict[str, object] = {"approvals": 0}
+    source = Path("/tmp/dba-assistant-local-mysql-approve.rdb")
+    source.write_text("fixture", encoding="utf-8")
 
     class ApproveHandler:
         def request_approval(self, request):
@@ -504,21 +686,28 @@ def test_analyze_local_rdb_mysql_route_stages_only_after_approval(monkeypatch) -
             return ApprovalResponse(status=ApprovalStatus.APPROVED, action=request.action)
 
     monkeypatch.setattr(
-        "dba_assistant.capabilities.redis_rdb_analysis.service._parse_rdb_rows",
-        lambda _path: rows,
+        "dba_assistant.skills.redis_rdb_analysis.service._stream_rdb_rows",
+        lambda _path: _streamed_rows(rows),
     )
     monkeypatch.setattr(
-        "dba_assistant.orchestrator.tools._stage_rows",
-        lambda _adaptor, _connection, table_name, parsed_rows: (
-            captured.setdefault("staged_table", table_name),
-            captured.setdefault("staged_count", len(parsed_rows)),
-            json.dumps({"table": table_name, "staged": len(parsed_rows)}),
+        "dba_assistant.orchestrator.tools._database_exists",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._table_exists",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._insert_staging_batch",
+        lambda _adaptor, _session, *, source_file, rows: (
+            captured.setdefault("staged_count", len(rows)),
+            len(rows),
         )[-1],
     )
     monkeypatch.setattr(
-        "dba_assistant.orchestrator.tools._load_dataset",
-        lambda _adaptor, _connection, table_name, limit="100000": json.dumps(
-            {"source": f"mysql:{table_name}", "rows": rows}
+        "dba_assistant.orchestrator.tools._analyze_staged",
+        lambda _adaptor, _session, *, profile, sample_rows: _mysql_analysis_payload(
+            sample_rows=sample_rows
         ),
     )
 
@@ -527,7 +716,7 @@ def test_analyze_local_rdb_mysql_route_stages_only_after_approval(monkeypatch) -
         runtime_inputs=RuntimeInputs(
             output_mode="summary",
             path_mode="database_backed_analysis",
-            input_paths=(Path("/tmp/dump.rdb"),),
+            input_paths=(source,),
             mysql_host="192.168.23.176",
             mysql_port=3306,
             mysql_user="root",
@@ -545,7 +734,7 @@ def test_analyze_local_rdb_mysql_route_stages_only_after_approval(monkeypatch) -
     tools = build_all_tools(request, mysql_connection=mysql_connection, approval_handler=ApproveHandler())
     analyze_tool = next(t for t in tools if t.__name__ == "analyze_local_rdb")
 
-    result = analyze_tool(input_paths="/tmp/dump.rdb")
+    result = analyze_tool(input_paths=str(source))
 
     assert captured["approvals"] == 1
     assert captured["staged_count"] == len(rows)
@@ -573,19 +762,25 @@ def test_analyze_local_rdb_mysql_route_returns_docx_path_when_requested_without_
             return ApprovalResponse(status=ApprovalStatus.APPROVED, action=request.action)
 
     monkeypatch.setattr(
-        "dba_assistant.capabilities.redis_rdb_analysis.service._parse_rdb_rows",
-        lambda _path: rows,
+        "dba_assistant.skills.redis_rdb_analysis.service._stream_rdb_rows",
+        lambda _path: _streamed_rows(rows),
     )
     monkeypatch.setattr(
-        "dba_assistant.orchestrator.tools._stage_rows",
-        lambda _adaptor, _connection, table_name, parsed_rows: json.dumps(
-            {"table": table_name, "staged": len(parsed_rows)}
-        ),
+        "dba_assistant.orchestrator.tools._database_exists",
+        lambda *_args, **_kwargs: True,
     )
     monkeypatch.setattr(
-        "dba_assistant.orchestrator.tools._load_dataset",
-        lambda _adaptor, _connection, table_name, limit="100000": json.dumps(
-            {"source": f"mysql:{table_name}", "rows": rows}
+        "dba_assistant.orchestrator.tools._table_exists",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._insert_staging_batch",
+        lambda _adaptor, _session, *, source_file, rows: len(rows),
+    )
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._analyze_staged",
+        lambda _adaptor, _session, *, profile, sample_rows: _mysql_analysis_payload(
+            sample_rows=sample_rows
         ),
     )
     monkeypatch.setattr(
@@ -644,12 +839,14 @@ def test_analyze_preparsed_dataset_tool_uses_mysql_source_from_request(monkeypat
         report_language="zh-CN",
         path_mode="auto",
         profile_overrides=None,
+        mysql_database=None,
         mysql_table=None,
         mysql_query=None,
         service=None,
     ):
         captured["input_paths"] = input_paths
         captured["input_kind"] = input_kind
+        captured["mysql_database"] = mysql_database
         captured["mysql_table"] = mysql_table
         captured["mysql_query"] = mysql_query
         return AnalysisReport(
@@ -680,6 +877,7 @@ def test_analyze_preparsed_dataset_tool_uses_mysql_source_from_request(monkeypat
 
     assert "Redis RDB Analysis" in result
     assert captured["input_kind"] == "preparsed_mysql"
+    assert captured["mysql_database"] == "analysis_db"
     assert captured["mysql_table"] == "preparsed_keys"
     assert captured["mysql_query"] is None
     assert captured["input_paths"] == ["preparsed_keys"]
@@ -992,12 +1190,22 @@ def test_fetch_remote_rdb_via_ssh_mysql_route_requires_approval_before_staging(m
     monkeypatch.setattr("dba_assistant.orchestrator.tools.discover_remote_rdb", fake_discover)
     monkeypatch.setattr("dba_assistant.orchestrator.tools.SSHAdaptor", FakeSSHAdaptor)
     monkeypatch.setattr(
-        "dba_assistant.capabilities.redis_rdb_analysis.service._parse_rdb_rows",
-        lambda _path: rows,
+        "dba_assistant.skills.redis_rdb_analysis.service._stream_rdb_rows",
+        lambda _path: _streamed_rows(rows),
     )
     monkeypatch.setattr(
-        "dba_assistant.orchestrator.tools._stage_rows",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("stage write must not happen after denial")),
+        "dba_assistant.orchestrator.tools._database_exists",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._table_exists",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._insert_staging_batch",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("stage write must not happen after denial")
+        ),
     )
 
     request = _make_request(
@@ -1026,7 +1234,8 @@ def test_fetch_remote_rdb_via_ssh_mysql_route_requires_approval_before_staging(m
 
     result = fetch_tool()
 
-    assert result == "Operation denied by user."
+    assert "Operation denied by user:" in result
+    assert "refused MySQL staging write" in result
     assert captured["approvals"] == 1
     assert captured["approval_request"].action == "stage_rdb_rows_to_mysql"
 

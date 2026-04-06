@@ -1,59 +1,106 @@
 from __future__ import annotations
 
-import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-from dba_assistant.capabilities.redis_rdb_analysis.collectors.path_c_direct_parser_collector import (
-    PathCDirectParserCollector,
+from dba_assistant.application.request_models import (
+    DEFAULT_MYSQL_STAGE_BATCH_SIZE,
+    build_default_mysql_table_name,
 )
-from dba_assistant.capabilities.redis_rdb_analysis.types import NormalizedRdbDataset
+
+
+@dataclass(frozen=True)
+class MySQLStagingResult:
+    table_name: str
+    run_id: str
+    row_count: int
+    batch_size: int
+    source_files: tuple[str, ...]
+    database_name: str | None = None
+    created_database: bool = False
+    created_table: bool = False
+    defaulted_database: bool = False
+    defaulted_table: bool = False
+    cleanup_mode: str = "retain"
+    progress: tuple[str, ...] = ()
 
 
 class PathAMySQLBackedCollector:
-    """Stage parsed rows into MySQL, then reload a preparsed dataset."""
+    """Stage parsed rows into one shared MySQL table using bounded batches."""
 
     def __init__(
         self,
         *,
-        parser: Callable[[Path], list[dict[str, object]]],
-        stage_rows_to_mysql: Callable[[str, list[dict[str, object]]], object],
-        load_preparsed_dataset_from_mysql: Callable[[str], object],
+        stream_parser: Callable[[Path], Iterable[dict[str, object]]],
+        stage_rows_to_mysql: Callable[..., object],
+        table_name: str | None = None,
+        batch_size: int = DEFAULT_MYSQL_STAGE_BATCH_SIZE,
     ) -> None:
-        self._parser = parser
+        self._stream_parser = stream_parser
         self._stage_rows_to_mysql = stage_rows_to_mysql
-        self._load_preparsed_dataset_from_mysql = load_preparsed_dataset_from_mysql
+        self._table_name = table_name
+        self._batch_size = batch_size
 
-    def collect(self, paths: list[Path]) -> NormalizedRdbDataset:
-        rows_by_path: dict[Path, list[dict[str, object]]] = {}
+    def collect(self, paths: list[Path]) -> MySQLStagingResult:
+        table_name = self._table_name or build_default_mysql_table_name()
+        run_id = uuid4().hex[:12]
+        row_count = 0
+        progress: list[str] = []
+        metadata: dict[str, object] = {}
 
         for index, path in enumerate(paths, start=1):
-            table_name = _build_table_name(path, index)
-            rows = self._parser(path)
-            self._stage_rows_to_mysql(table_name, rows)
-            rows_by_path[path] = _extract_rows(
-                self._load_preparsed_dataset_from_mysql(table_name),
+            batch_number = 0
+            file_rows = 0
+            for batch in _batched(self._stream_parser(path), self._batch_size):
+                batch_number += 1
+                file_rows += len(batch)
+                row_count += len(batch)
+                payload = self._stage_rows_to_mysql(
+                    table_name,
+                    batch,
+                    source_file=str(path),
+                    run_id=run_id,
+                )
+                if isinstance(payload, dict):
+                    metadata.update(payload)
+            progress.append(
+                f"file {index}/{len(paths)} source={path} rows={file_rows} batches={batch_number}"
             )
 
-        bridge = PathCDirectParserCollector(parser=lambda path: rows_by_path[path])
-        return bridge.collect(paths)
+        return MySQLStagingResult(
+            table_name=table_name,
+            run_id=run_id,
+            row_count=row_count,
+            batch_size=self._batch_size,
+            source_files=tuple(str(path) for path in paths),
+            database_name=_as_optional_str(metadata.get("database")),
+            created_database=bool(metadata.get("created_database")),
+            created_table=bool(metadata.get("created_table")),
+            defaulted_database=bool(metadata.get("defaulted_database")),
+            defaulted_table=bool(metadata.get("defaulted_table")),
+            cleanup_mode=_as_optional_str(metadata.get("cleanup_mode")) or "retain",
+            progress=tuple(progress),
+        )
 
 
-def _build_table_name(path: Path, index: int) -> str:
-    stem = "".join(char if char.isalnum() else "_" for char in path.stem).strip("_") or "sample"
-    return f"rdb_stage_{stem}_{index}_{uuid4().hex[:8]}"
+def _batched(
+    rows: Iterable[dict[str, object]],
+    batch_size: int,
+) -> Iterator[list[dict[str, object]]]:
+    batch: list[dict[str, object]] = []
+    for row in rows:
+        batch.append(dict(row))
+        if len(batch) >= batch_size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
 
 
-def _extract_rows(payload: object) -> list[dict[str, object]]:
-    if isinstance(payload, str):
-        payload = json.loads(payload)
-
-    if not isinstance(payload, dict):
-        raise ValueError("MySQL dataset loader must return a mapping or JSON object.")
-
-    rows = payload.get("rows")
-    if not isinstance(rows, list):
-        raise ValueError("MySQL dataset loader payload must contain a list under 'rows'.")
-
-    return [dict(row) for row in rows]
+def _as_optional_str(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None

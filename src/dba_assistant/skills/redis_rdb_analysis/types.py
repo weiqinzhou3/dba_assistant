@@ -91,6 +91,7 @@ class RdbAnalysisRequest:
     path_mode: str = "auto"
     merge_multiple_inputs: bool = True
     profile_overrides: dict[str, object] = field(default_factory=dict)
+    mysql_database: str | None = None
     mysql_table: str | None = None
     mysql_query: str | None = None
 

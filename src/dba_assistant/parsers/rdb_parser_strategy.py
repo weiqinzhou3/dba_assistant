@@ -3,14 +3,16 @@ from __future__ import annotations
 import csv
 import json
 import os
+import queue
 import shutil
 import subprocess
 import tempfile
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import Protocol
+from typing import Iterable, Iterator, Protocol
 
 
 @dataclass(frozen=True)
@@ -26,11 +28,21 @@ class ParsedRowsResult:
     strategy_detail: str | None = None
 
 
+@dataclass(frozen=True)
+class StreamedRowsResult:
+    rows: Iterable[dict[str, object]]
+    strategy_name: str
+    strategy_detail: str | None = None
+
+
 class RdbParserStrategy(Protocol):
     def parse_rows(self, path: Path) -> list[dict[str, object]]:
         ...
 
     def parse_rows_result(self, path: Path) -> ParsedRowsResult:
+        ...
+
+    def stream_rows_result(self, path: Path) -> StreamedRowsResult:
         ...
 
 
@@ -52,9 +64,8 @@ class HdtRdbCliStrategy:
         return self.parse_rows_result(path).rows
 
     def parse_rows_result(self, path: Path) -> ParsedRowsResult:
-        payload = self.export_json(path)
         rows: list[dict[str, object]] = []
-        for obj in payload:
+        for obj in self.export_json(path):
             normalized = _normalize_hdt_json_object(obj)
             if normalized is not None:
                 rows.append(normalized)
@@ -64,11 +75,40 @@ class HdtRdbCliStrategy:
             strategy_detail=str(self._binary_path),
         )
 
-    def export_json(self, path: Path) -> list[dict[str, object]]:
-        with tempfile.TemporaryDirectory(prefix="dba-assistant-rdb-json-") as tmpdir:
+    def stream_rows_result(self, path: Path) -> StreamedRowsResult:
+        def rows() -> Iterator[dict[str, object]]:
+            for obj in self.export_json(path):
+                normalized = _normalize_hdt_json_object(obj)
+                if normalized is not None:
+                    yield normalized
+
+        return StreamedRowsResult(
+            rows=rows(),
+            strategy_name=type(self).__name__,
+            strategy_detail=str(self._binary_path),
+        )
+
+    def export_json(self, path: Path) -> Iterator[dict[str, object]]:
+        with tempfile.TemporaryDirectory(prefix="dba-assistant-rdb-json-", dir="/tmp") as tmpdir:
             output_path = Path(tmpdir) / "dump.json"
-            self._run_cli(["-c", "json", "-o", str(output_path), str(path)])
-            return json.loads(output_path.read_text(encoding="utf-8"))
+            os.mkfifo(output_path)
+            error_box: dict[str, Exception] = {}
+
+            def writer() -> None:
+                try:
+                    self._run_cli(["-c", "json", "-o", str(output_path), str(path)])
+                except Exception as exc:  # noqa: BLE001
+                    error_box["error"] = exc
+
+            writer_thread = threading.Thread(target=writer, daemon=True)
+            writer_thread.start()
+            try:
+                with output_path.open("r", encoding="utf-8") as handle:
+                    yield from _iter_json_array_objects(handle)
+            finally:
+                writer_thread.join()
+                if "error" in error_box:
+                    raise error_box["error"]
 
     def find_biggest_keys(self, path: Path, *, limit: int = 10) -> list[dict[str, object]]:
         rows = self._run_csv_command(path, ["-c", "bigkey", "-n", str(limit)])
@@ -144,13 +184,56 @@ class LegacyRdbtoolsStrategy:
         return self.parse_rows_result(path).rows
 
     def parse_rows_result(self, path: Path) -> ParsedRowsResult:
+        return ParsedRowsResult(
+            rows=list(self.stream_rows_result(path).rows),
+            strategy_name=type(self).__name__,
+        )
+
+    def stream_rows_result(self, path: Path) -> StreamedRowsResult:
         from rdbtools import MemoryCallback, RdbParser
 
-        stream = _MemoryRecordStream()
-        parser = RdbParser(MemoryCallback(stream, 64))
-        parser.parse(str(path))
-        return ParsedRowsResult(
-            rows=stream.rows,
+        sentinel = object()
+        row_queue: queue.Queue[object] = queue.Queue(maxsize=1024)
+        error_box: dict[str, Exception] = {}
+
+        class QueueingStream:
+            def next_record(self, record) -> None:
+                if record.key is None:
+                    return
+                row_queue.put(
+                    {
+                        "key_name": str(record.key),
+                        "key_type": str(record.type),
+                        "size_bytes": int(record.bytes),
+                        "has_expiration": record.expiry is not None,
+                        "ttl_seconds": _ttl_seconds(record.expiry),
+                    }
+                )
+
+        def parse() -> None:
+            try:
+                parser = RdbParser(MemoryCallback(QueueingStream(), 64))
+                parser.parse(str(path))
+            except Exception as exc:  # noqa: BLE001
+                error_box["error"] = exc
+            finally:
+                row_queue.put(sentinel)
+
+        parser_thread = threading.Thread(target=parse, daemon=True)
+        parser_thread.start()
+
+        def rows() -> Iterator[dict[str, object]]:
+            while True:
+                item = row_queue.get()
+                if item is sentinel:
+                    break
+                yield dict(item)
+            parser_thread.join()
+            if "error" in error_box:
+                raise error_box["error"]
+
+        return StreamedRowsResult(
+            rows=rows(),
             strategy_name=type(self).__name__,
         )
 
@@ -167,6 +250,15 @@ class CompositeRdbParserStrategy:
         for strategy in self._strategies:
             try:
                 return strategy.parse_rows_result(path)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{type(strategy).__name__}: {exc}")
+        raise RuntimeError("All RDB parser strategies failed: " + " | ".join(errors))
+
+    def stream_rows_result(self, path: Path) -> StreamedRowsResult:
+        errors: list[str] = []
+        for strategy in self._strategies:
+            try:
+                return strategy.stream_rows_result(path)
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"{type(strategy).__name__}: {exc}")
         raise RuntimeError("All RDB parser strategies failed: " + " | ".join(errors))
@@ -293,3 +385,61 @@ def _ttl_seconds(expiry: object) -> int | None:
         normalized = expiry if expiry.tzinfo is not None else expiry.replace(tzinfo=timezone.utc)
         return max(0, int((normalized - datetime.now(timezone.utc)).total_seconds()))
     return int(expiry)
+
+
+def _iter_json_array_objects(handle) -> Iterator[dict[str, object]]:
+    decoder = json.JSONDecoder()
+    buffer = ""
+    in_array = False
+    array_complete = False
+
+    while True:
+        chunk = handle.read(65536)
+        if chunk:
+            buffer += chunk
+        elif not buffer.strip():
+            break
+
+        position = 0
+        length = len(buffer)
+        while position < length:
+            while position < length and buffer[position].isspace():
+                position += 1
+            if position >= length:
+                break
+            token = buffer[position]
+            if not in_array:
+                if token != "[":
+                    if chunk:
+                        break
+                    raise ValueError("Invalid HDT JSON payload: expected '[' at array start.")
+                in_array = True
+                position += 1
+                continue
+            if token == ",":
+                position += 1
+                continue
+            if token == "]":
+                array_complete = True
+                position += 1
+                while position < length and buffer[position].isspace():
+                    position += 1
+                buffer = buffer[position:]
+                position = 0
+                length = len(buffer)
+                break
+            try:
+                obj, end = decoder.raw_decode(buffer, position)
+            except json.JSONDecodeError:
+                if chunk:
+                    break
+                raise
+            if not isinstance(obj, dict):
+                raise ValueError("Invalid HDT JSON payload: expected JSON objects in array.")
+            yield obj
+            position = end
+        buffer = buffer[position:]
+        if array_complete:
+            break
+        if not chunk and buffer.strip():
+            raise ValueError("Invalid HDT JSON payload: unterminated JSON array.")

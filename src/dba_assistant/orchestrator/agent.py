@@ -13,7 +13,12 @@ from langgraph.types import Command
 
 from dba_assistant.adaptors.mysql_adaptor import MySQLConnectionConfig
 from dba_assistant.adaptors.redis_adaptor import RedisAdaptor, RedisConnectionConfig
-from dba_assistant.application.request_models import NormalizedRequest
+from dba_assistant.application.request_models import (
+    DEFAULT_LOOPBACK_HOST,
+    DEFAULT_MYSQL_DATABASE,
+    DEFAULT_MYSQL_USER,
+    NormalizedRequest,
+)
 from dba_assistant.deep_agent_integration.config import AppConfig
 from dba_assistant.deep_agent_integration.model_provider import build_model
 from dba_assistant.deep_agent_integration.runtime_support import (
@@ -280,10 +285,10 @@ def _build_connection(
     config: AppConfig,
 ) -> RedisConnectionConfig | None:
     """Build a Redis connection config from the normalized request, or None."""
-    if not request.runtime_inputs.redis_host:
+    if not _redis_context_requested(request):
         return None
     return RedisConnectionConfig(
-        host=request.runtime_inputs.redis_host,
+        host=request.runtime_inputs.redis_host or DEFAULT_LOOPBACK_HOST,
         port=request.runtime_inputs.redis_port,
         db=request.runtime_inputs.redis_db,
         password=request.secrets.redis_password,
@@ -295,14 +300,14 @@ def _build_mysql_connection(
     request: NormalizedRequest,
 ) -> MySQLConnectionConfig | None:
     """Build a MySQL connection config from the normalized request, or None."""
-    if not request.runtime_inputs.mysql_host:
+    if not _mysql_context_requested(request):
         return None
     return MySQLConnectionConfig(
-        host=request.runtime_inputs.mysql_host,
+        host=request.runtime_inputs.mysql_host or DEFAULT_LOOPBACK_HOST,
         port=request.runtime_inputs.mysql_port,
-        user=request.runtime_inputs.mysql_user or "root",
+        user=request.runtime_inputs.mysql_user or DEFAULT_MYSQL_USER,
         password=request.secrets.mysql_password or "",
-        database=request.runtime_inputs.mysql_database or "",
+        database=request.runtime_inputs.mysql_database or DEFAULT_MYSQL_DATABASE,
     )
 
 
@@ -344,10 +349,13 @@ def _build_user_message(request: NormalizedRequest) -> str:
     if request.runtime_inputs.require_fresh_rdb_snapshot:
         context_lines.append("Remote RDB acquisition mode: fresh_snapshot")
 
-    if request.runtime_inputs.mysql_host:
+    if _mysql_context_requested(request):
         context_lines.append(
-            f"MySQL connection: {request.runtime_inputs.mysql_host}:"
+            f"MySQL connection: {(request.runtime_inputs.mysql_host or DEFAULT_LOOPBACK_HOST)}:"
             f"{request.runtime_inputs.mysql_port}"
+        )
+        context_lines.append(
+            f"MySQL database: {request.runtime_inputs.mysql_database or DEFAULT_MYSQL_DATABASE}"
         )
     if request.runtime_inputs.mysql_table:
         context_lines.append(f"MySQL table: {request.runtime_inputs.mysql_table}")
@@ -598,3 +606,32 @@ def _build_mysql_staging_interrupt_description(request: NormalizedRequest):
         )
 
     return describe_mysql_staging_interrupt
+
+
+def _mysql_context_requested(request: NormalizedRequest) -> bool:
+    runtime = request.runtime_inputs
+    return any(
+        (
+            runtime.mysql_host,
+            runtime.mysql_user,
+            runtime.mysql_database,
+            runtime.mysql_table,
+            runtime.mysql_query,
+            request.secrets.mysql_password,
+            runtime.input_kind == "preparsed_mysql",
+            runtime.path_mode == "database_backed_analysis",
+        )
+    )
+
+
+def _redis_context_requested(request: NormalizedRequest) -> bool:
+    runtime = request.runtime_inputs
+    if runtime.redis_host or request.secrets.redis_password:
+        return True
+    if runtime.input_kind == "remote_redis":
+        return True
+    if runtime.remote_rdb_path or runtime.require_fresh_rdb_snapshot or runtime.ssh_host:
+        return True
+    if runtime.input_paths:
+        return False
+    return "redis" in request.prompt.lower()

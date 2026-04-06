@@ -24,6 +24,7 @@ def analyze_rdb_tool(
     report_language: str = "zh-CN",
     path_mode: str = "auto",
     profile_overrides: dict[str, object] | None = None,
+    mysql_database: str | None = None,
     mysql_table: str | None = None,
     mysql_query: str | None = None,
     service: Callable[[RdbAnalysisRequest], object] | None = None,
@@ -36,6 +37,7 @@ def analyze_rdb_tool(
         report_language=report_language,
         path_mode=path_mode,
         profile_overrides=dict(profile_overrides or {}),
+        mysql_database=mysql_database,
         mysql_table=mysql_table,
         mysql_query=mysql_query,
     )

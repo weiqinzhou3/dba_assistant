@@ -8,7 +8,12 @@ from __future__ import annotations
 from dataclasses import replace
 
 from dba_assistant.application.prompt_parser import normalize_raw_request
-from dba_assistant.application.request_models import NormalizedRequest
+from dba_assistant.application.request_models import (
+    DEFAULT_LOOPBACK_HOST,
+    DEFAULT_MYSQL_DATABASE,
+    DEFAULT_MYSQL_USER,
+    NormalizedRequest,
+)
 from dba_assistant.core.reporter.output_path_policy import ensure_report_output_path
 from dba_assistant.deep_agent_integration.config import load_app_config
 from dba_assistant.interface.hitl import HumanApprovalHandler
@@ -37,6 +42,7 @@ def handle_request(
         input_paths=request.input_paths,
     )
     normalized = _apply_overrides(normalized, request)
+    normalized = _apply_conventional_defaults(normalized)
     normalized = replace(
         normalized,
         runtime_inputs=ensure_report_output_path(
@@ -131,3 +137,16 @@ def _apply_overrides(
         normalized = replace(normalized, secrets=secrets)
 
     return replace(normalized, runtime_inputs=runtime_inputs, rdb_overrides=rdb_overrides)
+
+
+def _apply_conventional_defaults(normalized: NormalizedRequest) -> NormalizedRequest:
+    runtime_inputs = normalized.runtime_inputs
+    if runtime_inputs.path_mode == "database_backed_analysis" or runtime_inputs.input_kind == "preparsed_mysql":
+        runtime_inputs = replace(
+            runtime_inputs,
+            mysql_host=runtime_inputs.mysql_host or DEFAULT_LOOPBACK_HOST,
+            mysql_user=runtime_inputs.mysql_user or DEFAULT_MYSQL_USER,
+            mysql_database=runtime_inputs.mysql_database or DEFAULT_MYSQL_DATABASE,
+        )
+
+    return replace(normalized, runtime_inputs=runtime_inputs)

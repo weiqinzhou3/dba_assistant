@@ -11,7 +11,7 @@ class MySQLConnectionConfig:
     port: int
     user: str
     password: str
-    database: str
+    database: str | None = None
 
 
 class MySQLAdaptor:
@@ -26,14 +26,16 @@ class MySQLAdaptor:
         return pymysql.cursors.DictCursor
 
     def _open(self, config: MySQLConnectionConfig) -> Any:
-        return self._connect(
-            host=config.host,
-            port=config.port,
-            user=config.user,
-            password=config.password,
-            database=config.database,
-            cursorclass=self.dict_cursor_class(),
-        )
+        kwargs: dict[str, Any] = {
+            "host": config.host,
+            "port": config.port,
+            "user": config.user,
+            "password": config.password,
+            "cursorclass": self.dict_cursor_class(),
+        }
+        if config.database:
+            kwargs["database"] = config.database
+        return self._connect(**kwargs)
 
     # --- Read path ---
 

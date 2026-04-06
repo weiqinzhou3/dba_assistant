@@ -4,6 +4,9 @@ import re
 from pathlib import Path
 
 from dba_assistant.application.request_models import (
+    DEFAULT_MYSQL_PORT,
+    DEFAULT_REDIS_DB,
+    DEFAULT_REDIS_PORT,
     NormalizedRequest,
     RdbOverrides,
     RuntimeInputs,
@@ -232,6 +235,11 @@ _CLAUSE_BREAK_PATTERN = re.compile(
     r"(?i)[,，。;；!?]|(?:\bbut\b|\bhowever\b|\bthough\b|\balthough\b|\binstead\b|\byet\b|\bexcept\b)|(?:但是|但|不过|然而|可是|而是|却|只是)"
 )
 _WHITESPACE_PATTERN = re.compile(r"\s+")
+_CONTROL_PUNCTUATION_PATTERN = re.compile(r"[，。；！？!?,;:：]")
+_CJK_ASCII_BOUNDARY_PATTERN = (
+    re.compile(r"([\u4e00-\u9fff])([A-Za-z0-9])"),
+    re.compile(r"([A-Za-z0-9])([\u4e00-\u9fff])"),
+)
 _ENGLISH_REPORT_PATTERN = re.compile(r"(?i)(?:\benglish\b|in\s+english|英文版|输出英文|英文报告)")
 _CHINESE_REPORT_PATTERN = re.compile(r"(?i)(?:\bchinese\b|中文|中文版|输出中文|中文报告)")
 _MAX_TOP_N = 1000
@@ -291,8 +299,8 @@ def normalize_raw_request(
         prompt=prompt,
         runtime_inputs=RuntimeInputs(
             redis_host=host_match.group("host") if host_match else None,
-            redis_port=int(host_match.group("port")) if host_match else 6379,
-            redis_db=int(db_match.group("db")) if db_match else 0,
+            redis_port=int(host_match.group("port")) if host_match else DEFAULT_REDIS_PORT,
+            redis_db=int(db_match.group("db")) if db_match else DEFAULT_REDIS_DB,
             output_mode=output_mode,
             report_language=report_language,
             report_format=report_format,
@@ -305,7 +313,7 @@ def normalize_raw_request(
             remote_rdb_path=remote_rdb_path,
             remote_rdb_path_source="user_override" if remote_rdb_path else None,
             mysql_host=mysql_host,
-            mysql_port=mysql_port or 3306,
+            mysql_port=mysql_port or DEFAULT_MYSQL_PORT,
             mysql_user=mysql_user,
             mysql_database=mysql_database,
             mysql_table=mysql_table,
@@ -354,10 +362,11 @@ def _strip_span(prompt: str, span: tuple[int, int] | None) -> str:
 
 
 def _extract_rdb_overrides(prompt: str, *, route_name: str | None = None) -> RdbOverrides:
-    profile_name = _extract_profile_name(prompt)
+    control_prompt = _normalize_prompt_for_control_parsing(prompt)
+    profile_name = _extract_profile_name(control_prompt)
+    top_n = _extract_top_n_overrides(control_prompt)
     focus_prefixes = _extract_focus_prefixes(prompt)
-    focus_only = _extract_focus_only(prompt, focus_prefixes=focus_prefixes)
-    top_n = _extract_top_n_overrides(prompt)
+    focus_only = _extract_focus_only(control_prompt, focus_prefixes=focus_prefixes)
     return RdbOverrides(
         profile_name=profile_name,
         route_name=route_name,
@@ -559,6 +568,17 @@ def _extract_top_n_overrides(prompt: str) -> dict[str, int]:
                 top_n[_map_section_to_top_key(section)] = count
 
     return top_n
+
+
+def _normalize_prompt_for_control_parsing(prompt: str) -> str:
+    normalized = prompt
+    for pattern in _CJK_ASCII_BOUNDARY_PATTERN:
+        normalized = pattern.sub(r"\1 \2", normalized)
+    normalized = re.sub(r"(?i)top\s*(\d{1,4})", r" top \1 ", normalized)
+    normalized = re.sub(r"前\s*(\d{1,4})", r" 前 \1 ", normalized)
+    normalized = _CONTROL_PUNCTUATION_PATTERN.sub(" ", normalized)
+    normalized = _WHITESPACE_PATTERN.sub(" ", normalized).strip()
+    return normalized
 
 
 def _extract_focus_only(prompt: str, *, focus_prefixes: tuple[str, ...]) -> bool:

@@ -22,6 +22,12 @@ from dba_assistant.adaptors.redis_adaptor import (
 )
 from dba_assistant.adaptors.ssh_adaptor import SSHAdaptor, SSHConnectionConfig
 from dba_assistant.application.request_models import NormalizedRequest, RdbOverrides
+from dba_assistant.application.request_models import (
+    DEFAULT_MYSQL_DATABASE,
+    DEFAULT_MYSQL_STAGE_BATCH_SIZE,
+    LARGE_RDB_WARNING_BYTES,
+    build_default_mysql_table_name,
+)
 from dba_assistant.core.reporter.output_path_policy import ensure_report_output_path
 from dba_assistant.core.reporter.types import OutputMode, ReportFormat, ReportOutputConfig
 from dba_assistant.interface.hitl import HumanApprovalHandler
@@ -32,9 +38,16 @@ from dba_assistant.capabilities.redis_rdb_analysis.remote_input import (
 )
 from dba_assistant.tools.analyze_rdb import analyze_rdb_tool
 from dba_assistant.tools.mysql_tools import (
+    MySQLStagingSession,
+    analyze_staged_rdb_rows as _analyze_staged,
+    create_database as _create_database,
+    create_staging_table as _create_staging_table,
+    database_exists as _database_exists,
+    insert_staging_batch as _insert_staging_batch,
     load_preparsed_dataset_from_mysql as _load_dataset,
     mysql_read_query as _mysql_read,
     stage_rdb_rows_to_mysql as _stage_rows,
+    table_exists as _table_exists,
 )
 
 
@@ -161,15 +174,20 @@ def _make_analyze_local_rdb_tool(
             overrides["top_n"] = dict(request.rdb_overrides.top_n)
 
         try:
+            analyze_kwargs = {
+                "prompt": request.prompt,
+                "input_paths": paths,
+                "input_kind": "local_rdb",
+                "profile_name": profile_name,
+                "report_language": request.runtime_inputs.report_language,
+                "path_mode": request.runtime_inputs.path_mode or request.rdb_overrides.route_name or "auto",
+                "profile_overrides": overrides,
+                "service": analysis_service,
+            }
+            if request.runtime_inputs.mysql_database:
+                analyze_kwargs["mysql_database"] = request.runtime_inputs.mysql_database
             analysis = analyze_rdb_tool(
-                prompt=request.prompt,
-                input_paths=paths,
-                input_kind="local_rdb",
-                profile_name=profile_name,
-                report_language=request.runtime_inputs.report_language,
-                path_mode=request.runtime_inputs.path_mode or request.rdb_overrides.route_name or "auto",
-                profile_overrides=overrides,
-                service=analysis_service,
+                **analyze_kwargs,
             )
         except ValueError as exc:
             return f"Error: {exc}"
@@ -209,7 +227,7 @@ def _make_analyze_local_rdb_tool(
         )
         artifact = _generate(analysis, config)
         if artifact.content is not None:
-            return artifact.content
+            return _append_mysql_runtime_note(artifact.content, analysis=analysis)
         if artifact.output_path is not None:
             return str(artifact.output_path)
         return "Analysis complete but no output generated."
@@ -280,17 +298,22 @@ def _make_analyze_preparsed_dataset_tool(
                 return "Error: no preparsed dataset source provided."
 
         try:
+            analyze_kwargs = {
+                "prompt": request.prompt,
+                "input_paths": sources,
+                "input_kind": input_kind,
+                "profile_name": profile_name,
+                "report_language": request.runtime_inputs.report_language,
+                "path_mode": request.runtime_inputs.path_mode or request.rdb_overrides.route_name or "auto",
+                "profile_overrides": overrides,
+                "mysql_table": effective_mysql_table,
+                "mysql_query": effective_mysql_query,
+                "service": analysis_service,
+            }
+            if request.runtime_inputs.mysql_database:
+                analyze_kwargs["mysql_database"] = request.runtime_inputs.mysql_database
             analysis = analyze_rdb_tool(
-                prompt=request.prompt,
-                input_paths=sources,
-                input_kind=input_kind,
-                profile_name=profile_name,
-                report_language=request.runtime_inputs.report_language,
-                path_mode=request.runtime_inputs.path_mode or request.rdb_overrides.route_name or "auto",
-                profile_overrides=overrides,
-                mysql_table=effective_mysql_table,
-                mysql_query=effective_mysql_query,
-                service=analysis_service,
+                **analyze_kwargs,
             )
         except ValueError as exc:
             return f"Error: {exc}"
@@ -542,15 +565,8 @@ def _make_mysql_tools(
     approval_handler: HumanApprovalHandler | None = None,
 ) -> list:
     """Build the MySQL capability tools."""
-
-    def _stage_rows_with_approval(table_name: str, rows: list[dict[str, object]]) -> dict[str, object]:
-        _request_mysql_staging_approval(
-            request,
-            approval_handler=approval_handler,
-            table_name=table_name,
-            row_count=len(rows),
-        )
-        return json.loads(_stage_rows(adaptor, config, table_name, rows))
+    prepared_sessions: dict[tuple[str, str], MySQLStagingSession] = {}
+    approved_write_sessions: set[tuple[str, str]] = set()
 
     def mysql_read_query(sql: str) -> str:
         return _mysql_read(adaptor, config, sql)
@@ -558,9 +574,56 @@ def _make_mysql_tools(
     def load_preparsed_dataset_from_mysql(table_name: str, limit: str = "100000") -> str:
         return _load_dataset(adaptor, config, table_name, limit=limit)
 
-    def stage_rdb_rows_to_mysql(table_name: str, rows_json: str) -> str:
+    def stage_rdb_rows_to_mysql(
+        table_name: str,
+        rows_json: str,
+        source_file: str = "manual",
+        run_id: str = "manual",
+    ) -> str:
         rows = json.loads(rows_json)
-        return json.dumps(_stage_rows_with_approval(table_name, rows))
+        effective_table = table_name or build_default_mysql_table_name()
+        session_key = (effective_table, run_id)
+        session = prepared_sessions.get(session_key)
+        if session is None:
+            session = _prepare_mysql_staging_session(
+                request,
+                adaptor,
+                config,
+                approval_handler=approval_handler,
+                table_name=effective_table,
+                run_id=run_id,
+                batch_size=max(len(rows), 1),
+            )
+            prepared_sessions[session_key] = session
+        if session_key not in approved_write_sessions:
+            _request_mysql_staging_approval(
+                request,
+                approval_handler=approval_handler,
+                table_name=session.table_name,
+                row_count=len(rows),
+                database_name=session.database_name,
+            )
+            approved_write_sessions.add(session_key)
+        count = _insert_staging_batch(
+            adaptor,
+            session,
+            source_file=source_file or "manual",
+            rows=rows,
+        )
+        return json.dumps(
+            {
+                "staged": count,
+                "table": session.table_name,
+                "database": session.database_name,
+                "run_id": session.run_id,
+                "source_file": source_file or "manual",
+                "created_database": session.created_database,
+                "created_table": session.created_table,
+                "defaulted_database": session.defaulted_database,
+                "defaulted_table": session.defaulted_table,
+                "cleanup_mode": session.cleanup_mode,
+            }
+        )
 
     return [
         _named_tool(
@@ -595,30 +658,38 @@ def _make_phase3_analysis_service(
 ):
     if mysql_adaptor is None or mysql_connection is None:
         return None
+    normalized_request = request
+    prepared_sessions: dict[tuple[str, str], MySQLStagingSession] = {}
+    approved_write_sessions: set[tuple[str, str]] = set()
 
-    mysql_tools = _make_mysql_tools(
-        request,
-        mysql_adaptor,
-        mysql_connection,
-        approval_handler=approval_handler,
-    )
-    mysql_tool_map = {tool.__name__: tool for tool in mysql_tools}
-
-    def run_analysis(request):
+    def run_analysis(analysis_request):
         from dba_assistant.capabilities.redis_rdb_analysis.service import analyze_rdb as _analyze_rdb
 
         return _analyze_rdb(
-            request,
+            analysis_request,
             profile=None,
             remote_discovery=lambda *_args, **_kwargs: {},
-            mysql_read_query=lambda sql: json.loads(
-                mysql_tool_map["mysql_read_query"](sql)
+            mysql_read_query=lambda sql: mysql_adaptor.read_query(mysql_connection, sql),
+            stage_rdb_rows_to_mysql=lambda table_name, rows, *, source_file="manual", run_id="manual": _stage_mysql_rows_direct(
+                normalized_request,
+                mysql_adaptor,
+                mysql_connection,
+                approval_handler=approval_handler,
+                prepared_sessions=prepared_sessions,
+                approved_write_sessions=approved_write_sessions,
+                table_name=table_name,
+                rows=rows,
+                source_file=source_file,
+                run_id=run_id,
             ),
-            stage_rdb_rows_to_mysql=lambda table_name, rows: json.loads(
-                mysql_tool_map["stage_rdb_rows_to_mysql"](table_name, json.dumps(rows))
+            analyze_staged_rdb_rows=lambda staging, *, profile, sample_rows: _analyze_staged(
+                mysql_adaptor,
+                prepared_sessions[(staging.table_name, staging.run_id)],
+                profile=profile,
+                sample_rows=sample_rows,
             ),
             load_preparsed_dataset_from_mysql=lambda table_name: json.loads(
-                mysql_tool_map["load_preparsed_dataset_from_mysql"](table_name)
+                _load_dataset(mysql_adaptor, mysql_connection, table_name)
             ),
         )
 
@@ -873,7 +944,7 @@ def _render_remote_rdb_analysis(
     )
     artifact = _generate(analysis, config)
     if artifact.content is not None:
-        return artifact.content
+        return _append_mysql_runtime_note(artifact.content, analysis=analysis)
     if artifact.output_path is not None:
         return str(artifact.output_path)
     return "Analysis complete but no output generated."
@@ -925,6 +996,7 @@ def _request_mysql_staging_approval(
     approval_handler: HumanApprovalHandler | None,
     table_name: str,
     row_count: int,
+    database_name: str,
 ) -> None:
     if approval_handler is None:
         raise PermissionError("MySQL staging requires an approval handler.")
@@ -933,16 +1005,176 @@ def _request_mysql_staging_approval(
         action="stage_rdb_rows_to_mysql",
         message="写入 MySQL staging table 需要人工审批。",
         details={
-            "mysql_host": request.runtime_inputs.mysql_host or "",
+            "mysql_host": request.runtime_inputs.mysql_host or "127.0.0.1",
             "mysql_port": request.runtime_inputs.mysql_port,
-            "mysql_database": request.runtime_inputs.mysql_database or "",
+            "mysql_database": database_name,
             "mysql_table": table_name,
             "row_count": row_count,
         },
     )
     response = approval_handler.request_approval(approval_request)
     if response.status is not ApprovalStatus.APPROVED:
-        raise PermissionError("Operation denied by user.")
+        raise PermissionError(
+            f"Operation denied by user: refused MySQL staging write to {database_name}.{table_name}."
+        )
+
+
+def _request_mysql_database_creation_approval(
+    request: NormalizedRequest,
+    *,
+    approval_handler: HumanApprovalHandler | None,
+    database_name: str,
+) -> None:
+    if approval_handler is None:
+        raise PermissionError("Creating a MySQL database requires an approval handler.")
+    approval_request = ApprovalRequest(
+        action="create_mysql_database",
+        message="创建默认 MySQL 数据库需要人工审批。",
+        details={
+            "mysql_host": request.runtime_inputs.mysql_host or "127.0.0.1",
+            "mysql_port": request.runtime_inputs.mysql_port,
+            "mysql_database": database_name,
+            "defaulted_database": "yes" if not request.runtime_inputs.mysql_database else "no",
+        },
+    )
+    response = approval_handler.request_approval(approval_request)
+    if response.status is not ApprovalStatus.APPROVED:
+        raise PermissionError(
+            f"Operation denied by user: refused creation of MySQL database {database_name}."
+        )
+
+
+def _request_mysql_table_creation_approval(
+    request: NormalizedRequest,
+    *,
+    approval_handler: HumanApprovalHandler | None,
+    database_name: str,
+    table_name: str,
+) -> None:
+    if approval_handler is None:
+        raise PermissionError("Creating a MySQL staging table requires an approval handler.")
+    approval_request = ApprovalRequest(
+        action="create_mysql_staging_table",
+        message="创建 MySQL staging table 需要人工审批。",
+        details={
+            "mysql_host": request.runtime_inputs.mysql_host or "127.0.0.1",
+            "mysql_port": request.runtime_inputs.mysql_port,
+            "mysql_database": database_name,
+            "mysql_table": table_name,
+            "defaulted_table": "yes" if not request.runtime_inputs.mysql_table else "no",
+        },
+    )
+    response = approval_handler.request_approval(approval_request)
+    if response.status is not ApprovalStatus.APPROVED:
+        raise PermissionError(
+            f"Operation denied by user: refused creation of MySQL staging table {database_name}.{table_name}."
+        )
+
+
+def _prepare_mysql_staging_session(
+    request: NormalizedRequest,
+    adaptor: MySQLAdaptor,
+    config: MySQLConnectionConfig,
+    *,
+    approval_handler: HumanApprovalHandler | None,
+    table_name: str,
+    run_id: str,
+    batch_size: int,
+) -> MySQLStagingSession:
+    database_name = request.runtime_inputs.mysql_database or config.database or DEFAULT_MYSQL_DATABASE
+    defaulted_database = not bool(request.runtime_inputs.mysql_database)
+    defaulted_table = not bool(request.runtime_inputs.mysql_table)
+    admin_config = replace(config, database=None)
+    database_created = False
+    table_created = False
+
+    if not _database_exists(adaptor, admin_config, database_name):
+        _request_mysql_database_creation_approval(
+            request,
+            approval_handler=approval_handler,
+            database_name=database_name,
+        )
+        _create_database(adaptor, admin_config, database_name)
+        database_created = True
+
+    database_config = replace(config, database=database_name)
+    if not _table_exists(adaptor, database_config, table_name):
+        _request_mysql_table_creation_approval(
+            request,
+            approval_handler=approval_handler,
+            database_name=database_name,
+            table_name=table_name,
+        )
+        _create_staging_table(adaptor, database_config, table_name)
+        table_created = True
+
+    return MySQLStagingSession(
+        connection=database_config,
+        database_name=database_name,
+        table_name=table_name,
+        run_id=run_id,
+        batch_size=batch_size,
+        created_database=database_created,
+        created_table=table_created,
+        defaulted_database=defaulted_database,
+        defaulted_table=defaulted_table,
+        cleanup_mode="retain",
+    )
+
+
+def _stage_mysql_rows_direct(
+    request: NormalizedRequest,
+    adaptor: MySQLAdaptor,
+    config: MySQLConnectionConfig,
+    *,
+    approval_handler: HumanApprovalHandler | None,
+    prepared_sessions: dict[tuple[str, str], MySQLStagingSession],
+    approved_write_sessions: set[tuple[str, str]],
+    table_name: str,
+    rows: list[dict[str, object]],
+    source_file: str,
+    run_id: str,
+) -> dict[str, object]:
+    effective_table = table_name or request.runtime_inputs.mysql_table or build_default_mysql_table_name()
+    session_key = (effective_table, run_id)
+    session = prepared_sessions.get(session_key)
+    if session is None:
+        session = _prepare_mysql_staging_session(
+            request,
+            adaptor,
+            config,
+            approval_handler=approval_handler,
+            table_name=effective_table,
+            run_id=run_id,
+            batch_size=DEFAULT_MYSQL_STAGE_BATCH_SIZE,
+        )
+        prepared_sessions[session_key] = session
+    if session_key not in approved_write_sessions:
+        _request_mysql_staging_approval(
+            request,
+            approval_handler=approval_handler,
+            table_name=session.table_name,
+            row_count=len(rows),
+            database_name=session.database_name,
+        )
+        approved_write_sessions.add(session_key)
+    staged = _insert_staging_batch(
+        adaptor,
+        session,
+        source_file=source_file,
+        rows=rows,
+    )
+    return {
+        "staged": staged,
+        "table": session.table_name,
+        "database": session.database_name,
+        "run_id": session.run_id,
+        "created_database": session.created_database,
+        "created_table": session.created_table,
+        "defaulted_database": session.defaulted_database,
+        "defaulted_table": session.defaulted_table,
+        "cleanup_mode": session.cleanup_mode,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -953,3 +1185,33 @@ def _named_tool(func: Any, name: str, description: str) -> Any:
     func.__name__ = name
     func.__doc__ = description
     return func
+
+
+def _append_mysql_runtime_note(content: str, *, analysis) -> str:
+    metadata = getattr(analysis, "metadata", None)
+    if not isinstance(metadata, dict):
+        return content
+    if metadata.get("route") != "database_backed_analysis":
+        return content
+    database_name = str(metadata.get("mysql_database") or "").strip() or DEFAULT_MYSQL_DATABASE
+    table_name = str(metadata.get("mysql_table") or "").strip() or "unknown"
+    staged_rows = str(metadata.get("mysql_staged_rows") or "0")
+    batch_size = str(metadata.get("mysql_stage_batch_size") or DEFAULT_MYSQL_STAGE_BATCH_SIZE)
+    cleanup_mode = str(metadata.get("mysql_cleanup_mode") or "retain")
+    progress = str(metadata.get("mysql_progress") or "").strip()
+    lines = [
+        "[MySQL-backed staging]",
+        f"database={database_name}",
+        f"table={table_name}",
+        f"staged_rows={staged_rows}",
+        f"batch_size={batch_size}",
+        "shared_table_mode=yes",
+        "full_table_reload=disabled",
+        f"cleanup_mode={cleanup_mode}",
+    ]
+    if progress:
+        lines.append(f"progress={progress}")
+    note = "\n".join(lines)
+    if note in content:
+        return content
+    return f"{content}\n\n{note}"

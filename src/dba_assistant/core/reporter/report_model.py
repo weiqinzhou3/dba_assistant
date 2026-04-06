@@ -20,6 +20,7 @@ class TableBlock:
 class ReportSectionModel:
     id: str
     title: str
+    level: int = 1
     blocks: list[TextBlock | TableBlock] = field(default_factory=list)
 
 
@@ -114,6 +115,7 @@ def _coerce_section(section: ReportSection) -> ReportSectionModel:
     return ReportSectionModel(
         id=_section_id(section.title),
         title=section.title,
+        level=1,
         blocks=blocks,
     )
 

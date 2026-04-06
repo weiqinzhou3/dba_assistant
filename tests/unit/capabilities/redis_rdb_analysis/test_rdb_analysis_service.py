@@ -190,7 +190,9 @@ def test_analyze_rdb_supports_explicit_english_report_language(monkeypatch) -> N
 
     assert isinstance(result, AnalysisReport)
     assert result.title == "Redis RDB Analysis Report"
-    assert result.summary == "1 samples, 3 keys, 224 bytes."
+    assert result.summary is not None
+    assert result.summary.startswith("The analysis covers 1 sample, 3 keys, and 224 bytes.")
+    assert "Expiration is configured for part of the dataset." in result.summary
 
 
 def test_analyze_rdb_database_backed_route_stages_rows_and_reloads_mysql_dataset(
@@ -278,7 +280,8 @@ def test_analyze_rdb_database_backed_route_round_trips_mysql_text_values_without
     )
 
     assert isinstance(result, AnalysisReport)
-    assert result.summary == "共 1 个样本，1 个 key，123 字节。"
+    assert result.summary is not None
+    assert result.summary.startswith("本次分析共覆盖 1 个样本、1 个键，累计内存占用 123 字节。")
     assert result.metadata["route"] == "database_backed_analysis"
     assert result.metadata["path"] == "3a"
 
@@ -322,6 +325,7 @@ def test_analyze_rdb_uses_hdt_parser_strategy_for_v11_fixture() -> None:
     assert result.metadata["path"] == "3c"
     assert result.metadata["parser_strategy"] == "HdtRdbCliStrategy"
     assert result.metadata["parser_binary"] == str(HDT_BINARY.resolve())
-    assert result.summary == "共 1 个样本，0 个 key，0 字节。"
+    assert result.summary is not None
+    assert result.summary.startswith("本次分析共覆盖 1 个样本、0 个键，累计内存占用 0 字节。")
 
     parser_strategy_module.build_default_rdb_parser_strategy.cache_clear()

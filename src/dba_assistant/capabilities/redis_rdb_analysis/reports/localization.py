@@ -19,50 +19,56 @@ def report_title(language: str) -> str:
 def section_title(section_id: str, language: str) -> str:
     titles = {
         "en-US": {
+            "overview": "Sample and Overall Overview",
+            "distribution_analysis": "Data Distribution Analysis",
+            "big_key_analysis": "Big Key Analysis",
             "executive_summary": "Executive Summary",
-            "background": "Background",
+            "background": "Analysis Background",
             "analysis_results": "Analysis Results",
             "sample_overview": "Sample Overview",
-            "overall_summary": "Overall Summary",
-            "key_type_summary": "Key Type Summary",
-            "key_type_memory_breakdown": "Key Type Memory Breakdown",
-            "expiration_summary": "Expiration Summary",
-            "non_expiration_summary": "Non-Expiration Summary",
-            "prefix_top_summary": "Top Prefixes",
-            "prefix_expiration_breakdown": "Prefix Expiration Breakdown",
-            "top_big_keys": "Top Big Keys",
-            "top_string_keys": "Top String Keys",
-            "top_hash_keys": "Top Hash Keys",
-            "top_list_keys": "Top List Keys",
-            "top_set_keys": "Top Set Keys",
-            "top_zset_keys": "Top Zset Keys",
-            "top_stream_keys": "Top Stream Keys",
-            "top_other_keys": "Top Other Keys",
-            "loan_prefix_detail": "Loan Prefix Detail",
-            "conclusions": "Conclusions",
+            "overall_summary": "Overall Overview",
+            "key_type_summary": "Key Type Distribution Overview",
+            "key_type_memory_breakdown": "Key Type Memory Usage Distribution",
+            "expiration_summary": "Expiration Distribution",
+            "non_expiration_summary": "Persistent Key Distribution",
+            "prefix_top_summary": "Prefix Statistics",
+            "prefix_expiration_breakdown": "Prefix Expiration Distribution",
+            "top_big_keys": "Overall Big Keys Ranking (Top 100)",
+            "top_string_keys": "String Big Keys (Top 100)",
+            "top_hash_keys": "Hash Big Keys (Top 100)",
+            "top_list_keys": "List Big Keys (Top 100)",
+            "top_set_keys": "Set Big Keys (Top 100)",
+            "top_zset_keys": "ZSet Big Keys (Top 100)",
+            "top_stream_keys": "Stream Big Keys (Top 100)",
+            "top_other_keys": "Other Big Keys (Top 100)",
+            "loan_prefix_detail": "Loan Prefix Key Details",
+            "conclusions": "Conclusions and Recommendations",
         },
         "zh-CN": {
+            "overview": "样本与总体概况",
+            "distribution_analysis": "数据分布分析",
+            "big_key_analysis": "大 Key 分析",
             "executive_summary": "执行摘要",
-            "background": "背景信息",
+            "background": "分析背景",
             "analysis_results": "分析结果",
             "sample_overview": "样本概览",
             "overall_summary": "总体概览",
-            "key_type_summary": "Key 类型概览",
-            "key_type_memory_breakdown": "Key 类型内存分布",
+            "key_type_summary": "键类型分布概览",
+            "key_type_memory_breakdown": "各键类型内存占用分布",
             "expiration_summary": "过期分布",
-            "non_expiration_summary": "永久 Key 分布",
-            "prefix_top_summary": "前缀 Top 统计",
-            "prefix_expiration_breakdown": "关注前缀过期分布",
-            "top_big_keys": "总体大 Key Top",
-            "top_string_keys": "String 大 Key",
-            "top_hash_keys": "Hash 大 Key",
-            "top_list_keys": "List 大 Key",
-            "top_set_keys": "Set 大 Key",
-            "top_zset_keys": "Zset 大 Key",
-            "top_stream_keys": "Stream 大 Key",
-            "top_other_keys": "其他类型大 Key",
-            "loan_prefix_detail": "Loan 前缀详情",
-            "conclusions": "结论",
+            "non_expiration_summary": "未设置过期键分布",
+            "prefix_top_summary": "前缀统计",
+            "prefix_expiration_breakdown": "重点前缀过期分布",
+            "top_big_keys": "总体大 Key 排名（Top 100）",
+            "top_string_keys": "String 类型大 Key（Top 100）",
+            "top_hash_keys": "Hash 类型大 Key（Top 100）",
+            "top_list_keys": "List 类型大 Key（Top 100）",
+            "top_set_keys": "Set 类型大 Key（Top 100）",
+            "top_zset_keys": "ZSet 类型大 Key（Top 100）",
+            "top_stream_keys": "Stream 类型大 Key（Top 100）",
+            "top_other_keys": "其他类型大 Key（Top 100）",
+            "loan_prefix_detail": "Loan 前缀键明细",
+            "conclusions": "结论与建议",
         },
     }
     return titles[language].get(section_id, section_id)
@@ -102,14 +108,20 @@ def _build_overall_section(section_id: str, payload: dict[str, object], language
     total_bytes = int(payload.get("total_bytes", 0))
     if language == "en-US":
         return {
-            "summary": f"{total_samples} samples, {total_keys} keys, {total_bytes} bytes.",
+            "summary": (
+                f"This section summarizes {total_samples} sample, {total_keys} key, and {total_bytes} bytes."
+                if total_samples == 1 and total_keys == 1
+                else f"This section summarizes {total_samples} samples, {total_keys} keys, and {total_bytes} bytes."
+            ),
+            "table_title": section_title(section_id, language),
             "columns": ["Metric", "Value"],
-            "rows": [["Samples", str(total_samples)], ["Keys", str(total_keys)], ["Bytes", str(total_bytes)]],
+            "rows": [["Sample Count", str(total_samples)], ["Key Count", str(total_keys)], ["Memory Usage (Bytes)", str(total_bytes)]],
         }
     return {
-        "summary": f"共 {total_samples} 个样本，{total_keys} 个 key，{total_bytes} 字节。",
-        "columns": ["指标", "值"],
-        "rows": [["样本数", str(total_samples)], ["Key 数", str(total_keys)], ["字节数", str(total_bytes)]],
+        "summary": f"本节汇总展示本次分析的样本规模、键数量及总体内存占用情况，共涉及 {total_samples} 个样本、{total_keys} 个键、{total_bytes} 字节。",
+        "table_title": section_title(section_id, language),
+        "columns": ["指标项", "指标值"],
+        "rows": [["样本数", str(total_samples)], ["键数量", str(total_keys)], ["内存占用（字节）", str(total_bytes)]],
     }
 
 
@@ -118,14 +130,16 @@ def _build_background_section(section_id: str, payload: dict[str, object], langu
     focus_prefix_count = int(payload.get("focus_prefix_count", 0))
     if language == "en-US":
         return {
-            "summary": "Deterministic Phase 3 RDB analysis over normalized datasets.",
+            "summary": "The report is generated deterministically from normalized datasets and the active analysis profile.",
+            "table_title": section_title(section_id, language),
             "columns": ["Metric", "Value"],
-            "rows": [["Profile", profile_name], ["Focused Prefixes", str(focus_prefix_count)]],
+            "rows": [["Profile", profile_name], ["Focused Prefix Count", str(focus_prefix_count)]],
         }
     return {
-        "summary": "基于标准化数据集的确定性 Phase 3 RDB 分析。",
-        "columns": ["指标", "值"],
-        "rows": [["Profile", profile_name], ["关注前缀数", str(focus_prefix_count)]],
+        "summary": "本报告依据标准化数据集及当前启用的分析配置生成，用于反映当前样本的结构性特征。",
+        "table_title": section_title(section_id, language),
+        "columns": ["指标项", "指标值"],
+        "rows": [["分析配置", profile_name], ["重点关注前缀数", str(focus_prefix_count)]],
     }
 
 
@@ -140,20 +154,21 @@ def _build_sample_overview_section(section_id: str, payload: dict[str, object], 
         return {}
     if language == "en-US":
         return {
-            "summary": "Input samples included in the analysis.",
-            "columns": ["Sample", "Kind", "Source"],
+            "summary": "The following input samples were included in this analysis.",
+            "table_title": "Sample Inventory",
+            "columns": ["Sample Name", "Sample Type", "Source"],
             "rows": rows,
         }
     return {
-        "summary": "本次分析包含的输入样本如下。",
-        "columns": ["样本", "类型", "来源"],
+        "summary": "本节列示纳入本次分析的输入样本及其来源信息。",
+        "table_title": "样本清单",
+        "columns": ["样本名称", "样本类型", "数据来源"],
         "rows": rows,
     }
 
 
 def _build_key_type_summary_section(section_id: str, payload: dict[str, object], language: str) -> dict[str, Any]:
     counts = payload.get("counts")
-    memory_bytes = payload.get("memory_bytes")
     rows = payload.get("rows")
     total_keys = sum(counts.values()) if isinstance(counts, dict) else 0
     total_types = len(counts) if isinstance(counts, dict) else 0
@@ -161,13 +176,15 @@ def _build_key_type_summary_section(section_id: str, payload: dict[str, object],
         rows = []
     if language == "en-US":
         return {
-            "summary": f"{total_keys} keys across {total_types} key types.",
-            "columns": ["Key Type", "Count", "Bytes"],
+            "summary": f"{total_keys} keys are distributed across {total_types} key types.",
+            "table_title": section_title(section_id, language),
+            "columns": ["Key Type", "Key Count", "Memory Usage (Bytes)"],
             "rows": rows,
         }
     return {
-        "summary": f"共 {total_keys} 个 key，分布在 {total_types} 种 key type 中。",
-        "columns": ["Key 类型", "数量", "字节数"],
+        "summary": f"本节从数量与内存占用两个维度展示各键类型分布情况，共涉及 {total_keys} 个键、{total_types} 类键类型。",
+        "table_title": section_title(section_id, language),
+        "columns": ["键类型", "键数量", "内存占用（字节）"],
         "rows": rows,
     }
 
@@ -178,13 +195,15 @@ def _build_key_type_memory_section(section_id: str, payload: dict[str, object], 
         rows = []
     if language == "en-US":
         return {
-            "summary": "Memory grouped by key type.",
-            "columns": ["Key Type", "Bytes"],
+            "summary": "This section shows memory usage aggregated by key type.",
+            "table_title": section_title(section_id, language),
+            "columns": ["Key Type", "Memory Usage (Bytes)"],
             "rows": rows,
         }
     return {
-        "summary": "按 key type 聚合的内存分布。",
-        "columns": ["Key 类型", "字节数"],
+        "summary": "本节展示各键类型对应的内存占用情况，以识别主要内存消耗来源。",
+        "table_title": section_title(section_id, language),
+        "columns": ["键类型", "内存占用（字节）"],
         "rows": rows,
     }
 
@@ -194,14 +213,16 @@ def _build_expiration_section(section_id: str, payload: dict[str, object], langu
     persistent_count = int(payload.get("persistent_count", 0))
     if language == "en-US":
         return {
-            "summary": f"{expired_count} keys expire and {persistent_count} keys persist.",
-            "columns": ["Bucket", "Count"],
+            "summary": f"Expiration is configured for {expired_count} keys, while {persistent_count} keys have no expiration.",
+            "table_title": section_title(section_id, language),
+            "columns": ["Expiration Status", "Key Count"],
             "rows": [["With Expiration", str(expired_count)], ["Without Expiration", str(persistent_count)]],
         }
     return {
-        "summary": f"有 {expired_count} 个 key 设置了过期，{persistent_count} 个 key 为永久保存。",
-        "columns": ["分桶", "数量"],
-        "rows": [["有过期", str(expired_count)], ["无过期", str(persistent_count)]],
+        "summary": f"样本中共有 {expired_count} 个键设置了过期时间，另有 {persistent_count} 个键未设置过期时间。",
+        "table_title": section_title(section_id, language),
+        "columns": ["过期状态", "键数量"],
+        "rows": [["设置过期", str(expired_count)], ["未设置过期", str(persistent_count)]],
     }
 
 
@@ -209,14 +230,16 @@ def _build_non_expiration_section(section_id: str, payload: dict[str, object], l
     persistent_count = int(payload.get("persistent_count", 0))
     if language == "en-US":
         return {
-            "summary": f"{persistent_count} keys do not expire.",
-            "columns": ["Bucket", "Count"],
+            "summary": f"{persistent_count} keys do not have an expiration configured.",
+            "table_title": section_title(section_id, language),
+            "columns": ["Expiration Status", "Key Count"],
             "rows": [["Without Expiration", str(persistent_count)]],
         }
     return {
-        "summary": f"共有 {persistent_count} 个 key 不会过期。",
-        "columns": ["分桶", "数量"],
-        "rows": [["无过期", str(persistent_count)]],
+        "summary": f"本节展示未设置过期时间的键数量，共计 {persistent_count} 个。",
+        "table_title": section_title(section_id, language),
+        "columns": ["过期状态", "键数量"],
+        "rows": [["未设置过期", str(persistent_count)]],
     }
 
 
@@ -228,13 +251,15 @@ def _build_prefix_top_section(section_id: str, payload: dict[str, object], langu
         return {}
     if language == "en-US":
         return {
-            "summary": "Top prefixes by key count.",
-            "columns": ["Prefix", "Count", "Bytes"],
+            "summary": "The following prefixes rank highest by key count and memory usage.",
+            "table_title": section_title(section_id, language),
+            "columns": ["Prefix", "Key Count", "Memory Usage (Bytes)"],
             "rows": rows,
         }
     return {
-        "summary": "按 key 数量排序的前缀 Top 列表。",
-        "columns": ["前缀", "数量", "字节数"],
+        "summary": "本节展示按键数量排序的主要前缀分布情况，用于识别高集中度业务域。",
+        "table_title": section_title(section_id, language),
+        "columns": ["前缀", "键数量", "内存占用（字节）"],
         "rows": rows,
     }
 
@@ -247,13 +272,15 @@ def _build_prefix_expiration_section(section_id: str, payload: dict[str, object]
         return {}
     if language == "en-US":
         return {
-            "summary": "Expiration breakdown for focused prefixes.",
-            "columns": ["Prefix", "Expired", "Persistent", "Total"],
+            "summary": "This section breaks down expiration coverage for focused prefixes.",
+            "table_title": section_title(section_id, language),
+            "columns": ["Prefix", "With Expiration", "Without Expiration", "Total"],
             "rows": rows,
         }
     return {
-        "summary": "关注前缀的过期分布情况。",
-        "columns": ["前缀", "有过期", "无过期", "总数"],
+        "summary": "本节展示重点前缀下键的过期配置分布情况。",
+        "table_title": section_title(section_id, language),
+        "columns": ["前缀", "设置过期", "未设置过期", "总数"],
         "rows": rows,
     }
 
@@ -266,13 +293,15 @@ def _build_top_big_keys_section(section_id: str, payload: dict[str, object], lan
         return {}
     if language == "en-US":
         return {
-            "summary": "Largest keys in the dataset.",
-            "columns": ["Key", "Type", "Bytes"],
+            "summary": "The table below lists the overall largest keys ranked by memory usage.",
+            "table_title": section_title(section_id, language),
+            "columns": ["Key Name", "Key Type", "Memory Usage (Bytes)"],
             "rows": rows,
         }
     return {
-        "summary": "当前数据集中体积最大的 key。",
-        "columns": ["Key", "类型", "字节数"],
+        "summary": "本节列示样本中按内存占用排序的总体大 Key，用于快速识别主要风险对象。",
+        "table_title": section_title(section_id, language),
+        "columns": ["键名", "键类型", "内存占用（字节）"],
         "rows": rows,
     }
 
@@ -283,16 +312,18 @@ def _build_typed_big_keys_section(section_id: str, payload: dict[str, object], l
         rows = []
     if not rows:
         return {}
-    type_name = section_title(section_id, language)
+    title = section_title(section_id, language)
     if language == "en-US":
         return {
-            "summary": f"Largest keys for {type_name.lower()}.",
-            "columns": ["Key", "Bytes"],
+            "summary": f"The table below lists the largest keys within the {title.replace(' (Top 100)', '').lower()} category.",
+            "table_title": title,
+            "columns": ["Key Name", "Memory Usage (Bytes)"],
             "rows": rows,
         }
     return {
-        "summary": f"{type_name} 列表。",
-        "columns": ["Key", "字节数"],
+        "summary": f"本节展示 {title}，用于识别同类型数据结构中的主要高占用对象。",
+        "table_title": title,
+        "columns": ["键名", "内存占用（字节）"],
         "rows": rows,
     }
 
@@ -305,19 +336,25 @@ def _build_loan_prefix_section(section_id: str, payload: dict[str, object], lang
         return {}
     if language == "en-US":
         return {
-            "summary": "Loan-prefixed keys in descending size order.",
-            "columns": ["Key", "Type", "Bytes"],
+            "summary": "This section lists loan-prefixed keys in descending memory usage order.",
+            "table_title": section_title(section_id, language),
+            "columns": ["Key Name", "Key Type", "Memory Usage (Bytes)"],
             "rows": rows,
         }
     return {
-        "summary": "按大小倒序排列的 loan 前缀 key。",
-        "columns": ["Key", "类型", "字节数"],
+        "summary": "本节按内存占用从高到低展示 loan 前缀相关键明细。",
+        "table_title": section_title(section_id, language),
+        "columns": ["键名", "键类型", "内存占用（字节）"],
         "rows": rows,
     }
 
 
 def _build_conclusions_section(section_id: str, payload: dict[str, object], language: str) -> dict[str, Any]:
-    summary = "No additional deterministic concerns were found by the generic analyzers." if language == "en-US" else "通用分析器未发现额外的确定性风险。"
+    summary = (
+        "No additional deterministic high-risk findings were identified. Prioritize review of high-memory key types, large keys, and concentrated prefixes together with business access patterns."
+        if language == "en-US"
+        else "基于当前样本及既定分析逻辑，未发现额外确定性高风险。建议结合业务访问特征，优先复核高占用键类型、大 Key 及高集中度前缀。"
+    )
     return {
         "summary": summary,
         "rows": [],
@@ -330,6 +367,7 @@ def _build_fallback_section(section_id: str, payload: dict[str, object], languag
     columns = payload.get("columns") if isinstance(payload.get("columns"), list) else []
     return {
         "summary": str(payload.get("summary", "")) if payload.get("summary") else "",
+        "table_title": section_title(section_id, language),
         "columns": [str(column) for column in columns],
         "rows": [[str(cell) for cell in row] for row in rows if isinstance(row, list)],
     }
@@ -340,13 +378,13 @@ def _sample_kind_label(kind: str, language: str) -> str:
         "en-US": {
             "local_rdb": "Local RDB",
             "remote_redis": "Remote Redis",
-            "precomputed": "Precomputed",
-            "preparsed_mysql": "MySQL Dataset",
+            "precomputed": "Precomputed Dataset",
+            "preparsed_mysql": "MySQL-backed Dataset",
         },
         "zh-CN": {
             "local_rdb": "本地 RDB",
             "remote_redis": "远端 Redis",
-            "precomputed": "预处理文件",
+            "precomputed": "预处理数据集",
             "preparsed_mysql": "MySQL 数据集",
         },
     }

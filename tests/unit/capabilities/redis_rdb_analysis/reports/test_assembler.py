@@ -5,40 +5,94 @@ from dba_assistant.capabilities.redis_rdb_analysis.types import EffectiveProfile
 def test_assembler_orders_sections_from_profile_and_converts_tables() -> None:
     profile = EffectiveProfile(
         name="generic",
-        sections=("executive_summary", "expiration_summary", "top_big_keys"),
+        sections=(
+            "executive_summary",
+            "sample_overview",
+            "overall_summary",
+            "key_type_summary",
+            "key_type_memory_breakdown",
+            "expiration_summary",
+            "prefix_top_summary",
+            "top_big_keys",
+        ),
     )
     analysis_result = {
         "executive_summary": {"total_samples": 1, "total_keys": 2, "total_bytes": 3},
+        "sample_overview": {"sample_rows": [["sample-1", "local_rdb", "/tmp/dump.rdb"]]},
+        "overall_summary": {"total_samples": 1, "total_keys": 2, "total_bytes": 3},
+        "key_type_summary": {
+            "counts": {"string": 2},
+            "memory_bytes": {"string": 3},
+            "rows": [["string", "2", "3"]],
+        },
+        "key_type_memory_breakdown": {"rows": [["string", "3"]]},
         "expiration_summary": {"expired_count": 1, "persistent_count": 1},
-        "top_big_keys": {"rows": [["loan:1", "2048"]], "columns": ["key", "bytes"]},
+        "prefix_top_summary": {"rows": [["loan", "2", "3"]]},
+        "top_big_keys": {"rows": [["loan:1", "string", "2048"]], "columns": ["key", "type", "bytes"]},
     }
 
     report = assemble_report(analysis_result, profile=profile, title="Redis RDB Analysis", language="en-US")
 
-    assert [section.id for section in report.sections] == [
-        "executive_summary",
-        "expiration_summary",
-        "top_big_keys",
+    assert report.summary == (
+        "The analysis covers 1 sample, 2 keys, and 3 bytes. "
+        "The string type contributes the highest memory share. "
+        "Expiration is configured for part of the dataset. "
+        "Large keys were detected in the Top 100 ranking. "
+        "Key counts are relatively concentrated under prefix loan. "
+        "No additional deterministic high-risk findings were identified."
+    )
+    assert [(section.id, section.level) for section in report.sections] == [
+        ("overview", 1),
+        ("sample_overview", 2),
+        ("overall_summary", 2),
+        ("distribution_analysis", 1),
+        ("key_type_summary", 2),
+        ("key_type_memory_breakdown", 2),
+        ("expiration_summary", 2),
+        ("prefix_top_summary", 2),
+        ("big_key_analysis", 1),
+        ("top_big_keys", 2),
     ]
-    assert report.sections[1].blocks[1].rows == [["With Expiration", "1"], ["Without Expiration", "1"]]
+    assert all(section.id != "executive_summary" for section in report.sections)
+    assert report.sections[4].blocks[1].title == "Key Type Distribution Overview"
+    assert report.sections[6].blocks[1].rows == [["With Expiration", "1"], ["Without Expiration", "1"]]
 
 
 def test_assembler_defaults_to_chinese_localized_titles() -> None:
     profile = EffectiveProfile(
         name="generic",
-        sections=("overall_summary", "top_string_keys"),
+        sections=("executive_summary", "overall_summary", "top_string_keys"),
     )
     analysis_result = {
         "overall_summary": {"total_samples": 1, "total_keys": 1, "total_bytes": 128},
+        "key_type_summary": {
+            "counts": {"string": 1},
+            "memory_bytes": {"string": 128},
+            "rows": [["string", "1", "128"]],
+        },
+        "expiration_summary": {"expired_count": 0, "persistent_count": 1},
         "top_string_keys": {"rows": [["session:1", "128"]]},
     }
 
     report = assemble_report(analysis_result, profile=profile, title="ignored", language="zh-CN")
 
     assert report.title == "Redis RDB 分析报告"
-    assert report.summary == "共 1 个样本，1 个 key，128 字节。"
-    assert report.sections[0].title == "总体概览"
-    assert report.sections[1].title == "String 大 Key"
+    assert report.summary == (
+        "本次分析共覆盖 1 个样本、1 个键，累计内存占用 128 字节。"
+        "当前内存占用最高的键类型为 string。"
+        "样本中未发现已设置过期时间的键。"
+        "已识别出需要重点关注的大 Key。"
+        "当前未发现额外确定性高风险，建议结合业务侧访问特征持续评估高占用键。"
+    )
+    assert [section.title for section in report.sections] == [
+        "样本与总体概况",
+        "总体概览",
+        "大 Key 分析",
+        "String 类型大 Key（Top 100）",
+    ]
+    table_block = report.sections[3].blocks[1]
+    assert table_block.title == "String 类型大 Key（Top 100）"
+    assert table_block.columns == ["键名", "内存占用（字节）"]
 
 
 def test_assembler_omits_empty_sections_consistently() -> None:
@@ -53,4 +107,32 @@ def test_assembler_omits_empty_sections_consistently() -> None:
 
     report = assemble_report(analysis_result, profile=profile, title="ignored", language="zh-CN")
 
-    assert [section.id for section in report.sections] == ["top_hash_keys"]
+    assert [section.id for section in report.sections] == ["big_key_analysis", "top_hash_keys"]
+
+
+def test_assembler_preserves_english_localization_for_formal_titles_and_columns() -> None:
+    profile = EffectiveProfile(
+        name="generic",
+        sections=("key_type_summary", "top_string_keys"),
+    )
+    analysis_result = {
+        "key_type_summary": {
+            "counts": {"string": 1},
+            "memory_bytes": {"string": 128},
+            "rows": [["string", "1", "128"]],
+        },
+        "top_string_keys": {"rows": [["session:1", "128"]]},
+    }
+
+    report = assemble_report(analysis_result, profile=profile, title="ignored", language="en-US")
+
+    assert report.title == "Redis RDB Analysis Report"
+    assert [section.title for section in report.sections] == [
+        "Data Distribution Analysis",
+        "Key Type Distribution Overview",
+        "Big Key Analysis",
+        "String Big Keys (Top 100)",
+    ]
+    key_type_table = report.sections[1].blocks[1]
+    assert key_type_table.title == "Key Type Distribution Overview"
+    assert key_type_table.columns == ["Key Type", "Key Count", "Memory Usage (Bytes)"]

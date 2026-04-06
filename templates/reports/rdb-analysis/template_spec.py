@@ -6,12 +6,12 @@ TEMPLATE = {
 TEMPLATE_TEXT = {
     "zh-CN": {
         "cover_title": "Redis RDB 分析报告",
-        "cover_subtitle": "Phase 1 标准报告骨架",
+        "cover_subtitle": "键空间结构与内存占用分析",
         "summary_heading": "执行摘要",
     },
     "en-US": {
         "cover_title": "Redis RDB Analysis Report",
-        "cover_subtitle": "Phase 1 standard report skeleton",
+        "cover_subtitle": "Keyspace Structure and Memory Usage Analysis",
         "summary_heading": "Executive Summary",
     },
 }

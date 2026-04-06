@@ -14,6 +14,8 @@ def build_profile_overrides(request: NormalizedRequest) -> dict[str, object]:
     overrides: dict[str, object] = {}
     if request.rdb_overrides.focus_prefixes:
         overrides["focus_prefixes"] = request.rdb_overrides.focus_prefixes
+    if request.rdb_overrides.focus_only:
+        overrides["focus_only"] = True
     if request.rdb_overrides.top_n:
         overrides["top_n"] = dict(request.rdb_overrides.top_n)
     return overrides

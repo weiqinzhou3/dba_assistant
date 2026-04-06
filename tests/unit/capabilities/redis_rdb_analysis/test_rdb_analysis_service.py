@@ -190,6 +190,57 @@ def test_analyze_rdb_focus_only_mode_uses_only_focused_prefix_sections(monkeypat
     assert [section.title for section in result.sections] == ["重点前缀详情分析", "前缀 tag:* 详情"]
 
 
+def test_analyze_rdb_full_report_keeps_standard_sections_and_adds_requested_prefix_details(monkeypatch) -> None:
+    rows = [
+        {"key_name": "tag:1", "key_type": "string", "size_bytes": 900, "has_expiration": True, "ttl_seconds": 60},
+        {"key_name": "tag:2", "key_type": "hash", "size_bytes": 800, "has_expiration": False, "ttl_seconds": None},
+        {"key_name": "store:1", "key_type": "string", "size_bytes": 700, "has_expiration": False, "ttl_seconds": None},
+        {"key_name": "store:2", "key_type": "hash", "size_bytes": 600, "has_expiration": True, "ttl_seconds": 30},
+        {"key_name": "loan:1", "key_type": "hash", "size_bytes": 500, "has_expiration": False, "ttl_seconds": None},
+    ]
+    request = RdbAnalysisRequest(
+        prompt="使用 rcs profile，重点分析 tag 和 store，top 2",
+        inputs=[SampleInput(source=Path("/tmp/dump.rdb"), kind=InputSourceKind.LOCAL_RDB)],
+        profile_name="rcs",
+        profile_overrides={
+            "focus_prefixes": ("tag:*", "store:*"),
+            "top_n": {
+                "prefix_top": 2,
+                "focused_prefix_top_keys": 2,
+                "top_big_keys": 2,
+                "string_big_keys": 2,
+                "hash_big_keys": 2,
+                "list_big_keys": 2,
+                "set_big_keys": 2,
+                "zset_big_keys": 2,
+                "stream_big_keys": 2,
+                "other_big_keys": 2,
+            },
+        },
+    )
+    monkeypatch.setattr("dba_assistant.capabilities.redis_rdb_analysis.service._parse_rdb_rows", lambda _path: rows)
+
+    result = analyze_rdb(
+        request,
+        profile=None,
+        remote_discovery=lambda *_args, **_kwargs: {"rdb_path": "/data/redis/dump.rdb"},
+    )
+
+    assert isinstance(result, AnalysisReport)
+    assert result.metadata["profile"] == "rcs"
+    assert result.metadata["scope"] == "full_report"
+    assert any(section.id == "top_big_keys" for section in result.sections)
+    assert [section.title for section in result.sections if section.id.startswith("focused_prefix")] == [
+        "重点前缀详情分析",
+        "前缀 tag:* 详情",
+        "前缀 store:* 详情",
+    ]
+    tag_section = next(section for section in result.sections if section.title == "前缀 tag:* 详情")
+    store_section = next(section for section in result.sections if section.title == "前缀 store:* 详情")
+    assert len(tag_section.blocks[1].rows) == 2
+    assert len(store_section.blocks[1].rows) == 2
+
+
 def test_analyze_rdb_mysql_backed_prefix_detail_uses_canonical_dataset_without_value_size_dependency(
     monkeypatch,
 ) -> None:
@@ -236,6 +287,65 @@ def test_analyze_rdb_mysql_backed_prefix_detail_uses_canonical_dataset_without_v
     assert result.metadata["route"] == "database_backed_analysis"
     assert result.metadata["scope"] == "focused_prefix_only"
     assert [section.title for section in result.sections] == ["重点前缀详情分析", "前缀 session:data:* 详情"]
+
+
+@pytest.mark.parametrize(
+    ("focus_prefix", "expected_title", "expected_rows"),
+    (
+        ("tag:*", "前缀 tag:* 详情", 1),
+        ("signin:*", "前缀 signin:* 详情", 1),
+        ("store:*", "前缀 store:* 详情", 1),
+        ("session:data:*", "前缀 session:data:* 详情", 1),
+    ),
+)
+def test_analyze_rdb_mysql_backed_prefix_details_support_arbitrary_prefixes_without_mysql_column_assumptions(
+    monkeypatch,
+    focus_prefix: str,
+    expected_title: str,
+    expected_rows: int,
+) -> None:
+    rows = [
+        {"key_name": "tag:1", "key_type": "string", "size_bytes": 120, "has_expiration": False, "ttl_seconds": None},
+        {"key_name": "signin:1", "key_type": "hash", "size_bytes": 110, "has_expiration": True, "ttl_seconds": 60},
+        {"key_name": "store:1", "key_type": "string", "size_bytes": 100, "has_expiration": False, "ttl_seconds": None},
+        {"key_name": "session:data:1", "key_type": "string", "size_bytes": 90, "has_expiration": False, "ttl_seconds": None},
+    ]
+    request = RdbAnalysisRequest(
+        prompt=f"只输出 {focus_prefix} 的 key 详情",
+        inputs=[SampleInput(source=Path("/tmp/dump.rdb"), kind=InputSourceKind.LOCAL_RDB)],
+        profile_name="rcs",
+        path_mode="database_backed_analysis",
+        profile_overrides={
+            "focus_prefixes": (focus_prefix,),
+            "focus_only": True,
+            "top_n": {"focused_prefix_top_keys": 10},
+        },
+    )
+    monkeypatch.setattr(service_module, "_parse_rdb_rows", lambda _path: rows)
+
+    def fake_stage_rdb_rows_to_mysql(table_name: str, parsed_rows: list[dict[str, object]]) -> dict[str, object]:
+        return {"table": table_name, "staged": len(parsed_rows)}
+
+    def fake_load_preparsed_dataset_from_mysql(table_name: str) -> dict[str, object]:
+        return {"source": f"mysql:{table_name}", "rows": rows}
+
+    def fail_mysql_read_query(_sql: str) -> dict[str, object]:
+        raise AssertionError("mysql_read_query should not be used for prefix detail analysis")
+
+    result = analyze_rdb(
+        request,
+        profile=None,
+        remote_discovery=lambda *_args, **_kwargs: {"rdb_path": "/data/redis/dump.rdb"},
+        stage_rdb_rows_to_mysql=fake_stage_rdb_rows_to_mysql,
+        load_preparsed_dataset_from_mysql=fake_load_preparsed_dataset_from_mysql,
+        mysql_read_query=fail_mysql_read_query,
+    )
+
+    assert isinstance(result, AnalysisReport)
+    assert result.metadata["route"] == "database_backed_analysis"
+    assert result.metadata["scope"] == "focused_prefix_only"
+    detail = next(section for section in result.sections if section.title == expected_title)
+    assert len(detail.blocks[1].rows) == expected_rows
 
 
 def test_analyze_rdb_mysql_backed_prefix_detail_keeps_zero_match_section(monkeypatch) -> None:

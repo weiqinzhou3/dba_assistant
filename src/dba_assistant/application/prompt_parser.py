@@ -122,6 +122,7 @@ _PROFILE_HINT_PATTERNS = (
         rf"(?:profile|模板|报告(?:风格)?|配置)(?![a-z0-9_])"
     ),
 )
+_RAW_PREFIX_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_.-]+(?::[A-Za-z0-9_.-]+)*(?::\*)?")
 _PREFIX_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_.-]+(?::[A-Za-z0-9_.-]+)*:\*")
 _PREFIX_CANDIDATE_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+(?::[A-Za-z0-9_.-]+)*(?::\*)?$")
 _PREFIX_KEYWORD_PATTERN = re.compile(r"(?i)\bkeys?\b|键|前缀|详情")
@@ -131,6 +132,7 @@ _PREFIX_INTENT_OPENERS = (
     "只需",
     "只输出",
     "只看",
+    "重点分析",
     "重点看",
     "重点关注",
     "关注",
@@ -143,6 +145,31 @@ _PREFIX_INTENT_OPENERS = (
     "focus on",
     "focus",
 )
+_PREFIX_CONTINUATION_PATTERN = re.compile(
+    r"(?i)^(?:一个是|另一个是|另一个前缀是|前缀为|前缀是|分别是|还有|以及|和|与|及|and\b)"
+)
+_PREFIX_CONTEXT_MARKER_PATTERN = re.compile(r"(?i)\bkeys?\b|\bprefix\b|键|前缀|详情")
+_PREFIX_TOKEN_STOPWORDS = {
+    "a",
+    "all",
+    "analysis",
+    "and",
+    "detail",
+    "details",
+    "focus",
+    "generic",
+    "key",
+    "keys",
+    "need",
+    "only",
+    "output",
+    "prefix",
+    "profile",
+    "rcs",
+    "report",
+    "the",
+    "top",
+}
 _FOCUS_ONLY_PATTERNS = (
     re.compile(r"其他(?:分析结果|结果|内容|章节|报告中其他(?:的)?内容)?都不需要"),
     re.compile(r"报告中其他(?:的)?都不需要"),
@@ -151,7 +178,7 @@ _FOCUS_ONLY_PATTERNS = (
     re.compile(r"(?:只输出(?:这些|对应|指定)?前缀详情|只输出对应前缀详情)"),
 )
 _PREFIX_INTENT_PATTERN = re.compile(
-    r"(?i)^(?:我)?\s*(?:只需要输出|只需要|只需|只输出|只看|重点看|重点关注|关注|只分析|查看前缀|指定前缀|前缀为|前缀是|前缀|focus\s+on|focus)"
+    r"(?i)^(?:我)?\s*(?:只需要输出|只需要|只需|只输出|只看|重点分析|重点看|重点关注|关注|只分析|查看前缀|指定前缀|前缀为|前缀是|前缀|focus\s+on|focus)"
 )
 _SECTION_ALIAS_TO_TOP_KEY = {
     "prefix": "prefix_top",
@@ -168,7 +195,7 @@ _SECTION_TOP_PATTERN = re.compile(
     r"(?i)(?P<section>prefix|前缀|string|hash|list|set|zset|stream|other)\s*top\s*(?P<count>\d{1,4})\b"
 )
 _GENERIC_TOP_PATTERNS = (
-    re.compile(r"(?i)\btop\s*(?P<count>\d{1,4})(?=\s*(?:个|keys?|key|的|report|报告|[,;，。]|$))"),
+    re.compile(r"(?i)\btop\s*(?P<count>\d{1,4})\b"),
     re.compile(r"前\s*(?P<count>\d{1,4})(?=\s*(?:个|条|项|[,;，。]|$))"),
 )
 _SUMMARY_TOP_N_SKIP_PATTERN = re.compile(r"(?i)\bsummary\b|结论|findings?")
@@ -469,13 +496,30 @@ def _extract_profile_name(prompt: str) -> str | None:
 
 
 def _extract_focus_prefixes(prompt: str) -> tuple[str, ...]:
+    clauses = _iter_prompt_clauses(prompt)
     prefixes: list[str] = []
     seen: set[str] = set()
-    for clause in _iter_prompt_clauses(prompt):
-        for prefix in _extract_prefixes_from_clause(clause):
+    carry_prefix_context = False
+
+    for clause in clauses:
+        clause_prefixes: tuple[str, ...] = ()
+        if _looks_like_prefix_clause(clause):
+            carry_prefix_context = True
+            clause_prefixes = _extract_prefix_candidates_from_clause(clause)
+        elif carry_prefix_context and _continues_prefix_clause(clause):
+            clause_prefixes = _extract_prefix_candidates_from_clause(clause)
+        else:
+            carry_prefix_context = False
+            continue
+
+        for prefix in clause_prefixes:
             if prefix not in seen:
                 seen.add(prefix)
                 prefixes.append(prefix)
+
+        if not (_mentions_prefix_context(clause) or clause_prefixes):
+            carry_prefix_context = False
+
     return tuple(prefixes)
 
 
@@ -690,38 +734,29 @@ def _iter_prompt_clauses(prompt: str) -> tuple[str, ...]:
     return tuple(clauses)
 
 
-def _extract_prefixes_from_clause(clause: str) -> tuple[str, ...]:
-    if not _looks_like_prefix_clause(clause):
-        return ()
-
+def _extract_prefix_candidates_from_clause(clause: str) -> tuple[str, ...]:
     body = clause.strip()
     body = _strip_prefix_clause_intro(body)
+    body = re.sub(r"^(?:一个是|另一个是|另一个前缀是|分别是|还有|以及|和|与|及)\s*", "", body)
     body = re.sub(r"^(?:前缀(?:为|是)?\s*)", "", body)
     body = re.sub(r"(?i)\b(?:these|those|corresponding|specified)\b", " ", body)
-    body = re.sub(r"(?:这些|对应|指定|用户指定的|对应前缀|默认前缀)", " ", body)
+    body = re.sub(r"(?:这些|对应|指定|用户指定的|对应前缀|默认前缀|两个前缀|多个前缀|两个|多个|一个|另一个)", " ", body)
     body = re.sub(r"(?i)\bkeys?\b", " ", body)
-    body = re.sub(r"(?:键|前缀|详情)", " ", body)
+    body = re.sub(r"(?i)\b(?:analysis|top)\b", " ", body)
+    body = re.sub(r"(?:键|前缀|详情|分析|重点)", " ", body)
     body = body.replace("的", " ")
 
-    candidates = [match.group(0) for match in _PREFIX_TOKEN_PATTERN.finditer(clause)]
-    for token in re.split(r"(?i)\band\b|,|，|、|/|和|及|以及|与", body):
-        normalized = _normalize_focus_prefix_token(token)
-        if normalized is not None:
-            candidates.append(normalized)
-
-    normalized_candidates: list[str] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        normalized = _normalize_focus_prefix_token(candidate)
-        if normalized is None or normalized in seen:
-            continue
-        seen.add(normalized)
-        normalized_candidates.append(normalized)
-    return tuple(normalized_candidates)
+    raw_tokens = [match.group(0) for match in _RAW_PREFIX_TOKEN_PATTERN.finditer(body)]
+    return normalize_requested_prefixes(raw_tokens)
 
 
 def _looks_like_prefix_clause(clause: str) -> bool:
     if _PREFIX_INTENT_PATTERN.search(clause):
+        return True
+    lower_clause = clause.lower()
+    if any(opener in lower_clause for opener in _PREFIX_INTENT_OPENERS if opener.isascii()):
+        return True
+    if any(opener in clause for opener in _PREFIX_INTENT_OPENERS if not opener.isascii()):
         return True
     if _PREFIX_TOKEN_PATTERN.search(clause) and _PREFIX_KEYWORD_PATTERN.search(clause):
         return True
@@ -730,10 +765,26 @@ def _looks_like_prefix_clause(clause: str) -> bool:
     return False
 
 
+def _continues_prefix_clause(clause: str) -> bool:
+    if _PREFIX_CONTINUATION_PATTERN.search(clause):
+        return True
+    if _mentions_prefix_context(clause):
+        return True
+    if _SECTION_TOP_PATTERN.search(clause) or _extract_generic_top_n_from_clause(clause) is not None:
+        return False
+    return bool(normalize_requested_prefixes(match.group(0) for match in _RAW_PREFIX_TOKEN_PATTERN.finditer(clause)))
+
+
+def _mentions_prefix_context(clause: str) -> bool:
+    if _PREFIX_KEYWORD_PATTERN.search(clause):
+        return True
+    return _PREFIX_CONTEXT_MARKER_PATTERN.search(clause) is not None
+
+
 def _strip_prefix_clause_intro(clause: str) -> str:
     clause = clause.strip()
     patterns = (
-        r"^(?:我)?\s*(?:只需要输出|只需要|只需|只输出|只看|重点看|重点关注|关注|只分析|查看前缀|指定前缀|看看|查看)\s*",
+        r"^(?:我)?\s*(?:只需要输出|只需要|只需|只输出|只看|重点分析|重点看|重点关注|关注|只分析|查看前缀|指定前缀|看看|查看)\s*",
         r"(?i)^(?:focus\s+on|focus)\s*",
     )
     for pattern in patterns:
@@ -741,23 +792,47 @@ def _strip_prefix_clause_intro(clause: str) -> str:
     return clause.strip()
 
 
-def _normalize_focus_prefix_token(token: str) -> str | None:
+def normalize_prefix_token(token: str) -> str | None:
     cleaned = token.strip().strip("`'\"()[]{}")
     if not cleaned:
         return None
     cleaned = re.sub(r"(?i)\b(?:only|need|output|prefix|key|keys|details?)\b", " ", cleaned)
-    cleaned = cleaned.replace("前缀", " ").replace("键", " ").replace("详情", " ")
+    cleaned = cleaned.replace("前缀", " ").replace("键", " ").replace("详情", " ").replace("分析", " ")
     cleaned = cleaned.strip().strip(":")
     if not cleaned:
         return None
     cleaned = _WHITESPACE_PATTERN.sub("", cleaned)
     if not _PREFIX_CANDIDATE_PATTERN.fullmatch(cleaned):
         return None
+    if not re.search(r"[A-Za-z]", cleaned):
+        return None
+    if cleaned.lower() in _PREFIX_TOKEN_STOPWORDS:
+        return None
     if cleaned.endswith(":*"):
         return cleaned
     if "*" in cleaned:
         return None
     return f"{cleaned}:*"
+
+
+def normalize_requested_prefixes(tokens: object) -> tuple[str, ...]:
+    normalized_tokens: list[str] = []
+    seen: set[str] = set()
+
+    for token in tokens:
+        if not isinstance(token, str):
+            continue
+        normalized = normalize_prefix_token(token)
+        if normalized is None or normalized in seen:
+            continue
+        seen.add(normalized)
+        normalized_tokens.append(normalized)
+
+    return tuple(normalized_tokens)
+
+
+def _normalize_focus_prefix_token(token: str) -> str | None:
+    return normalize_prefix_token(token)
 
 
 def _extract_generic_top_n_from_clause(clause: str) -> int | None:

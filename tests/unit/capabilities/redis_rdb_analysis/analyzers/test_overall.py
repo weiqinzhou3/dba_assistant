@@ -75,3 +75,5 @@ def test_analyze_overall_adds_requested_prefix_detail_sections_with_requested_to
     sections = result["focused_prefix_analysis"]["sections"]
     assert [section["prefix"] for section in sections] == ["order:*", "mq:*"]
     assert len(sections[0]["top_keys"]) == 2
+    assert len(sections[1]["top_keys"]) == 1
+    assert all(section["limit"] == 2 for section in sections)

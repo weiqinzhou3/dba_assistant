@@ -12,7 +12,7 @@ from dba_assistant.application.service import build_profile_overrides, build_rep
 from dba_assistant.core.reporter.types import OutputMode, ReportFormat
 
 
-def test_build_profile_overrides_extracts_focus_and_top_n() -> None:
+def test_build_profile_overrides_extracts_focus_scope_and_top_n() -> None:
     request = NormalizedRequest(
         raw_prompt="test",
         prompt="test",
@@ -20,12 +20,14 @@ def test_build_profile_overrides_extracts_focus_and_top_n() -> None:
         secrets=Secrets(),
         rdb_overrides=RdbOverrides(
             focus_prefixes=("loan:*", "cache:*"),
+            focus_only=True,
             top_n={"top_big_keys": 5},
         ),
     )
     overrides = build_profile_overrides(request)
     assert overrides == {
         "focus_prefixes": ("loan:*", "cache:*"),
+        "focus_only": True,
         "top_n": {"top_big_keys": 5},
     }
 

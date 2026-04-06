@@ -1,6 +1,9 @@
 from pathlib import Path
 
-from dba_assistant.application.prompt_parser import normalize_raw_request
+from dba_assistant.application.prompt_parser import (
+    normalize_raw_request,
+    normalize_requested_prefixes,
+)
 
 
 def test_normalize_raw_request_extracts_runtime_inputs_and_secrets() -> None:
@@ -506,6 +509,81 @@ def test_normalize_raw_request_normalizes_all_requested_prefix_key_forms() -> No
     for prompt, expected in cases.items():
         request = normalize_raw_request(prompt, default_output_mode="summary")
         assert request.rdb_overrides.focus_prefixes == expected
+
+
+def test_normalize_requested_prefixes_applies_generic_suffix_completion_and_keeps_order() -> None:
+    assert normalize_requested_prefixes(
+        (
+            "tag",
+            "store",
+            "signin",
+            "order",
+            "mq",
+            "loan",
+            "cis",
+            "user:profile",
+            "session:data",
+            "device:token",
+            "tag:*",
+            "store",
+        )
+    ) == (
+        "tag:*",
+        "store:*",
+        "signin:*",
+        "order:*",
+        "mq:*",
+        "loan:*",
+        "cis:*",
+        "user:profile:*",
+        "session:data:*",
+        "device:token:*",
+    )
+
+
+def test_normalize_raw_request_extracts_multiple_prefixes_from_explicit_prefix_phrases() -> None:
+    cases = {
+        "前缀为tag和前缀为store": ("tag:*", "store:*"),
+        "前缀是signin和store": ("signin:*", "store:*"),
+        "重点分析两个前缀，一个是signin，一个是store": ("signin:*", "store:*"),
+        "关注user:profile和session:data": ("user:profile:*", "session:data:*"),
+    }
+
+    for prompt, expected in cases.items():
+        request = normalize_raw_request(prompt, default_output_mode="summary")
+        assert request.rdb_overrides.focus_prefixes == expected
+
+
+def test_normalize_raw_request_extracts_rcs_profile_focus_prefixes_without_switching_to_focus_only() -> None:
+    request = normalize_raw_request(
+        "使用 rcs profile，重点分析 tag 和 store",
+        default_output_mode="summary",
+    )
+
+    assert request.rdb_overrides.profile_name == "rcs"
+    assert request.rdb_overrides.focus_prefixes == ("tag:*", "store:*")
+    assert request.rdb_overrides.focus_only is False
+
+
+def test_normalize_raw_request_extracts_generic_top_n_even_when_combined_with_focus_clause() -> None:
+    request = normalize_raw_request(
+        "top 10 重点分析 tag 和 store",
+        default_output_mode="summary",
+    )
+
+    assert request.rdb_overrides.focus_prefixes == ("tag:*", "store:*")
+    assert request.rdb_overrides.top_n == {
+        "prefix_top": 10,
+        "top_big_keys": 10,
+        "string_big_keys": 10,
+        "hash_big_keys": 10,
+        "list_big_keys": 10,
+        "set_big_keys": 10,
+        "zset_big_keys": 10,
+        "stream_big_keys": 10,
+        "other_big_keys": 10,
+        "focused_prefix_top_keys": 10,
+    }
 
 
 def test_normalize_raw_request_ignores_out_of_range_top_n_overrides() -> None:

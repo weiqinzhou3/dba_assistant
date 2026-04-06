@@ -88,7 +88,7 @@ def build_unified_agent(
     mysql_connection = _build_mysql_connection(request)
     remote_rdb_state: dict[str, Any] = {}
 
-    tools = build_all_tools(
+    tools = _build_all_tools_compatible(
         request,
         connection=connection,
         mysql_connection=mysql_connection,
@@ -194,7 +194,7 @@ def _run_explicit_local_rdb_analysis(
         return None
 
     mysql_connection = _build_mysql_connection(request)
-    tools = build_all_tools(
+    tools = _build_all_tools_compatible(
         request,
         mysql_connection=mysql_connection,
         approval_handler=approval_handler,
@@ -226,7 +226,25 @@ def _has_explicit_local_rdb_inputs(request: NormalizedRequest) -> bool:
     paths = request.runtime_inputs.input_paths
     if not paths:
         return False
+    if request.runtime_inputs.input_kind == "local_rdb":
+        return all(str(path).lower().endswith(".rdb") for path in paths)
+    if request.runtime_inputs.redis_host is not None:
+        return False
     return all(str(path).lower().endswith(".rdb") for path in paths)
+
+
+def _build_all_tools_compatible(
+    request: NormalizedRequest,
+    **kwargs: Any,
+) -> list:
+    try:
+        return build_all_tools(request, **kwargs)
+    except TypeError as exc:
+        if "approval_handler" not in str(exc):
+            raise
+        compatible_kwargs = dict(kwargs)
+        compatible_kwargs.pop("approval_handler", None)
+        return build_all_tools(request, **compatible_kwargs)
 
 
 def _should_force_runtime_approval(

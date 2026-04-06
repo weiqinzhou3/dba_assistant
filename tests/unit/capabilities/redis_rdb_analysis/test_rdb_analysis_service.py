@@ -150,6 +150,122 @@ def test_analyze_rdb_applies_requested_rcs_profile_top_n_and_focus_prefixes(monk
     assert len(focused_order_section.blocks[1].rows) == 2
 
 
+def test_analyze_rdb_focus_only_mode_uses_only_focused_prefix_sections(monkeypatch) -> None:
+    rows = [
+        {"key_name": "tag:1", "key_type": "string", "size_bytes": 900, "has_expiration": True, "ttl_seconds": 60},
+        {"key_name": "tag:2", "key_type": "hash", "size_bytes": 800, "has_expiration": False, "ttl_seconds": None},
+        {"key_name": "loan:1", "key_type": "hash", "size_bytes": 400, "has_expiration": False, "ttl_seconds": None},
+    ]
+    request = RdbAnalysisRequest(
+        prompt="只需要输出前缀为tag的key，其他都不需要",
+        inputs=[SampleInput(source=Path("/tmp/dump.rdb"), kind=InputSourceKind.LOCAL_RDB)],
+        profile_name="rcs",
+        profile_overrides={
+            "focus_prefixes": ("tag:*",),
+            "focus_only": True,
+            "top_n": {
+                "prefix_top": 10,
+                "focused_prefix_top_keys": 10,
+                "top_big_keys": 10,
+                "string_big_keys": 10,
+                "hash_big_keys": 10,
+                "list_big_keys": 10,
+                "set_big_keys": 10,
+                "zset_big_keys": 10,
+                "stream_big_keys": 10,
+                "other_big_keys": 10,
+            },
+        },
+    )
+    monkeypatch.setattr("dba_assistant.capabilities.redis_rdb_analysis.service._parse_rdb_rows", lambda _path: rows)
+
+    result = analyze_rdb(
+        request,
+        profile=None,
+        remote_discovery=lambda *_args, **_kwargs: {"rdb_path": "/data/redis/dump.rdb"},
+    )
+
+    assert isinstance(result, AnalysisReport)
+    assert result.metadata["scope"] == "focused_prefix_only"
+    assert [section.title for section in result.sections] == ["重点前缀详情分析", "前缀 tag:* 详情"]
+
+
+def test_analyze_rdb_mysql_backed_prefix_detail_uses_canonical_dataset_without_value_size_dependency(
+    monkeypatch,
+) -> None:
+    rows = [
+        {"key_name": "session:data:1", "key_type": "string", "size_bytes": 123, "has_expiration": False, "ttl_seconds": None},
+        {"key_name": "session:data:2", "key_type": "hash", "size_bytes": 88, "has_expiration": True, "ttl_seconds": 60},
+        {"key_name": "other:1", "key_type": "string", "size_bytes": 77, "has_expiration": False, "ttl_seconds": None},
+    ]
+    request = RdbAnalysisRequest(
+        prompt="只输出 session:data 的 key 详情",
+        inputs=[SampleInput(source=Path("/tmp/dump.rdb"), kind=InputSourceKind.LOCAL_RDB)],
+        profile_name="rcs",
+        path_mode="database_backed_analysis",
+        profile_overrides={
+            "focus_prefixes": ("session:data:*",),
+            "focus_only": True,
+        },
+    )
+    calls: dict[str, object] = {}
+    monkeypatch.setattr(service_module, "_parse_rdb_rows", lambda _path: rows)
+
+    def fake_stage_rdb_rows_to_mysql(table_name: str, parsed_rows: list[dict[str, object]]) -> dict[str, object]:
+        calls["stage"] = (table_name, parsed_rows)
+        return {"table": table_name, "staged": len(parsed_rows)}
+
+    def fake_load_preparsed_dataset_from_mysql(table_name: str) -> dict[str, object]:
+        calls["load"] = table_name
+        return {"source": f"mysql:{table_name}", "rows": rows}
+
+    def fail_mysql_read_query(_sql: str) -> dict[str, object]:
+        raise AssertionError("mysql_read_query should not be used for focused prefix detail analysis")
+
+    result = analyze_rdb(
+        request,
+        profile=None,
+        remote_discovery=lambda *_args, **_kwargs: {"rdb_path": "/data/redis/dump.rdb"},
+        stage_rdb_rows_to_mysql=fake_stage_rdb_rows_to_mysql,
+        load_preparsed_dataset_from_mysql=fake_load_preparsed_dataset_from_mysql,
+        mysql_read_query=fail_mysql_read_query,
+    )
+
+    assert isinstance(result, AnalysisReport)
+    assert calls["load"] == calls["stage"][0]
+    assert result.metadata["route"] == "database_backed_analysis"
+    assert result.metadata["scope"] == "focused_prefix_only"
+    assert [section.title for section in result.sections] == ["重点前缀详情分析", "前缀 session:data:* 详情"]
+
+
+def test_analyze_rdb_mysql_backed_prefix_detail_keeps_zero_match_section(monkeypatch) -> None:
+    rows = [
+        {"key_name": "tag:1", "key_type": "string", "size_bytes": 123, "has_expiration": False, "ttl_seconds": None},
+    ]
+    request = RdbAnalysisRequest(
+        prompt="只输出 signin 的 key 详情",
+        inputs=[SampleInput(source="mysql:preparsed_keys", kind=InputSourceKind.PREPARSED_MYSQL)],
+        profile_name="rcs",
+        mysql_table="preparsed_keys",
+        profile_overrides={
+            "focus_prefixes": ("signin:*",),
+            "focus_only": True,
+        },
+    )
+
+    result = analyze_rdb(
+        request,
+        profile=None,
+        remote_discovery=lambda *_args, **_kwargs: {"rdb_path": "/data/redis/dump.rdb"},
+        load_preparsed_dataset_from_mysql=lambda _table_name: {"source": "mysql:preparsed_keys", "rows": rows},
+    )
+
+    assert isinstance(result, AnalysisReport)
+    assert any(section.title == "前缀 signin:* 详情" for section in result.sections)
+    detail = next(section for section in result.sections if section.title == "前缀 signin:* 详情")
+    assert detail.blocks[0].text == "未匹配到符合条件的键。"
+
+
 def test_analyze_rdb_local_inputs_do_not_call_remote_discovery(monkeypatch) -> None:
     rows = json.loads(Path("tests/fixtures/rdb/direct/sample_key_records.json").read_text(encoding="utf-8"))
     request = RdbAnalysisRequest(

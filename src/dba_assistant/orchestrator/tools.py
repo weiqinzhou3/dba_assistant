@@ -153,6 +153,10 @@ def _make_analyze_local_rdb_tool(
             overrides["focus_prefixes"] = tuple(
                 p.strip() for p in focus_prefixes.split(",") if p.strip()
             )
+        elif request.rdb_overrides.focus_prefixes:
+            overrides["focus_prefixes"] = request.rdb_overrides.focus_prefixes
+        if request.rdb_overrides.focus_only:
+            overrides["focus_only"] = True
         if request.rdb_overrides.top_n:
             overrides["top_n"] = dict(request.rdb_overrides.top_n)
 
@@ -256,6 +260,10 @@ def _make_analyze_preparsed_dataset_tool(
             overrides["focus_prefixes"] = tuple(
                 p.strip() for p in focus_prefixes.split(",") if p.strip()
             )
+        elif request.rdb_overrides.focus_prefixes:
+            overrides["focus_prefixes"] = request.rdb_overrides.focus_prefixes
+        if request.rdb_overrides.focus_only:
+            overrides["focus_only"] = True
         if request.rdb_overrides.top_n:
             overrides["top_n"] = dict(request.rdb_overrides.top_n)
 
@@ -817,6 +825,8 @@ def _render_remote_rdb_analysis(
     overrides: dict[str, object] = {}
     if request.rdb_overrides.focus_prefixes:
         overrides["focus_prefixes"] = request.rdb_overrides.focus_prefixes
+    if request.rdb_overrides.focus_only:
+        overrides["focus_only"] = True
     if request.rdb_overrides.top_n:
         overrides["top_n"] = dict(request.rdb_overrides.top_n)
 

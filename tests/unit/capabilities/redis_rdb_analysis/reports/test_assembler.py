@@ -192,3 +192,38 @@ def test_assembler_adds_focused_prefix_chapter_and_subsections() -> None:
     assert report.sections[5].blocks[1].title == "前缀 order:* Top Keys（Top 10）"
     assert report.sections[5].blocks[1].rows == [["order:1", "string", "500"], ["order:2", "hash", "200"]]
     assert report.sections[6].blocks[0].text == "未匹配到符合条件的键。"
+
+
+def test_assembler_switches_to_focus_only_report_scope() -> None:
+    profile = EffectiveProfile(
+        name="rcs",
+        sections=("overall_summary", "top_big_keys", "focused_prefix_analysis", "conclusions"),
+        focus_only=True,
+    )
+    analysis_result = {
+        "overall_summary": {"total_samples": 1, "total_keys": 4, "total_bytes": 1024},
+        "focused_prefix_analysis": {
+            "sections": [
+                {
+                    "prefix": "tag:*",
+                    "matched_key_count": 2,
+                    "total_size_bytes": 700,
+                    "key_type_breakdown": {"string": 1, "hash": 1},
+                    "expiration_stats": {"with_expiration": 1, "without_expiration": 1},
+                    "top_keys": [["tag:1", "string", "500"], ["tag:2", "hash", "200"]],
+                    "summary_text": "已匹配到 2 个以 tag:* 为范围的键。",
+                    "limit": 10,
+                }
+            ]
+        },
+    }
+
+    report = assemble_report(analysis_result, profile=profile, title="ignored", language="zh-CN")
+
+    assert report.metadata["scope"] == "focused_prefix_only"
+    assert report.summary is not None
+    assert "仅输出用户指定的重点前缀详情" in report.summary
+    assert [section.title for section in report.sections] == [
+        "重点前缀详情分析",
+        "前缀 tag:* 详情",
+    ]

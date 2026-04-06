@@ -50,6 +50,9 @@ def assemble_report(
     language: str = "zh-CN",
 ) -> AnalysisReport:
     language = normalize_report_language(language)
+    if profile.focus_only:
+        return _assemble_focus_only_report(analysis_result, profile=profile, language=language)
+
     sections: list[ReportSectionModel] = []
     allowed_ids = set(profile.sections)
 
@@ -85,7 +88,37 @@ def assemble_report(
         title=report_title(language),
         summary=_build_deterministic_summary(analysis_result, language=language),
         sections=sections,
-        metadata={"profile": profile.name},
+        metadata={"profile": profile.name, "scope": "full_report"},
+        language=language,
+    )
+
+
+def _assemble_focus_only_report(
+    analysis_result: dict[str, dict[str, object]],
+    *,
+    profile: EffectiveProfile,
+    language: str,
+) -> AnalysisReport:
+    focused_prefix_sections = _assemble_focused_prefix_sections(
+        analysis_result.get("focused_prefix_analysis", {}),
+        language=language,
+    )
+    sections: list[ReportSectionModel] = []
+    if focused_prefix_sections:
+        sections.append(
+            ReportSectionModel(
+                id="focused_prefix_analysis",
+                title=section_title("focused_prefix_analysis", language),
+                level=1,
+            )
+        )
+        sections.extend(focused_prefix_sections)
+
+    return AnalysisReport(
+        title=report_title(language),
+        summary=_build_focus_only_summary(analysis_result, language=language),
+        sections=sections,
+        metadata={"profile": profile.name, "scope": "focused_prefix_only"},
         language=language,
     )
 
@@ -146,6 +179,34 @@ def _build_deterministic_summary(
         sentences.append(f"键数量在前缀 {top_prefix} 下呈现较高集中度，建议结合业务场景进一步核查。")
     sentences.append("当前未发现额外确定性高风险，建议结合业务侧访问特征持续评估高占用键。")
     return "".join(sentences)
+
+
+def _build_focus_only_summary(
+    analysis_result: dict[str, dict[str, object]],
+    *,
+    language: str,
+) -> str | None:
+    payload = analysis_result.get("focused_prefix_analysis", {})
+    raw_sections = payload.get("sections")
+    if not isinstance(raw_sections, list) or not raw_sections:
+        if language == "en-US":
+            return "This report is limited to requested prefix details, and no matching data was found."
+        return "本报告仅输出用户指定的重点前缀详情，当前未匹配到符合条件的键。"
+
+    prefixes = [str(section.get("prefix", "")) for section in raw_sections if isinstance(section, dict)]
+    matched_keys = sum(int(section.get("matched_key_count", 0)) for section in raw_sections if isinstance(section, dict))
+    matched_bytes = sum(int(section.get("total_size_bytes", 0)) for section in raw_sections if isinstance(section, dict))
+    prefix_text = ", ".join(prefixes)
+
+    if language == "en-US":
+        return (
+            f"This report is limited to requested prefix details for {prefix_text}. "
+            f"The selected prefixes match {matched_keys} keys and {matched_bytes} bytes in total."
+        )
+    return (
+        f"本报告仅输出用户指定的重点前缀详情，当前覆盖前缀 {prefix_text}；"
+        f"上述前缀合计匹配 {matched_keys} 个键、累计内存占用 {matched_bytes} 字节。"
+    )
 
 
 def _assemble_section(

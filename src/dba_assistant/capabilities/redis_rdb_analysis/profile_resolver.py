@@ -41,6 +41,7 @@ def resolve_profile(profile_name: str, overrides: RdbOverrides) -> EffectiveProf
         name=str(profile_data.get("name", profile_name)).lower(),
         sections=sections,
         focus_prefixes=effective_focus_prefixes,
+        focus_only=overrides.focus_only,
         top_n=top_n,
     )
 

@@ -211,10 +211,12 @@ def test_normalize_raw_request_extracts_rcs_profile_from_task_2_form() -> None:
 def test_normalize_raw_request_extracts_rcs_profile_from_natural_chinese_aliases() -> None:
     for prompt in (
         "使用 rcs profile 分析这个 rdb",
+        "按照 rcs profile 进行分析",
         "指定 rcs profile，导出 docx",
         "按 rcs 模板分析本地 rdb",
         "用 rcs 模板分析",
         "使用 rcs 模板分析",
+        "用 rcs 报告输出",
         "按 rcs 报告风格输出",
         "用 rcs 报告风格分析",
         "使用 rcs 配置分析",
@@ -468,6 +470,42 @@ def test_normalize_raw_request_extracts_requested_focus_prefixes_as_explicit_ove
 
     assert request.rdb_overrides.profile_name == "rcs"
     assert request.rdb_overrides.focus_prefixes == ("order:*", "mq:*")
+
+
+def test_normalize_raw_request_detects_focus_only_for_prefix_keys() -> None:
+    request = normalize_raw_request(
+        "只需要输出前缀为tag的key，其他都不需要",
+        default_output_mode="summary",
+    )
+
+    assert request.rdb_overrides.focus_only is True
+    assert request.rdb_overrides.focus_prefixes == ("tag:*",)
+
+
+def test_normalize_raw_request_detects_focus_only_for_natural_prefix_key_request() -> None:
+    request = normalize_raw_request(
+        "我只需要signin的key,其他分析结果都不需要",
+        default_output_mode="summary",
+    )
+
+    assert request.rdb_overrides.focus_only is True
+    assert request.rdb_overrides.focus_prefixes == ("signin:*",)
+
+
+def test_normalize_raw_request_normalizes_all_requested_prefix_key_forms() -> None:
+    cases = {
+        "只看 order 和 mq 的 key 详情": ("order:*", "mq:*"),
+        "重点看 user:profile 和 session:data": ("user:profile:*", "session:data:*"),
+        "只分析 device:token 的 key": ("device:token:*",),
+        "关注 loan 和 cis 的 key": ("loan:*", "cis:*"),
+        "前缀为 tag 的 key": ("tag:*",),
+        "指定前缀 user:profile:*": ("user:profile:*",),
+        "只需要输出前缀为 tag:* 的 key": ("tag:*",),
+    }
+
+    for prompt, expected in cases.items():
+        request = normalize_raw_request(prompt, default_output_mode="summary")
+        assert request.rdb_overrides.focus_prefixes == expected
 
 
 def test_normalize_raw_request_ignores_out_of_range_top_n_overrides() -> None:

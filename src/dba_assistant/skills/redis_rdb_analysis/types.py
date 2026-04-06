@@ -78,6 +78,7 @@ class EffectiveProfile:
     name: str
     sections: tuple[str, ...]
     focus_prefixes: tuple[str, ...] = ()
+    focus_only: bool = False
     top_n: dict[str, int] = field(default_factory=dict)
 
 

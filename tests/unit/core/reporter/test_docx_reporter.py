@@ -6,7 +6,7 @@ from docx import Document
 
 from dba_assistant.core.analyzer.types import AnalysisResult, ReportSection, TableModel
 from dba_assistant.core.reporter.docx_reporter import DocxReporter
-from dba_assistant.core.reporter.report_model import AnalysisReport, ReportSectionModel, TableBlock, TextBlock
+from dba_assistant.core.reporter.report_model import AnalysisReport, ReportSectionModel, TableBlock, TextBlock, render_summary_text
 from dba_assistant.core.reporter.types import OutputMode, ReportFormat, ReportOutputConfig
 
 
@@ -239,6 +239,56 @@ def test_docx_reporter_renders_one_word_table_per_table_block_without_repeat_hea
     assert document_xml.count("<w:tbl>") == 1
     assert document_xml.count("键名") == 1
     assert "w:tblHeader" not in document_xml
+
+
+def test_docx_reporter_preserves_focus_only_report_scope_without_full_sections(
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "focus-only.docx"
+    report = AnalysisReport(
+        title="Redis RDB 分析报告",
+        summary="本报告仅输出用户指定的重点前缀详情。",
+        sections=[
+            ReportSectionModel(id="focused_prefix_analysis", title="重点前缀详情分析", level=1),
+            ReportSectionModel(
+                id="focused_prefix_detail:tag:*",
+                title="前缀 tag:* 详情",
+                level=2,
+                blocks=[
+                    TextBlock(text="此前缀范围共匹配 2 个键。"),
+                    TableBlock(
+                        title="前缀 tag:* Top Keys（Top 10）",
+                        columns=["键名", "键类型", "内存占用（字节）"],
+                        rows=[["tag:1", "string", "500"]],
+                    ),
+                ],
+            ),
+        ],
+        metadata={"profile": "rcs", "scope": "focused_prefix_only"},
+        language="zh-CN",
+    )
+
+    summary_text = render_summary_text(report, language="zh-CN")
+    assert "样本与总体概况" not in summary_text
+    assert "重点前缀详情分析" in summary_text
+
+    DocxReporter().render(
+        report,
+        ReportOutputConfig(
+            output_path=output_path,
+            mode=OutputMode.REPORT,
+            format=ReportFormat.DOCX,
+            template_name="rdb-analysis",
+            language="zh-CN",
+        ),
+    )
+
+    document = Document(output_path)
+    text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+
+    assert "重点前缀详情分析" in text
+    assert "前缀 tag:* 详情" in text
+    assert "样本与总体概况" not in text
 
 
 def _read_docx_xml(output_path: Path) -> tuple[str, str]:

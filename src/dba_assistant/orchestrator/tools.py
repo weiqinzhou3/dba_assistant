@@ -6,6 +6,7 @@ are captured at construction time — the LLM never sees raw secrets.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import tempfile
 import time
@@ -21,6 +22,7 @@ from dba_assistant.adaptors.redis_adaptor import (
 )
 from dba_assistant.adaptors.ssh_adaptor import SSHAdaptor, SSHConnectionConfig
 from dba_assistant.application.request_models import NormalizedRequest, RdbOverrides
+from dba_assistant.core.reporter.output_path_policy import ensure_report_output_path
 from dba_assistant.core.reporter.types import OutputMode, ReportFormat, ReportOutputConfig
 from dba_assistant.interface.hitl import HumanApprovalHandler
 from dba_assistant.interface.types import ApprovalRequest, ApprovalStatus
@@ -132,8 +134,8 @@ def _make_analyze_local_rdb_tool(
     def analyze_local_rdb(
         input_paths: str,
         profile_name: str = "generic",
-        output_mode: str = "summary",
-        report_format: str = "summary",
+        output_mode: str = "",
+        report_format: str = "",
         output_path: str = "",
         focus_prefixes: str = "",
     ) -> str:
@@ -174,17 +176,32 @@ def _make_analyze_local_rdb_tool(
             generate_analysis_report as _generate,
         )
 
-        fmt = ReportFormat.SUMMARY if report_format == "summary" else ReportFormat.DOCX
-        out = Path(output_path) if output_path else request.runtime_inputs.output_path
+        effective_output_mode = output_mode or request.runtime_inputs.output_mode or "summary"
+        effective_report_format = (
+            report_format
+            or request.runtime_inputs.report_format
+            or ("summary" if effective_output_mode == "summary" else "docx")
+        )
+        runtime_inputs = ensure_report_output_path(
+            replace(
+                request.runtime_inputs,
+                output_mode=effective_output_mode,
+                report_format=effective_report_format,
+                output_path=Path(output_path) if output_path else request.runtime_inputs.output_path,
+            ),
+            effective_report_format,
+        )
+        fmt = ReportFormat.SUMMARY if effective_report_format == "summary" else ReportFormat.DOCX
+        out = runtime_inputs.output_path
         if fmt is ReportFormat.DOCX and out is None:
             return "Error: DOCX output requires an output path."
 
         config = ReportOutputConfig(
-            mode=OutputMode.SUMMARY if output_mode == "summary" else OutputMode.REPORT,
+            mode=OutputMode.SUMMARY if effective_output_mode == "summary" else OutputMode.REPORT,
             format=fmt,
             output_path=out,
             template_name="rdb-analysis",
-            language=request.runtime_inputs.report_language,
+            language=runtime_inputs.report_language,
         )
         artifact = _generate(analysis, config)
         if artifact.content is not None:
@@ -229,8 +246,8 @@ def _make_analyze_preparsed_dataset_tool(
         mysql_table: str = "",
         mysql_query: str = "",
         profile_name: str = "generic",
-        output_mode: str = "summary",
-        report_format: str = "summary",
+        output_mode: str = "",
+        report_format: str = "",
         output_path: str = "",
         focus_prefixes: str = "",
     ) -> str:
@@ -274,8 +291,9 @@ def _make_analyze_preparsed_dataset_tool(
 
         return _render_analysis_output(
             analysis,
-            output_mode=output_mode,
-            report_format=report_format,
+            runtime_inputs=request.runtime_inputs,
+            output_mode=output_mode or request.runtime_inputs.output_mode or "summary",
+            report_format=report_format or request.runtime_inputs.report_format or "summary",
             output_path=Path(output_path) if output_path else request.runtime_inputs.output_path,
         )
 
@@ -384,8 +402,8 @@ def _make_remote_rdb_fetch_tools(
 
     def _fetch_remote_and_continue(
         profile_name: str = "generic",
-        output_mode: str = "summary",
-        report_format: str = "summary",
+        output_mode: str = "",
+        report_format: str = "",
         output_path: str = "",
         acquisition_mode: str = "",
     ) -> str:
@@ -429,16 +447,16 @@ def _make_remote_rdb_fetch_tools(
             local_path=fetched_path,
             connection=connection,
             profile_name=profile_name,
-            output_mode=output_mode,
-            report_format=report_format,
+            output_mode=output_mode or request.runtime_inputs.output_mode or "summary",
+            report_format=report_format or request.runtime_inputs.report_format or "summary",
             output_path=output_path,
             analysis_service=analysis_service,
         )
 
     def fetch_remote_rdb_via_ssh(
         profile_name: str = "generic",
-        output_mode: str = "summary",
-        report_format: str = "summary",
+        output_mode: str = "",
+        report_format: str = "",
         output_path: str = "",
         acquisition_mode: str = "",
     ) -> str:
@@ -822,8 +840,17 @@ def _render_remote_rdb_analysis(
         generate_analysis_report as _generate,
     )
 
+    runtime_inputs = ensure_report_output_path(
+        replace(
+            request.runtime_inputs,
+            output_mode=output_mode,
+            report_format=report_format,
+            output_path=Path(output_path) if output_path else request.runtime_inputs.output_path,
+        ),
+        report_format,
+    )
     fmt = ReportFormat.SUMMARY if report_format == "summary" else ReportFormat.DOCX
-    out = Path(output_path) if output_path else request.runtime_inputs.output_path
+    out = runtime_inputs.output_path
     if fmt is ReportFormat.DOCX and out is None:
         return "Error: DOCX output requires an output path."
 
@@ -832,7 +859,7 @@ def _render_remote_rdb_analysis(
         format=fmt,
         output_path=out,
         template_name="rdb-analysis",
-        language=request.runtime_inputs.report_language,
+        language=runtime_inputs.report_language,
     )
     artifact = _generate(analysis, config)
     if artifact.content is not None:
@@ -845,6 +872,7 @@ def _render_remote_rdb_analysis(
 def _render_analysis_output(
     analysis,
     *,
+    runtime_inputs,
     output_mode: str,
     report_format: str,
     output_path: Path | None,
@@ -853,14 +881,23 @@ def _render_analysis_output(
         generate_analysis_report as _generate,
     )
 
+    effective_runtime_inputs = ensure_report_output_path(
+        replace(
+            runtime_inputs,
+            output_mode=output_mode,
+            report_format=report_format,
+            output_path=output_path,
+        ),
+        report_format,
+    )
     fmt = ReportFormat.SUMMARY if report_format == "summary" else ReportFormat.DOCX
-    if fmt is ReportFormat.DOCX and output_path is None:
+    if fmt is ReportFormat.DOCX and effective_runtime_inputs.output_path is None:
         return "Error: DOCX output requires an output path."
 
     config = ReportOutputConfig(
         mode=OutputMode.SUMMARY if output_mode == "summary" else OutputMode.REPORT,
         format=fmt,
-        output_path=output_path,
+        output_path=effective_runtime_inputs.output_path,
         template_name="rdb-analysis",
         language=getattr(analysis, "language", "zh-CN"),
     )

@@ -9,6 +9,7 @@ from dba_assistant.application.request_models import (
     RuntimeInputs,
     Secrets,
 )
+from dba_assistant.core.reporter.output_path_policy import infer_report_format_alias
 
 
 _HOST_PATTERN = (
@@ -132,7 +133,12 @@ _GENERIC_TOP_PATTERN = re.compile(
     r"(?i)(?<!prefix\s)(?<!string\s)(?<!hash\s)(?<!list\s)(?<!set\s)(?<!zset\s)(?<!stream\s)(?<!other\s)\btop\s+(?P<count>\d{1,4})(?=\s*(?:[,;，。]|$))"
 )
 _REPORT_OUTPUT_PATTERN = re.compile(
-    r"(?i)(?:输出|导出|export|output|write|save)\s*(?:为|成|as|to|到|:|：)?\s*(?P<format>docx|pdf|html|summary)\b"
+    r"(?i)(?:输出|导出|export|output|write|save)\s*(?:为|成|as|to|到|:|：)?\s*"
+    r"(?P<format>"
+    r"docx(?:\s*/\s*word(?:\s*(?:file|document)|文件|文档)?)?"
+    r"|word(?:\s*(?:file|document)|文件|文档)?"
+    r"|pdf|html|summary"
+    r")"
 )
 _REPORT_DESTINATION_PATTERN = re.compile(
     r"(?is)^\s*[\s,，、]*"
@@ -474,7 +480,7 @@ def _extract_report_output_intent(
     matches = sorted(_REPORT_OUTPUT_PATTERN.finditer(prompt), key=lambda match: match.start())
 
     for match in matches:
-        output_token = match.group("format").lower()
+        output_token = infer_report_format_alias(match.group("format")) or match.group("format").lower()
         if _has_negation_prefix(prompt, match.start()):
             if output_token == report_format or (output_token == "summary" and output_mode == "summary"):
                 output_mode = default_output_mode

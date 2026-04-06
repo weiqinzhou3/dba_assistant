@@ -151,6 +151,60 @@ def test_analyze_local_rdb_tool_validates_host_paths_before_analysis(monkeypatch
     assert "Redis RDB Analysis" in result
 
 
+def test_analyze_local_rdb_tool_returns_docx_path_when_request_is_docx_without_explicit_path(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    source = tmp_path / "dump.rdb"
+    source.write_text("fixture", encoding="utf-8")
+    docx_path = tmp_path / "outputs" / "auto.docx"
+
+    def fake_analyze_rdb_tool(
+        prompt,
+        input_paths,
+        *,
+        input_kind="local_rdb",
+        profile_name="generic",
+        report_language="zh-CN",
+        path_mode="auto",
+        profile_overrides=None,
+        service=None,
+    ):
+        from dba_assistant.core.reporter.report_model import AnalysisReport, ReportSectionModel, TextBlock
+
+        return AnalysisReport(
+            title="Redis RDB 分析报告",
+            sections=[ReportSectionModel(id="s1", title="摘要", blocks=[TextBlock(text="ok")])],
+            language="zh-CN",
+        )
+
+    monkeypatch.setattr("dba_assistant.orchestrator.tools.analyze_rdb_tool", fake_analyze_rdb_tool)
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools.ensure_report_output_path",
+        lambda runtime_inputs, report_format: __import__("dataclasses").replace(
+            runtime_inputs,
+            output_path=docx_path,
+            report_format="docx",
+            output_mode="report",
+        ),
+    )
+
+    request = _make_request(
+        runtime_inputs=RuntimeInputs(
+            output_mode="report",
+            report_format="docx",
+            input_paths=(source,),
+        )
+    )
+    tools = build_all_tools(request)
+    analyze_tool = next(t for t in tools if t.__name__ == "analyze_local_rdb")
+
+    result = analyze_tool(input_paths=str(source), output_mode="report", report_format="docx")
+
+    assert result == str(docx_path)
+    assert docx_path.exists()
+
+
 def test_analyze_local_rdb_tool_returns_host_side_missing_path_error(monkeypatch) -> None:
     def fail_analyze_rdb_tool(*args, **kwargs):
         raise AssertionError("analyze_rdb_tool should not be called for missing host paths")
@@ -400,6 +454,83 @@ def test_analyze_local_rdb_mysql_route_stages_only_after_approval(monkeypatch) -
     assert "样本" in result
 
 
+def test_analyze_local_rdb_mysql_route_returns_docx_path_when_requested_without_explicit_output(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import json
+
+    from dba_assistant.adaptors.mysql_adaptor import MySQLConnectionConfig
+
+    rows_fixture = Path("tests/fixtures/rdb/direct/sample_key_records.json")
+    rows = json.loads(rows_fixture.read_text(encoding="utf-8"))
+    source = tmp_path / "dump.rdb"
+    source.write_text("fixture", encoding="utf-8")
+    docx_path = tmp_path / "outputs" / "mysql-auto.docx"
+    captured: dict[str, object] = {"approvals": 0}
+
+    class ApproveHandler:
+        def request_approval(self, request):
+            captured["approvals"] += 1
+            return ApprovalResponse(status=ApprovalStatus.APPROVED, action=request.action)
+
+    monkeypatch.setattr(
+        "dba_assistant.capabilities.redis_rdb_analysis.service._parse_rdb_rows",
+        lambda _path: rows,
+    )
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._stage_rows",
+        lambda _adaptor, _connection, table_name, parsed_rows: json.dumps(
+            {"table": table_name, "staged": len(parsed_rows)}
+        ),
+    )
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._load_dataset",
+        lambda _adaptor, _connection, table_name, limit="100000": json.dumps(
+            {"source": f"mysql:{table_name}", "rows": rows}
+        ),
+    )
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools.ensure_report_output_path",
+        lambda runtime_inputs, report_format: __import__("dataclasses").replace(
+            runtime_inputs,
+            output_path=docx_path,
+            report_format="docx",
+            output_mode="report",
+        ),
+    )
+
+    request = _make_request(
+        prompt="analyze local rdb via mysql 输出word给我",
+        runtime_inputs=RuntimeInputs(
+            output_mode="report",
+            report_format="docx",
+            path_mode="database_backed_analysis",
+            input_paths=(source,),
+            mysql_host="192.168.23.176",
+            mysql_port=3306,
+            mysql_user="root",
+            mysql_database="rcs",
+            mysql_table="rdb",
+        ),
+    )
+    mysql_connection = MySQLConnectionConfig(
+        host="192.168.23.176",
+        port=3306,
+        user="root",
+        password="Root@1234!",
+        database="rcs",
+    )
+    tools = build_all_tools(request, mysql_connection=mysql_connection, approval_handler=ApproveHandler())
+    analyze_tool = next(t for t in tools if t.__name__ == "analyze_local_rdb")
+
+    result = analyze_tool(input_paths=str(source), output_mode="report", report_format="docx")
+
+    assert captured["approvals"] == 1
+    assert result == str(docx_path)
+    assert docx_path.exists()
+
+
 def test_analyze_preparsed_dataset_tool_uses_mysql_source_from_request(monkeypatch) -> None:
     from dba_assistant.adaptors.mysql_adaptor import MySQLConnectionConfig
     from dba_assistant.core.reporter.report_model import AnalysisReport, ReportSectionModel, TextBlock
@@ -551,6 +682,64 @@ def test_fetch_remote_rdb_via_ssh_tool_fetches_and_continues_analysis(monkeypatc
     assert captured["ssh_config"].username is None
     assert captured["ssh_config"].password is None
     assert len(captured["analyze_input_paths"]) == 1
+
+
+def test_fetch_remote_rdb_via_ssh_tool_returns_docx_path_when_requested_without_explicit_output(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from dba_assistant.core.reporter.report_model import AnalysisReport, ReportSectionModel, TextBlock
+
+    docx_path = tmp_path / "outputs" / "remote-auto.docx"
+
+    def fake_discover(adaptor, connection):
+        return {
+            "rdb_path": "/data/dump.rdb",
+            "lastsave": 12345,
+            "bgsave_in_progress": False,
+            "rdb_path_source": "discovered",
+        }
+
+    class FakeSSHAdaptor:
+        def fetch_file(self, config, remote_path, local_path):
+            local_path.write_text("fixture", encoding="utf-8")
+            return local_path
+
+    monkeypatch.setattr("dba_assistant.orchestrator.tools.discover_remote_rdb", fake_discover)
+    monkeypatch.setattr("dba_assistant.orchestrator.tools.SSHAdaptor", FakeSSHAdaptor)
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools.analyze_rdb_tool",
+        lambda *args, **kwargs: AnalysisReport(
+            title="Redis RDB 分析报告",
+            sections=[ReportSectionModel(id="summary", title="摘要", blocks=[TextBlock(text="ok")])],
+            language="zh-CN",
+        ),
+    )
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools.ensure_report_output_path",
+        lambda runtime_inputs, report_format: __import__("dataclasses").replace(
+            runtime_inputs,
+            output_path=docx_path,
+            report_format="docx",
+            output_mode="report",
+        ),
+    )
+
+    request = _make_request(
+        prompt="analyze remote redis 输出docx",
+        runtime_inputs=RuntimeInputs(
+            output_mode="report",
+            report_format="docx",
+        ),
+    )
+    connection = RedisConnectionConfig(host="redis.example", port=6379)
+    tools = build_all_tools(request, connection=connection)
+    fetch_tool = next(t for t in tools if t.__name__ == "fetch_remote_rdb_via_ssh")
+
+    result = fetch_tool(output_mode="report", report_format="docx")
+
+    assert result == str(docx_path)
+    assert docx_path.exists()
 
 
 def test_fetch_remote_rdb_via_ssh_tool_uses_request_ssh_context_when_args_omitted(monkeypatch) -> None:

@@ -391,6 +391,37 @@ def test_normalize_raw_request_extracts_docx_report_request() -> None:
     assert request.runtime_inputs.output_path == Path("/tmp/rcs.docx")
 
 
+def test_normalize_raw_request_treats_word_alias_as_docx() -> None:
+    request = normalize_raw_request(
+        "请分析这个 rdb，输出为docx/word文件给我",
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.output_mode == "report"
+    assert request.runtime_inputs.report_format == "docx"
+    assert request.runtime_inputs.output_path is None
+
+
+def test_normalize_raw_request_extracts_word_document_request_as_docx() -> None:
+    request = normalize_raw_request(
+        "导出为word文档",
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.output_mode == "report"
+    assert request.runtime_inputs.report_format == "docx"
+
+
+def test_normalize_raw_request_extracts_output_word_as_docx() -> None:
+    request = normalize_raw_request(
+        "输出word",
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.output_mode == "report"
+    assert request.runtime_inputs.report_format == "docx"
+
+
 def test_normalize_raw_request_does_not_enable_report_mode_for_negated_output_request() -> None:
     request = normalize_raw_request(
         "do not output docx",

@@ -9,6 +9,7 @@ from dataclasses import replace
 
 from dba_assistant.application.prompt_parser import normalize_raw_request
 from dba_assistant.application.request_models import NormalizedRequest
+from dba_assistant.core.reporter.output_path_policy import ensure_report_output_path
 from dba_assistant.deep_agent_integration.config import load_app_config
 from dba_assistant.interface.hitl import HumanApprovalHandler
 from dba_assistant.interface.types import InterfaceRequest
@@ -36,6 +37,13 @@ def handle_request(
         input_paths=request.input_paths,
     )
     normalized = _apply_overrides(normalized, request)
+    normalized = replace(
+        normalized,
+        runtime_inputs=ensure_report_output_path(
+            normalized.runtime_inputs,
+            normalized.runtime_inputs.report_format,
+        ),
+    )
 
     return run_orchestrated(normalized, config=config, approval_handler=approval_handler)
 

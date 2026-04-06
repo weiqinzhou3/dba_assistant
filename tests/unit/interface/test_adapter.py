@@ -87,6 +87,148 @@ def test_handle_request_applies_overrides(monkeypatch) -> None:
     assert n.runtime_inputs.output_path == Path("/tmp/out.docx")
 
 
+def test_handle_request_generates_default_docx_output_path_when_prompt_requests_docx_without_path(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    captured: dict[str, object] = {}
+    config = SimpleNamespace(runtime=SimpleNamespace(default_output_mode="summary"), model=None)
+
+    monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
+    monkeypatch.setattr(
+        adapter_module,
+        "normalize_raw_request",
+        lambda raw_prompt, *, default_output_mode, input_paths=(): NormalizedRequest(
+            raw_prompt=raw_prompt,
+            prompt=raw_prompt,
+            runtime_inputs=RuntimeInputs(output_mode="report", report_format="docx", input_paths=tuple(input_paths)),
+            secrets=Secrets(),
+            rdb_overrides=RdbOverrides(),
+        ),
+    )
+    monkeypatch.setattr(
+        adapter_module,
+        "ensure_report_output_path",
+        lambda runtime_inputs, report_format: RuntimeInputs(
+            **{
+                **runtime_inputs.__dict__,
+                "output_mode": "report",
+                "report_format": "docx",
+                "output_path": tmp_path / "outputs" / "auto.docx",
+            }
+        ),
+    )
+
+    def fake_run_orchestrated(normalized, *, config, approval_handler):
+        captured["normalized"] = normalized
+        return "ok"
+
+    monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
+
+    handle_request(InterfaceRequest(prompt="输出word给我"), approval_handler=AutoApproveHandler())
+
+    n = captured["normalized"]
+    assert n.runtime_inputs.report_format == "docx"
+    assert n.runtime_inputs.output_path == tmp_path / "outputs" / "auto.docx"
+
+
+def test_handle_request_keeps_prompt_output_path_over_auto_generated_default(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    config = SimpleNamespace(runtime=SimpleNamespace(default_output_mode="summary"), model=None)
+
+    monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
+    monkeypatch.setattr(
+        adapter_module,
+        "normalize_raw_request",
+        lambda raw_prompt, *, default_output_mode, input_paths=(): NormalizedRequest(
+            raw_prompt=raw_prompt,
+            prompt=raw_prompt,
+            runtime_inputs=RuntimeInputs(
+                output_mode="report",
+                report_format="docx",
+                output_path=Path("/tmp/from-prompt.docx"),
+                input_paths=tuple(input_paths),
+            ),
+            secrets=Secrets(),
+            rdb_overrides=RdbOverrides(),
+        ),
+    )
+
+    def fake_run_orchestrated(normalized, *, config, approval_handler):
+        captured["normalized"] = normalized
+        return "ok"
+
+    monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
+
+    handle_request(InterfaceRequest(prompt="输出docx"), approval_handler=AutoApproveHandler())
+
+    assert captured["normalized"].runtime_inputs.output_path == Path("/tmp/from-prompt.docx")
+
+
+def test_handle_request_prefers_cli_output_path_over_prompt_output_path(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    config = SimpleNamespace(runtime=SimpleNamespace(default_output_mode="summary"), model=None)
+
+    monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
+    monkeypatch.setattr(
+        adapter_module,
+        "normalize_raw_request",
+        lambda raw_prompt, *, default_output_mode, input_paths=(): NormalizedRequest(
+            raw_prompt=raw_prompt,
+            prompt=raw_prompt,
+            runtime_inputs=RuntimeInputs(
+                output_mode="report",
+                report_format="docx",
+                output_path=Path("/tmp/from-prompt.docx"),
+                input_paths=tuple(input_paths),
+            ),
+            secrets=Secrets(),
+            rdb_overrides=RdbOverrides(),
+        ),
+    )
+
+    def fake_run_orchestrated(normalized, *, config, approval_handler):
+        captured["normalized"] = normalized
+        return "ok"
+
+    monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
+
+    handle_request(
+        InterfaceRequest(prompt="输出docx", output_path=Path("/tmp/from-cli.docx")),
+        approval_handler=AutoApproveHandler(),
+    )
+
+    assert captured["normalized"].runtime_inputs.output_path == Path("/tmp/from-cli.docx")
+
+
+def test_handle_request_does_not_generate_docx_path_for_summary_requests(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    config = SimpleNamespace(runtime=SimpleNamespace(default_output_mode="summary"), model=None)
+
+    monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
+    monkeypatch.setattr(
+        adapter_module,
+        "normalize_raw_request",
+        lambda raw_prompt, *, default_output_mode, input_paths=(): NormalizedRequest(
+            raw_prompt=raw_prompt,
+            prompt=raw_prompt,
+            runtime_inputs=RuntimeInputs(output_mode="summary", report_format=None, input_paths=tuple(input_paths)),
+            secrets=Secrets(),
+            rdb_overrides=RdbOverrides(),
+        ),
+    )
+
+    def fake_run_orchestrated(normalized, *, config, approval_handler):
+        captured["normalized"] = normalized
+        return "ok"
+
+    monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
+
+    handle_request(InterfaceRequest(prompt="分析一下"), approval_handler=AutoApproveHandler())
+
+    assert captured["normalized"].runtime_inputs.output_path is None
+
+
 def test_handle_request_applies_mysql_overrides(monkeypatch) -> None:
     captured: dict[str, object] = {}
     config = SimpleNamespace(runtime=SimpleNamespace(default_output_mode="summary"), model=None)

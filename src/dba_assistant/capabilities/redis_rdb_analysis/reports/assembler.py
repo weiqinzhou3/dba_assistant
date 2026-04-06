@@ -3,7 +3,9 @@ from __future__ import annotations
 from typing import Any
 
 from dba_assistant.capabilities.redis_rdb_analysis.reports.localization import (
+    build_localized_focused_prefix_section,
     build_localized_section,
+    focused_prefix_section_title,
     normalize_report_language,
     report_title,
     section_title,
@@ -61,6 +63,21 @@ def assemble_report(
             sections.append(ReportSectionModel(id=group_id, title=section_title(group_id, language), level=1))
             sections.extend(group_children)
 
+    if "focused_prefix_analysis" in allowed_ids:
+        focused_prefix_sections = _assemble_focused_prefix_sections(
+            analysis_result.get("focused_prefix_analysis", {}),
+            language=language,
+        )
+        if focused_prefix_sections:
+            sections.append(
+                ReportSectionModel(
+                    id="focused_prefix_analysis",
+                    title=section_title("focused_prefix_analysis", language),
+                    level=1,
+                )
+            )
+            sections.extend(focused_prefix_sections)
+
     if "conclusions" in allowed_ids and (conclusions := _assemble_section("conclusions", analysis_result.get("conclusions", {}), language=language, level=1)) is not None:
         sections.append(conclusions)
 
@@ -91,6 +108,7 @@ def _build_deterministic_summary(
     expiration_payload = analysis_result.get("expiration_summary", {})
     expired_count = int(expiration_payload.get("expired_count", 0))
     has_big_keys = any(bool(analysis_result.get(section_id, {}).get("rows")) for section_id in BIG_KEY_SECTION_IDS)
+    big_key_limit = _section_limit(analysis_result.get("top_big_keys", {})) or 100
     prefix_payload = analysis_result.get("prefix_top_summary", {})
     top_prefix, prefix_ratio = _top_prefix_concentration(prefix_payload, total_keys=total_keys)
 
@@ -103,7 +121,10 @@ def _build_deterministic_summary(
         elif total_keys > 0:
             sentences.append("No keys with expiration were found in the sampled dataset.")
         if has_big_keys:
-            sentences.append("Large keys were detected in the Top 100 ranking.")
+            if big_key_limit == 100:
+                sentences.append("Large keys were detected in the Top 100 ranking.")
+            else:
+                sentences.append(f"Large keys were detected in the Top {big_key_limit} ranking.")
         if top_prefix and prefix_ratio >= 0.5:
             sentences.append(f"Key counts are relatively concentrated under prefix {top_prefix}.")
         sentences.append("No additional deterministic high-risk findings were identified.")
@@ -117,7 +138,10 @@ def _build_deterministic_summary(
     elif total_keys > 0:
         sentences.append("样本中未发现已设置过期时间的键。")
     if has_big_keys:
-        sentences.append("已识别出需要重点关注的大 Key。")
+        if big_key_limit == 100:
+            sentences.append("已识别出需要重点关注的大 Key。")
+        else:
+            sentences.append(f"已识别出需要重点关注的大 Key，当前报告按 Top {big_key_limit} 口径展示。")
     if top_prefix and prefix_ratio >= 0.5:
         sentences.append(f"键数量在前缀 {top_prefix} 下呈现较高集中度，建议结合业务场景进一步核查。")
     sentences.append("当前未发现额外确定性高风险，建议结合业务侧访问特征持续评估高占用键。")
@@ -150,7 +174,7 @@ def _assemble_section(
         if table_rows:
             blocks.append(
                 TableBlock(
-                    title=str(localized.get("table_title", section_title(section_id, language))),
+                    title=str(localized.get("table_title", section_title(section_id, language, limit=_section_limit(payload)))),
                     columns=_as_string_list(localized.get("columns")),
                     rows=table_rows,
                 )
@@ -158,7 +182,63 @@ def _assemble_section(
 
     if not blocks:
         return None
-    return ReportSectionModel(id=section_id, title=section_title(section_id, language), level=level, blocks=blocks)
+    return ReportSectionModel(
+        id=section_id,
+        title=str(localized.get("section_title", section_title(section_id, language, limit=_section_limit(payload)))),
+        level=level,
+        blocks=blocks,
+    )
+
+
+def _assemble_focused_prefix_sections(
+    payload: dict[str, object],
+    *,
+    language: str,
+) -> list[ReportSectionModel]:
+    raw_sections = payload.get("sections")
+    if not isinstance(raw_sections, list):
+        return []
+
+    sections: list[ReportSectionModel] = []
+    for raw_section in raw_sections:
+        if not isinstance(raw_section, dict):
+            continue
+        localized = build_localized_focused_prefix_section(raw_section, language)
+        blocks: list[TextBlock | TableBlock] = []
+
+        summary = localized.get("summary")
+        if isinstance(summary, str) and summary:
+            blocks.append(TextBlock(text=summary))
+
+        paragraphs = localized.get("paragraphs")
+        if isinstance(paragraphs, list):
+            for paragraph in paragraphs:
+                if isinstance(paragraph, str) and paragraph:
+                    blocks.append(TextBlock(text=paragraph))
+
+        rows = localized.get("rows")
+        if isinstance(rows, list) and rows:
+            blocks.append(
+                TableBlock(
+                    title=str(localized.get("table_title")),
+                    columns=_as_string_list(localized.get("columns")),
+                    rows=[[ _stringify(cell) for cell in row] for row in rows if isinstance(row, list)],
+                )
+            )
+
+        if not blocks:
+            continue
+
+        section_id = f"focused_prefix_detail:{raw_section.get('prefix', '')}"
+        sections.append(
+            ReportSectionModel(
+                id=section_id,
+                title=str(localized.get("section_title", focused_prefix_section_title(str(raw_section.get("prefix", "")), language))),
+                level=2,
+                blocks=blocks,
+            )
+        )
+    return sections
 
 
 def _pick_summary_payload(analysis_result: dict[str, dict[str, object]]) -> dict[str, object]:
@@ -210,3 +290,13 @@ def _as_string_list(value: object) -> list[str]:
 
 def _stringify(value: Any) -> str:
     return "" if value is None else str(value)
+
+
+def _section_limit(payload: dict[str, object]) -> int | None:
+    raw_limit = payload.get("limit")
+    if raw_limit is None:
+        return None
+    try:
+        return int(raw_limit)
+    except (TypeError, ValueError):
+        return None

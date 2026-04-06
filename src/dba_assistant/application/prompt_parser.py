@@ -109,29 +109,51 @@ def _build_profile_alternation() -> str:
 
 
 _PROFILE_ALT = _build_profile_alternation()
-_WITH_PROFILE_PATTERN = re.compile(
-    rf"(?i)\bwith\s+(?:the\s+)?(?P<profile>{_PROFILE_ALT})\s+profile(?![a-z0-9_])"
-)
-_USE_PROFILE_PATTERN = re.compile(
-    rf"(?i)\b(?:use|using|choose|select)\s+(?:the\s+)?(?P<profile>{_PROFILE_ALT})\s+profile(?![a-z0-9_])"
-)
-_BY_PROFILE_PATTERN = re.compile(
-    rf"(?i)(?:按|用)\s*(?P<profile>{_PROFILE_ALT})\s+profile(?![a-z0-9_])"
-)
-_CHINESE_GENERIC_PROFILE_PATTERN = re.compile(
-    r"(?i)(?:按|用)\s*(?P<profile_cn>通用)\s*profile(?![a-z0-9_])"
-)
-_PREFIX_OVERRIDE_PATTERNS = (
+_PROFILE_HINT_PATTERNS = (
     re.compile(
-        r"(?i)(?:重点看|重点关注|关注|看|focus(?:\s+on)?)\s*(?P<body>[^,;，。]*)"
+        rf"(?i)\bwith\s+(?:the\s+)?(?P<profile>{_PROFILE_ALT}|generic)\s+profile(?![a-z0-9_])"
+    ),
+    re.compile(
+        rf"(?i)\b(?:use|using|choose|select)\s+(?:the\s+)?(?P<profile>{_PROFILE_ALT}|generic)\s+"
+        rf"(?:profile|template|report(?:\s+style)?|config)(?![a-z0-9_])"
+    ),
+    re.compile(
+        rf"(?i)(?:使用|指定|按|用|采用|选择|按照)\s*(?P<profile>{_PROFILE_ALT}|通用)\s*"
+        rf"(?:profile|模板|报告(?:风格)?|配置)(?![a-z0-9_])"
     ),
 )
+_PREFIX_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_.-]+:\*")
+_PREFIX_FOCUS_MARKERS = (
+    "重点看",
+    "重点关注",
+    "只看",
+    "只分析",
+    "focus on",
+    "focus",
+    "指定前缀",
+    "查看前缀",
+    "前缀详情",
+    "不要用默认前缀",
+)
+_SECTION_ALIAS_TO_TOP_KEY = {
+    "prefix": "prefix_top",
+    "前缀": "prefix_top",
+    "string": "string_big_keys",
+    "hash": "hash_big_keys",
+    "list": "list_big_keys",
+    "set": "set_big_keys",
+    "zset": "zset_big_keys",
+    "stream": "stream_big_keys",
+    "other": "other_big_keys",
+}
 _SECTION_TOP_PATTERN = re.compile(
-    r"(?i)\b(?P<section>prefix|string|hash|list|set|zset|stream|other)\s+top\s+(?P<count>\d{1,4})\b"
+    r"(?i)(?P<section>prefix|前缀|string|hash|list|set|zset|stream|other)\s*top\s*(?P<count>\d{1,4})\b"
 )
-_GENERIC_TOP_PATTERN = re.compile(
-    r"(?i)(?<!prefix\s)(?<!string\s)(?<!hash\s)(?<!list\s)(?<!set\s)(?<!zset\s)(?<!stream\s)(?<!other\s)\btop\s+(?P<count>\d{1,4})(?=\s*(?:[,;，。]|$))"
+_GENERIC_TOP_PATTERNS = (
+    re.compile(r"(?i)\btop\s*(?P<count>\d{1,4})(?=\s*(?:个|keys?|key|的|report|报告|[,;，。]|$))"),
+    re.compile(r"前\s*(?P<count>\d{1,4})(?=\s*(?:个|条|项|[,;，。]|$))"),
 )
+_SUMMARY_TOP_N_SKIP_PATTERN = re.compile(r"(?i)\bsummary\b|结论|findings?")
 _REPORT_OUTPUT_PATTERN = re.compile(
     r"(?i)(?:输出|导出|export|output|write|save)\s*(?:为|成|as|to|到|:|：)?\s*"
     r"(?P<format>"
@@ -408,13 +430,10 @@ def _extract_remote_rdb_path(
 def _extract_profile_name(prompt: str) -> str | None:
     matches: list[tuple[int, str, bool]] = []
 
-    for pattern in (_WITH_PROFILE_PATTERN, _USE_PROFILE_PATTERN, _BY_PROFILE_PATTERN):
+    for pattern in _PROFILE_HINT_PATTERNS:
         for match in pattern.finditer(prompt):
-            profile = match.group("profile").lower()
+            profile = _normalize_profile_alias(match.group("profile"))
             matches.append((match.start(), profile, _has_negation_prefix(prompt, match.start())))
-
-    for match in _CHINESE_GENERIC_PROFILE_PATTERN.finditer(prompt):
-        matches.append((match.start(), "generic", _has_negation_prefix(prompt, match.start())))
 
     if not matches:
         return None
@@ -432,39 +451,31 @@ def _extract_profile_name(prompt: str) -> str | None:
 def _extract_focus_prefixes(prompt: str) -> tuple[str, ...]:
     prefixes: list[str] = []
     seen: set[str] = set()
-    for pattern in _PREFIX_OVERRIDE_PATTERNS:
-        for match in pattern.finditer(prompt):
-            body = match.group("body")
-            for prefix_match in re.finditer(r"[A-Za-z0-9_.-]+:\*", body):
-                prefix = prefix_match.group(0)
-                if prefix not in seen:
-                    seen.add(prefix)
-                    prefixes.append(prefix)
+    for clause in _iter_prompt_clauses(prompt):
+        lowered = clause.lower()
+        if not any(marker in lowered or marker in clause for marker in _PREFIX_FOCUS_MARKERS):
+            continue
+        for prefix_match in _PREFIX_TOKEN_PATTERN.finditer(clause):
+            prefix = prefix_match.group(0)
+            if prefix not in seen:
+                seen.add(prefix)
+                prefixes.append(prefix)
     return tuple(prefixes)
 
 
 def _extract_top_n_overrides(prompt: str) -> dict[str, int]:
     top_n: dict[str, int] = {}
-    for match in _SECTION_TOP_PATTERN.finditer(prompt):
-        section = match.group("section").lower()
-        count = int(match.group("count"))
-        if _is_valid_top_n(count):
-            top_n[_map_section_to_top_key(section)] = count
+    for clause in _iter_prompt_clauses(prompt):
+        generic_count = _extract_generic_top_n_from_clause(clause)
+        if generic_count is not None:
+            for key, value in _expand_generic_top_n(generic_count).items():
+                top_n.setdefault(key, value)
 
-    for match in _GENERIC_TOP_PATTERN.finditer(prompt):
-        count = int(match.group("count"))
-        if _is_valid_top_n(count):
-            for key in (
-                "top_big_keys",
-                "string_big_keys",
-                "hash_big_keys",
-                "list_big_keys",
-                "set_big_keys",
-                "zset_big_keys",
-                "stream_big_keys",
-                "other_big_keys",
-            ):
-                top_n.setdefault(key, count)
+        for match in _SECTION_TOP_PATTERN.finditer(clause):
+            section = match.group("section").lower()
+            count = int(match.group("count"))
+            if _is_valid_top_n(count):
+                top_n[_map_section_to_top_key(section)] = count
 
     return top_n
 
@@ -622,16 +633,7 @@ def _nearest_scope_distance(prompt: str, pattern: re.Pattern[str], match_start: 
 
 
 def _map_section_to_top_key(section: str) -> str:
-    return {
-        "prefix": "prefix_top",
-        "string": "string_big_keys",
-        "hash": "hash_big_keys",
-        "list": "list_big_keys",
-        "set": "set_big_keys",
-        "zset": "zset_big_keys",
-        "stream": "stream_big_keys",
-        "other": "other_big_keys",
-    }[section]
+    return _SECTION_ALIAS_TO_TOP_KEY[section]
 
 
 def _is_valid_top_n(count: int) -> bool:
@@ -649,6 +651,55 @@ def _extract_report_language(prompt: str) -> str:
                 last_match_start = match.start()
                 language = code
     return language
+
+
+def _normalize_profile_alias(value: str) -> str:
+    normalized = value.strip().lower()
+    if normalized == "通用":
+        return "generic"
+    return normalized
+
+
+def _iter_prompt_clauses(prompt: str) -> tuple[str, ...]:
+    clauses = [segment.strip() for segment in _CLAUSE_BREAK_PATTERN.split(prompt) if segment.strip()]
+    return tuple(clauses)
+
+
+def _extract_generic_top_n_from_clause(clause: str) -> int | None:
+    if _SUMMARY_TOP_N_SKIP_PATTERN.search(clause) and not re.search(
+        r"(?i)\bkey\b|键|prefix|前缀|string|hash|list|set|zset|stream|other",
+        clause,
+    ):
+        return None
+
+    for pattern in _GENERIC_TOP_PATTERNS:
+        for match in pattern.finditer(clause):
+            if _generic_top_match_is_section_specific(clause, match.start()):
+                continue
+            count = int(match.group("count"))
+            if _is_valid_top_n(count):
+                return count
+    return None
+
+
+def _generic_top_match_is_section_specific(clause: str, match_start: int) -> bool:
+    prefix = clause[:match_start].rstrip().lower()
+    return any(prefix.endswith(section) for section in _SECTION_ALIAS_TO_TOP_KEY)
+
+
+def _expand_generic_top_n(count: int) -> dict[str, int]:
+    return {
+        "prefix_top": count,
+        "top_big_keys": count,
+        "string_big_keys": count,
+        "hash_big_keys": count,
+        "list_big_keys": count,
+        "set_big_keys": count,
+        "zset_big_keys": count,
+        "stream_big_keys": count,
+        "other_big_keys": count,
+        "focused_prefix_top_keys": count,
+    }
 
 
 def _clean_secret(value: str) -> str:

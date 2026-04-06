@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from dba_assistant.capabilities.redis_rdb_analysis.analyzers.big_keys import analyze_big_keys
 from dba_assistant.capabilities.redis_rdb_analysis.analyzers.expiration import analyze_expiration
+from dba_assistant.capabilities.redis_rdb_analysis.analyzers.focused_prefix_details import (
+    analyze_focused_prefix_details,
+)
 from dba_assistant.capabilities.redis_rdb_analysis.analyzers.key_types import analyze_key_types
 from dba_assistant.capabilities.redis_rdb_analysis.analyzers.prefixes import analyze_prefixes
 from dba_assistant.capabilities.redis_rdb_analysis.analyzers.rcs_custom import analyze_rcs_custom
@@ -23,6 +26,11 @@ def analyze_overall(
     expiration = analyze_expiration(dataset)
     prefixes = analyze_prefixes(dataset, focus_prefixes=profile.focus_prefixes, top_n=profile.top_n.get("prefix_top", 20))
     big_keys = analyze_big_keys(dataset, top_n=profile.top_n)
+    focused_prefix_analysis = analyze_focused_prefix_details(
+        dataset,
+        focus_prefixes=profile.focus_prefixes,
+        top_n=profile.top_n.get("focused_prefix_top_keys", profile.top_n.get("top_big_keys", 100)),
+    )
 
     sample_rows = [
         [
@@ -71,6 +79,7 @@ def analyze_overall(
         "top_zset_keys": big_keys["top_zset_keys"],
         "top_stream_keys": big_keys["top_stream_keys"],
         "top_other_keys": big_keys["top_other_keys"],
+        "focused_prefix_analysis": focused_prefix_analysis,
         "conclusions": {
         },
     }

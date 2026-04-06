@@ -6,7 +6,6 @@ sections:
   - expiration_summary
   - non_expiration_summary
   - prefix_top_summary
-  - loan_prefix_detail
   - top_big_keys
   - top_string_keys
   - top_list_keys
@@ -15,6 +14,7 @@ sections:
   - top_zset_keys
   - top_stream_keys
   - top_other_keys
+  - focused_prefix_analysis
   - conclusions
 focus_prefixes:
   - loan:*

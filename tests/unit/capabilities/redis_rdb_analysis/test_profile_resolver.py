@@ -37,5 +37,20 @@ def test_resolve_rcs_profile_keeps_rcs_specific_sections() -> None:
     profile = resolve_profile("rcs", RdbOverrides())
 
     assert "background" in profile.sections
-    assert "loan_prefix_detail" in profile.sections
+    assert "focused_prefix_analysis" in profile.sections
     assert "loan:*" in profile.focus_prefixes
+
+
+def test_resolve_rcs_profile_uses_defaults_when_prompt_does_not_specify_prefixes() -> None:
+    profile = resolve_profile("rcs", RdbOverrides())
+
+    assert profile.focus_prefixes == ("loan:*", "cis:*", "tag:*")
+
+
+def test_resolve_rcs_profile_prefers_explicit_prompt_prefixes_over_profile_defaults() -> None:
+    profile = resolve_profile(
+        "rcs",
+        RdbOverrides(focus_prefixes=("mq:*", "order:*")),
+    )
+
+    assert profile.focus_prefixes == ("mq:*", "order:*")

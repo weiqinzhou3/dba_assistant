@@ -15,6 +15,7 @@ def analyze_big_keys(
 
     sections: dict[str, dict[str, object]] = {
         "top_big_keys": {
+            "limit": top_n_map["top_big_keys"],
             "rows": [
                 [record.key_name, record.key_type, str(record.size_bytes)]
                 for record in ordered_records[: top_n_map["top_big_keys"]]
@@ -33,11 +34,13 @@ def analyze_big_keys(
         type_records = [record for record in ordered_records if record.key_type == key_type]
         limit = top_n_map[limit_key]
         sections[section_name] = {
+            "limit": limit,
             "rows": [[record.key_name, str(record.size_bytes)] for record in type_records[:limit]],
         }
 
     other_records = [record for record in ordered_records if record.key_type not in {"string", "hash", "list", "set", "zset", "stream"}]
     sections["top_other_keys"] = {
+        "limit": top_n_map["other_big_keys"],
         "rows": [[record.key_name, str(record.size_bytes)] for record in other_records[: top_n_map["other_big_keys"]]],
     }
 

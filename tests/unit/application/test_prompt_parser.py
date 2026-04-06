@@ -193,6 +193,7 @@ def test_normalize_raw_request_extracts_task_2_profile_overrides() -> None:
         "zset_big_keys": 8,
         "stream_big_keys": 8,
         "other_big_keys": 8,
+        "focused_prefix_top_keys": 8,
     }
 
 
@@ -205,6 +206,40 @@ def test_normalize_raw_request_extracts_rcs_profile_from_task_2_form() -> None:
     assert request.rdb_overrides.profile_name == "rcs"
     assert request.rdb_overrides.focus_prefixes == ()
     assert request.rdb_overrides.top_n == {}
+
+
+def test_normalize_raw_request_extracts_rcs_profile_from_natural_chinese_aliases() -> None:
+    for prompt in (
+        "使用 rcs profile 分析这个 rdb",
+        "指定 rcs profile，导出 docx",
+        "按 rcs 模板分析本地 rdb",
+        "用 rcs 模板分析",
+        "使用 rcs 模板分析",
+        "按 rcs 报告风格输出",
+        "用 rcs 报告风格分析",
+        "使用 rcs 配置分析",
+    ):
+        request = normalize_raw_request(prompt, default_output_mode="summary")
+        assert request.rdb_overrides.profile_name == "rcs"
+
+
+def test_normalize_raw_request_extracts_generic_profile_from_natural_chinese_aliases() -> None:
+    for prompt in (
+        "用通用模板分析",
+        "使用通用报告风格",
+        "按通用配置输出报告",
+    ):
+        request = normalize_raw_request(prompt, default_output_mode="summary")
+        assert request.rdb_overrides.profile_name == "generic"
+
+
+def test_normalize_raw_request_does_not_treat_environment_mention_as_profile_override() -> None:
+    request = normalize_raw_request(
+        "我在 rcs 环境里，帮我分析这个 rdb",
+        default_output_mode="summary",
+    )
+
+    assert request.rdb_overrides.profile_name is None
 
 
 def test_normalize_raw_request_extracts_profile_from_explicit_with_form() -> None:
@@ -366,6 +401,73 @@ def test_normalize_raw_request_does_not_treat_summary_top_n_phrases_as_rdb_overr
     ):
         request = normalize_raw_request(prompt, default_output_mode="summary")
         assert request.rdb_overrides.top_n == {}
+
+
+def test_normalize_raw_request_extracts_generic_top_n_from_compact_chinese_and_english_forms() -> None:
+    expected = {
+        "prefix_top": 10,
+        "top_big_keys": 10,
+        "string_big_keys": 10,
+        "hash_big_keys": 10,
+        "list_big_keys": 10,
+        "set_big_keys": 10,
+        "zset_big_keys": 10,
+        "stream_big_keys": 10,
+        "other_big_keys": 10,
+        "focused_prefix_top_keys": 10,
+    }
+    for prompt in (
+        "top 10",
+        "top10",
+        "前10",
+        "前 10",
+        "只看 top 10",
+        "只输出前 10 个",
+        "展示前10个",
+        "top 10 个 key",
+        "top 10 的报告",
+    ):
+        request = normalize_raw_request(prompt, default_output_mode="summary")
+        assert request.rdb_overrides.top_n == expected
+
+
+def test_normalize_raw_request_extracts_section_specific_top_n_and_prefers_them_over_generic_top_n() -> None:
+    request = normalize_raw_request(
+        "top 10, string top 20, 前缀 top 30",
+        default_output_mode="summary",
+    )
+
+    assert request.rdb_overrides.top_n == {
+        "prefix_top": 30,
+        "top_big_keys": 10,
+        "string_big_keys": 20,
+        "hash_big_keys": 10,
+        "list_big_keys": 10,
+        "set_big_keys": 10,
+        "zset_big_keys": 10,
+        "stream_big_keys": 10,
+        "other_big_keys": 10,
+        "focused_prefix_top_keys": 10,
+    }
+
+
+def test_normalize_raw_request_extracts_prefix_specific_top_n_from_chinese_prompt() -> None:
+    request = normalize_raw_request(
+        "使用 rcs profile，前缀 top 10",
+        default_output_mode="summary",
+    )
+
+    assert request.rdb_overrides.top_n == {"prefix_top": 10}
+
+
+def test_normalize_raw_request_extracts_requested_focus_prefixes_as_explicit_override() -> None:
+    request = normalize_raw_request(
+        "使用 rcs profile，但只看 order:* 和 mq:*，不要用默认前缀",
+        default_output_mode="summary",
+    )
+
+    assert request.rdb_overrides.profile_name == "rcs"
+    assert request.rdb_overrides.focus_prefixes == ("order:*", "mq:*")
 
 
 def test_normalize_raw_request_ignores_out_of_range_top_n_overrides() -> None:

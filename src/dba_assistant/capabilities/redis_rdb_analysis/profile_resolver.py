@@ -11,6 +11,7 @@ from dba_assistant.capabilities.redis_rdb_analysis.types import EffectiveProfile
 _PROFILE_DIR = Path(__file__).resolve().parent / "profiles"
 _DEFAULT_TOP_N = {
     "prefix_top": 100,
+    "focused_prefix_top_keys": 100,
     "top_big_keys": 100,
     "string_big_keys": 100,
     "list_big_keys": 100,
@@ -34,11 +35,12 @@ def resolve_profile(profile_name: str, overrides: RdbOverrides) -> EffectiveProf
     top_n = dict(_DEFAULT_TOP_N)
     top_n.update(_as_int_mapping(profile_data.get("top_n", {})))
     top_n.update(overrides.top_n)
+    effective_focus_prefixes = overrides.focus_prefixes or focus_prefixes
 
     return EffectiveProfile(
         name=str(profile_data.get("name", profile_name)).lower(),
         sections=sections,
-        focus_prefixes=_merge_unique(focus_prefixes, overrides.focus_prefixes),
+        focus_prefixes=effective_focus_prefixes,
         top_n=top_n,
     )
 
@@ -54,18 +56,6 @@ def _load_profile(profile_name: str) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError(f"Profile file {path} must contain a mapping.")
     return data
-
-
-def _merge_unique(base: tuple[str, ...], overrides: tuple[str, ...]) -> tuple[str, ...]:
-    merged: list[str] = []
-    seen: set[str] = set()
-    for value in (*base, *overrides):
-        if value not in seen:
-            seen.add(value)
-            merged.append(value)
-    return tuple(merged)
-
-
 def _as_str_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         raise ValueError("Profile field must be a list of strings.")

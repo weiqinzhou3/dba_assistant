@@ -16,12 +16,19 @@ def report_title(language: str) -> str:
     return "Redis RDB Analysis Report" if language == "en-US" else "Redis RDB 分析报告"
 
 
-def section_title(section_id: str, language: str) -> str:
+def section_title(
+    section_id: str,
+    language: str,
+    *,
+    limit: int | None = None,
+) -> str:
+    display_limit = limit or 100
     titles = {
         "en-US": {
             "overview": "Sample and Overall Overview",
             "distribution_analysis": "Data Distribution Analysis",
             "big_key_analysis": "Big Key Analysis",
+            "focused_prefix_analysis": "Focused Prefix Detail Analysis",
             "executive_summary": "Executive Summary",
             "background": "Analysis Background",
             "analysis_results": "Analysis Results",
@@ -33,14 +40,14 @@ def section_title(section_id: str, language: str) -> str:
             "non_expiration_summary": "Persistent Key Distribution",
             "prefix_top_summary": "Prefix Statistics",
             "prefix_expiration_breakdown": "Prefix Expiration Distribution",
-            "top_big_keys": "Overall Big Keys Ranking (Top 100)",
-            "top_string_keys": "String Big Keys (Top 100)",
-            "top_hash_keys": "Hash Big Keys (Top 100)",
-            "top_list_keys": "List Big Keys (Top 100)",
-            "top_set_keys": "Set Big Keys (Top 100)",
-            "top_zset_keys": "ZSet Big Keys (Top 100)",
-            "top_stream_keys": "Stream Big Keys (Top 100)",
-            "top_other_keys": "Other Big Keys (Top 100)",
+            "top_big_keys": f"Overall Big Keys Ranking (Top {display_limit})",
+            "top_string_keys": f"String Big Keys (Top {display_limit})",
+            "top_hash_keys": f"Hash Big Keys (Top {display_limit})",
+            "top_list_keys": f"List Big Keys (Top {display_limit})",
+            "top_set_keys": f"Set Big Keys (Top {display_limit})",
+            "top_zset_keys": f"ZSet Big Keys (Top {display_limit})",
+            "top_stream_keys": f"Stream Big Keys (Top {display_limit})",
+            "top_other_keys": f"Other Big Keys (Top {display_limit})",
             "loan_prefix_detail": "Loan Prefix Key Details",
             "conclusions": "Conclusions and Recommendations",
         },
@@ -48,6 +55,7 @@ def section_title(section_id: str, language: str) -> str:
             "overview": "样本与总体概况",
             "distribution_analysis": "数据分布分析",
             "big_key_analysis": "大 Key 分析",
+            "focused_prefix_analysis": "重点前缀详情分析",
             "executive_summary": "执行摘要",
             "background": "分析背景",
             "analysis_results": "分析结果",
@@ -59,14 +67,14 @@ def section_title(section_id: str, language: str) -> str:
             "non_expiration_summary": "未设置过期键分布",
             "prefix_top_summary": "前缀统计",
             "prefix_expiration_breakdown": "重点前缀过期分布",
-            "top_big_keys": "总体大 Key 排名（Top 100）",
-            "top_string_keys": "String 类型大 Key（Top 100）",
-            "top_hash_keys": "Hash 类型大 Key（Top 100）",
-            "top_list_keys": "List 类型大 Key（Top 100）",
-            "top_set_keys": "Set 类型大 Key（Top 100）",
-            "top_zset_keys": "ZSet 类型大 Key（Top 100）",
-            "top_stream_keys": "Stream 类型大 Key（Top 100）",
-            "top_other_keys": "其他类型大 Key（Top 100）",
+            "top_big_keys": f"总体大 Key 排名（Top {display_limit}）",
+            "top_string_keys": f"String 类型大 Key（Top {display_limit}）",
+            "top_hash_keys": f"Hash 类型大 Key（Top {display_limit}）",
+            "top_list_keys": f"List 类型大 Key（Top {display_limit}）",
+            "top_set_keys": f"Set 类型大 Key（Top {display_limit}）",
+            "top_zset_keys": f"ZSet 类型大 Key（Top {display_limit}）",
+            "top_stream_keys": f"Stream 类型大 Key（Top {display_limit}）",
+            "top_other_keys": f"其他类型大 Key（Top {display_limit}）",
             "loan_prefix_detail": "Loan 前缀键明细",
             "conclusions": "结论与建议",
         },
@@ -287,6 +295,7 @@ def _build_prefix_expiration_section(section_id: str, payload: dict[str, object]
 
 def _build_top_big_keys_section(section_id: str, payload: dict[str, object], language: str) -> dict[str, Any]:
     rows = payload.get("rows")
+    limit = int(payload.get("limit", 100))
     if not isinstance(rows, list):
         rows = []
     if not rows:
@@ -294,13 +303,15 @@ def _build_top_big_keys_section(section_id: str, payload: dict[str, object], lan
     if language == "en-US":
         return {
             "summary": "The table below lists the overall largest keys ranked by memory usage.",
-            "table_title": section_title(section_id, language),
+            "table_title": section_title(section_id, language, limit=limit),
+            "section_title": section_title(section_id, language, limit=limit),
             "columns": ["Key Name", "Key Type", "Memory Usage (Bytes)"],
             "rows": rows,
         }
     return {
         "summary": "本节列示样本中按内存占用排序的总体大 Key，用于快速识别主要风险对象。",
-        "table_title": section_title(section_id, language),
+        "table_title": section_title(section_id, language, limit=limit),
+        "section_title": section_title(section_id, language, limit=limit),
         "columns": ["键名", "键类型", "内存占用（字节）"],
         "rows": rows,
     }
@@ -308,20 +319,23 @@ def _build_top_big_keys_section(section_id: str, payload: dict[str, object], lan
 
 def _build_typed_big_keys_section(section_id: str, payload: dict[str, object], language: str) -> dict[str, Any]:
     rows = payload.get("rows")
+    limit = int(payload.get("limit", 100))
     if not isinstance(rows, list):
         rows = []
     if not rows:
         return {}
-    title = section_title(section_id, language)
+    title = section_title(section_id, language, limit=limit)
     if language == "en-US":
         return {
-            "summary": f"The table below lists the largest keys within the {title.replace(' (Top 100)', '').lower()} category.",
+            "summary": f"The table below lists the largest keys within the {title.rsplit(' (Top', 1)[0].lower()} category.",
+            "section_title": title,
             "table_title": title,
             "columns": ["Key Name", "Memory Usage (Bytes)"],
             "rows": rows,
         }
     return {
         "summary": f"本节展示 {title}，用于识别同类型数据结构中的主要高占用对象。",
+        "section_title": title,
         "table_title": title,
         "columns": ["键名", "内存占用（字节）"],
         "rows": rows,
@@ -367,7 +381,8 @@ def _build_fallback_section(section_id: str, payload: dict[str, object], languag
     columns = payload.get("columns") if isinstance(payload.get("columns"), list) else []
     return {
         "summary": str(payload.get("summary", "")) if payload.get("summary") else "",
-        "table_title": section_title(section_id, language),
+        "table_title": section_title(section_id, language, limit=int(payload.get("limit", 100))),
+        "section_title": section_title(section_id, language, limit=int(payload.get("limit", 100))),
         "columns": [str(column) for column in columns],
         "rows": [[str(cell) for cell in row] for row in rows if isinstance(row, list)],
     }
@@ -389,3 +404,72 @@ def _sample_kind_label(kind: str, language: str) -> str:
         },
     }
     return labels[language].get(kind, kind)
+
+
+def focused_prefix_section_title(prefix: str, language: str) -> str:
+    if language == "en-US":
+        return f"Prefix {prefix} Details"
+    return f"前缀 {prefix} 详情"
+
+
+def focused_prefix_table_title(prefix: str, language: str, *, limit: int) -> str:
+    if language == "en-US":
+        return f"Prefix {prefix} Top Keys (Top {limit})"
+    return f"前缀 {prefix} Top Keys（Top {limit}）"
+
+
+def build_localized_focused_prefix_section(payload: dict[str, object], language: str) -> dict[str, Any]:
+    prefix = str(payload.get("prefix", ""))
+    limit = int(payload.get("limit", 100))
+    key_type_breakdown = payload.get("key_type_breakdown")
+    expiration_stats = payload.get("expiration_stats")
+    top_keys = payload.get("top_keys")
+    matched_key_count = int(payload.get("matched_key_count", 0))
+    total_size_bytes = int(payload.get("total_size_bytes", 0))
+
+    if not isinstance(key_type_breakdown, dict):
+        key_type_breakdown = {}
+    if not isinstance(expiration_stats, dict):
+        expiration_stats = {}
+    if not isinstance(top_keys, list):
+        top_keys = []
+
+    if matched_key_count <= 0:
+        summary = "No keys matched the requested prefix." if language == "en-US" else "未匹配到符合条件的键。"
+        return {
+            "summary": summary,
+            "paragraphs": [],
+            "rows": [],
+            "columns": [],
+            "section_title": focused_prefix_section_title(prefix, language),
+        }
+
+    type_summary = ", ".join(f"{key_type}={count}" for key_type, count in sorted(key_type_breakdown.items()))
+    with_expiration = int(expiration_stats.get("with_expiration", 0))
+    without_expiration = int(expiration_stats.get("without_expiration", 0))
+
+    if language == "en-US":
+        summary = (
+            f"Prefix {prefix} matches {matched_key_count} keys with a total of {total_size_bytes} bytes. "
+            f"Expiration covers {with_expiration} keys and {without_expiration} keys are persistent. "
+            f"Key type breakdown: {type_summary if type_summary else 'none'}."
+        )
+        paragraphs = []
+        columns = ["Key Name", "Key Type", "Memory Usage (Bytes)"]
+    else:
+        summary = (
+            f"此前缀范围共匹配 {matched_key_count} 个键，累计内存占用 {total_size_bytes} 字节；"
+            f"其中设置过期 {with_expiration} 个，未设置过期 {without_expiration} 个。"
+            f"键类型分布：{type_summary if type_summary else '未匹配到数据。'}"
+        )
+        paragraphs = []
+        columns = ["键名", "键类型", "内存占用（字节）"]
+
+    return {
+        "summary": summary,
+        "paragraphs": paragraphs,
+        "table_title": focused_prefix_table_title(prefix, language, limit=limit),
+        "section_title": focused_prefix_section_title(prefix, language),
+        "columns": columns,
+        "rows": top_keys,
+    }

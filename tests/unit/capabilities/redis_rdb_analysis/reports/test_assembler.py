@@ -136,3 +136,59 @@ def test_assembler_preserves_english_localization_for_formal_titles_and_columns(
     key_type_table = report.sections[1].blocks[1]
     assert key_type_table.title == "Key Type Distribution Overview"
     assert key_type_table.columns == ["Key Type", "Key Count", "Memory Usage (Bytes)"]
+
+
+def test_assembler_adds_focused_prefix_chapter_and_subsections() -> None:
+    profile = EffectiveProfile(
+        name="rcs",
+        sections=("overall_summary", "top_big_keys", "focused_prefix_analysis", "conclusions"),
+    )
+    analysis_result = {
+        "overall_summary": {"total_samples": 1, "total_keys": 4, "total_bytes": 1024},
+        "key_type_summary": {
+            "counts": {"string": 2, "hash": 1, "stream": 1},
+            "memory_bytes": {"string": 600, "hash": 200, "stream": 224},
+        },
+        "expiration_summary": {"expired_count": 1, "persistent_count": 3},
+        "top_big_keys": {"rows": [["order:1", "string", "500"]], "limit": 10},
+        "focused_prefix_analysis": {
+            "sections": [
+                {
+                    "prefix": "order:*",
+                    "matched_key_count": 2,
+                    "total_size_bytes": 700,
+                    "key_type_breakdown": {"string": 1, "hash": 1},
+                    "expiration_stats": {"with_expiration": 1, "without_expiration": 1},
+                    "top_keys": [["order:1", "string", "500"], ["order:2", "hash", "200"]],
+                    "summary_text": "已匹配到 2 个以 order:* 为范围的键。",
+                    "limit": 10,
+                },
+                {
+                    "prefix": "mq:*",
+                    "matched_key_count": 0,
+                    "total_size_bytes": 0,
+                    "key_type_breakdown": {},
+                    "expiration_stats": {"with_expiration": 0, "without_expiration": 0},
+                    "top_keys": [],
+                    "summary_text": "未匹配到符合条件的键。",
+                    "limit": 10,
+                },
+            ]
+        },
+    }
+
+    report = assemble_report(analysis_result, profile=profile, title="ignored", language="zh-CN")
+
+    assert [section.title for section in report.sections] == [
+        "样本与总体概况",
+        "总体概览",
+        "大 Key 分析",
+        "总体大 Key 排名（Top 10）",
+        "重点前缀详情分析",
+        "前缀 order:* 详情",
+        "前缀 mq:* 详情",
+        "结论与建议",
+    ]
+    assert report.sections[5].blocks[1].title == "前缀 order:* Top Keys（Top 10）"
+    assert report.sections[5].blocks[1].rows == [["order:1", "string", "500"], ["order:2", "hash", "200"]]
+    assert report.sections[6].blocks[0].text == "未匹配到符合条件的键。"

@@ -16,6 +16,7 @@ sections:
   - top_zset_keys
   - top_stream_keys
   - top_other_keys
+  - focused_prefix_analysis
   - conclusions
 focus_prefixes: []
 top_n:

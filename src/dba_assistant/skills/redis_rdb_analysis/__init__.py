@@ -1,6 +1,6 @@
-"""Compatibility exports for the Redis RDB analysis capability."""
+"""Redis RDB analysis capability."""
 
-from dba_assistant.skills.redis_rdb_analysis import (
+from .types import (
     AnalysisStatus,
     ConfirmationRequest,
     EffectiveProfile,

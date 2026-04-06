@@ -101,6 +101,55 @@ def test_analyze_rdb_returns_analysis_report_for_local_inputs(monkeypatch) -> No
     assert any(section.id == "top_big_keys" for section in result.sections)
 
 
+def test_analyze_rdb_applies_requested_rcs_profile_top_n_and_focus_prefixes(monkeypatch) -> None:
+    rows = [
+        {"key_name": "order:1", "key_type": "string", "size_bytes": 900, "has_expiration": True, "ttl_seconds": 60},
+        {"key_name": "order:2", "key_type": "hash", "size_bytes": 800, "has_expiration": False, "ttl_seconds": None},
+        {"key_name": "order:3", "key_type": "string", "size_bytes": 700, "has_expiration": False, "ttl_seconds": None},
+        {"key_name": "mq:1", "key_type": "stream", "size_bytes": 600, "has_expiration": False, "ttl_seconds": None},
+        {"key_name": "mq:2", "key_type": "stream", "size_bytes": 500, "has_expiration": True, "ttl_seconds": 30},
+        {"key_name": "loan:1", "key_type": "hash", "size_bytes": 400, "has_expiration": False, "ttl_seconds": None},
+    ]
+    request = RdbAnalysisRequest(
+        prompt="使用 rcs profile，只输出 top 2，只看 order:* 和 mq:*",
+        inputs=[SampleInput(source=Path("/tmp/dump.rdb"), kind=InputSourceKind.LOCAL_RDB)],
+        profile_name="rcs",
+        profile_overrides={
+            "top_n": {
+                "prefix_top": 2,
+                "top_big_keys": 2,
+                "string_big_keys": 2,
+                "hash_big_keys": 2,
+                "list_big_keys": 2,
+                "set_big_keys": 2,
+                "zset_big_keys": 2,
+                "stream_big_keys": 2,
+                "other_big_keys": 2,
+                "focused_prefix_top_keys": 2,
+            },
+            "focus_prefixes": ("order:*", "mq:*"),
+        },
+    )
+    monkeypatch.setattr("dba_assistant.capabilities.redis_rdb_analysis.service._parse_rdb_rows", lambda _path: rows)
+
+    result = analyze_rdb(
+        request,
+        profile=None,
+        remote_discovery=lambda *_args, **_kwargs: {"rdb_path": "/data/redis/dump.rdb"},
+    )
+
+    assert isinstance(result, AnalysisReport)
+    assert result.metadata["profile"] == "rcs"
+    assert all(section.id != "sample_overview" for section in result.sections)
+    assert any(section.id == "focused_prefix_analysis" for section in result.sections)
+    assert any(section.title == "重点前缀详情分析" for section in result.sections)
+    top_big_key_section = next(section for section in result.sections if section.id == "top_big_keys")
+    assert len(top_big_key_section.blocks[1].rows) == 2
+    focused_order_section = next(section for section in result.sections if section.title == "前缀 order:* 详情")
+    assert "loan:*" not in focused_order_section.blocks[0].text
+    assert len(focused_order_section.blocks[1].rows) == 2
+
+
 def test_analyze_rdb_local_inputs_do_not_call_remote_discovery(monkeypatch) -> None:
     rows = json.loads(Path("tests/fixtures/rdb/direct/sample_key_records.json").read_text(encoding="utf-8"))
     request = RdbAnalysisRequest(

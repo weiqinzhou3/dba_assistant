@@ -12,7 +12,7 @@ def generate_analysis_report(
     report = coerce_analysis_report(analysis)
 
     if config.format is ReportFormat.SUMMARY:
-        content = render_summary_text(report)
+        content = render_summary_text(report, language=config.language)
         if config.output_path is not None:
             config.output_path.parent.mkdir(parents=True, exist_ok=True)
             config.output_path.write_text(content, encoding="utf-8")

@@ -10,10 +10,10 @@ from dba_assistant.core.reporter.types import IReporter, ReportArtifact, ReportF
 class SummaryReporter(IReporter[AnalysisResult | AnalysisReport]):
     def render(self, analysis: AnalysisResult | AnalysisReport, config: ReportOutputConfig) -> ReportArtifact:
         if isinstance(analysis, AnalysisResult):
-            content = self._render_legacy_text(analysis)
+            content = self._render_legacy_text(analysis, language=config.language)
         else:
             report = coerce_analysis_report(analysis)
-            content = render_summary_text(report)
+            content = render_summary_text(report, language=config.language)
         if config.output_path is not None:
             config.output_path.parent.mkdir(parents=True, exist_ok=True)
             config.output_path.write_text(content, encoding="utf-8")
@@ -23,18 +23,25 @@ class SummaryReporter(IReporter[AnalysisResult | AnalysisReport]):
             content=content,
         )
 
-    def _render_legacy_text(self, analysis: AnalysisResult) -> str:
+    def _render_legacy_text(self, analysis: AnalysisResult, *, language: str) -> str:
+        labels = {
+            "metadata": "Metadata",
+            "risk_summary": "Risk Summary",
+        } if language == "en-US" else {
+            "metadata": "元数据",
+            "risk_summary": "风险摘要",
+        }
         lines = [analysis.title, "=" * len(analysis.title), "", analysis.summary, ""]
 
         if analysis.metadata:
-            lines.append("Metadata")
+            lines.append(labels["metadata"])
             lines.append("--------")
             for key, value in sorted(analysis.metadata.items()):
                 lines.append(f"- {key}: {value}")
             lines.append("")
 
         if analysis.risk_summary:
-            lines.append("Risk Summary")
+            lines.append(labels["risk_summary"])
             lines.append("------------")
             for key, value in sorted(analysis.risk_summary.items()):
                 lines.append(f"- {key}: {value}")

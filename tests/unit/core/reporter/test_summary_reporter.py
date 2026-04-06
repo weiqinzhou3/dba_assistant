@@ -36,6 +36,7 @@ def test_summary_reporter_returns_rendered_text() -> None:
             mode=OutputMode.SUMMARY,
             format=ReportFormat.SUMMARY,
             output_path=None,
+            language="en-US",
         ),
     )
 
@@ -55,6 +56,7 @@ def test_summary_reporter_can_write_summary_to_a_text_file(tmp_path: Path) -> No
             mode=OutputMode.SUMMARY,
             format=ReportFormat.SUMMARY,
             output_path=output_path,
+            language="en-US",
         ),
     )
 
@@ -69,6 +71,7 @@ def test_summary_reporter_preserves_legacy_analysis_result_text_shape() -> None:
             mode=OutputMode.SUMMARY,
             format=ReportFormat.SUMMARY,
             output_path=None,
+            language="en-US",
         ),
     )
 
@@ -100,15 +103,16 @@ def test_summary_reporter_preserves_legacy_analysis_result_text_shape() -> None:
 
 def test_summary_reporter_supports_generic_analysis_report() -> None:
     report = AnalysisReport(
-        title="Redis RDB Analysis",
-        summary="No urgent risk found.",
-        sections=[ReportSectionModel(id="summary", title="Summary", blocks=[TextBlock(text="ok")])],
+        title="Redis RDB 分析报告",
+        summary="未发现紧急风险。",
+        sections=[ReportSectionModel(id="summary", title="摘要", blocks=[TextBlock(text="ok")])],
+        language="zh-CN",
     )
 
     artifact = SummaryReporter().render(
         report,
-        ReportOutputConfig(mode=OutputMode.SUMMARY, format=ReportFormat.SUMMARY),
+        ReportOutputConfig(mode=OutputMode.SUMMARY, format=ReportFormat.SUMMARY, language="zh-CN"),
     )
 
     assert artifact.content is not None
-    assert "No urgent risk found." in artifact.content
+    assert "未发现紧急风险。" in artifact.content

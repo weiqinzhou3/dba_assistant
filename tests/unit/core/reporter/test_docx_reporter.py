@@ -41,6 +41,7 @@ def test_docx_reporter_creates_a_minimal_report_document(tmp_path: Path) -> None
             mode=OutputMode.REPORT,
             format=ReportFormat.DOCX,
             template_name="rdb-analysis",
+            language="en-US",
         ),
     )
 
@@ -58,9 +59,10 @@ def test_docx_reporter_creates_a_minimal_report_document(tmp_path: Path) -> None
 def test_docx_reporter_supports_generic_analysis_report(tmp_path: Path) -> None:
     output_path = tmp_path / "generic-report.docx"
     report = AnalysisReport(
-        title="Redis RDB Analysis",
-        summary="No urgent risk found.",
-        sections=[ReportSectionModel(id="summary", title="Summary", blocks=[TextBlock(text="ok")])],
+        title="Redis RDB 分析报告",
+        summary="未发现紧急风险。",
+        sections=[ReportSectionModel(id="summary", title="摘要", blocks=[TextBlock(text="ok")])],
+        language="zh-CN",
     )
 
     artifact = DocxReporter().render(
@@ -70,6 +72,7 @@ def test_docx_reporter_supports_generic_analysis_report(tmp_path: Path) -> None:
             mode=OutputMode.REPORT,
             format=ReportFormat.DOCX,
             template_name="rdb-analysis",
+            language="zh-CN",
         ),
     )
 
@@ -77,5 +80,5 @@ def test_docx_reporter_supports_generic_analysis_report(tmp_path: Path) -> None:
     text = "\n".join(paragraph.text for paragraph in document.paragraphs)
 
     assert artifact.output_path == output_path
-    assert "Redis RDB Analysis" in text
-    assert "Summary" in text
+    assert "Redis RDB 分析报告" in text
+    assert "摘要" in text

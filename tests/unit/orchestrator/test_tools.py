@@ -3,6 +3,7 @@ from pathlib import Path
 from dba_assistant.adaptors.redis_adaptor import RedisConnectionConfig
 from dba_assistant.application.request_models import NormalizedRequest, RdbOverrides, RuntimeInputs, Secrets
 from dba_assistant.capabilities.redis_rdb_analysis.remote_input import RemoteRedisDiscoveryError
+from dba_assistant.interface.types import ApprovalResponse, ApprovalStatus
 from dba_assistant.orchestrator.tools import build_all_tools, resolve_remote_rdb_fetch_plan
 
 
@@ -71,7 +72,17 @@ def test_analyze_local_rdb_tool_runs_full_pipeline(monkeypatch) -> None:
     )
     captured: dict[str, object] = {}
 
-    def fake_analyze_rdb_tool(prompt, input_paths, *, input_kind="local_rdb", profile_name="generic", path_mode="auto", profile_overrides=None, service=None):
+    def fake_analyze_rdb_tool(
+        prompt,
+        input_paths,
+        *,
+        input_kind="local_rdb",
+        profile_name="generic",
+        report_language="zh-CN",
+        path_mode="auto",
+        profile_overrides=None,
+        service=None,
+    ):
         captured["analyze_called"] = True
         captured["input_kind"] = input_kind
         return analysis_report
@@ -83,7 +94,7 @@ def test_analyze_local_rdb_tool_runs_full_pipeline(monkeypatch) -> None:
     # expected output by patching the entire report generation chain.
     from dba_assistant.core.reporter import summary_reporter
 
-    def fake_render_summary(report):
+    def fake_render_summary(report, *, language=None):
         return "summary text"
 
     monkeypatch.setattr(
@@ -111,6 +122,7 @@ def test_analyze_local_rdb_tool_validates_host_paths_before_analysis(monkeypatch
         *,
         input_kind="local_rdb",
         profile_name="generic",
+        report_language="zh-CN",
         path_mode="auto",
         profile_overrides=None,
         service=None,
@@ -126,7 +138,7 @@ def test_analyze_local_rdb_tool_validates_host_paths_before_analysis(monkeypatch
     monkeypatch.setattr("dba_assistant.orchestrator.tools.analyze_rdb_tool", fake_analyze_rdb_tool)
     monkeypatch.setattr(
         "dba_assistant.core.reporter.report_model.render_summary_text",
-        lambda report: "summary text",
+        lambda report, *, language=None: "summary text",
     )
 
     request = _make_request()
@@ -166,6 +178,7 @@ def test_analyze_local_rdb_tool_forces_local_input_kind_even_when_request_is_pol
         *,
         input_kind="local_rdb",
         profile_name="generic",
+        report_language="zh-CN",
         path_mode="auto",
         profile_overrides=None,
         service=None,
@@ -181,7 +194,7 @@ def test_analyze_local_rdb_tool_forces_local_input_kind_even_when_request_is_pol
     monkeypatch.setattr("dba_assistant.orchestrator.tools.analyze_rdb_tool", fake_analyze_rdb_tool)
     monkeypatch.setattr(
         "dba_assistant.core.reporter.report_model.render_summary_text",
-        lambda report: "summary text",
+        lambda report, *, language=None: "summary text",
     )
 
     request = _make_request(
@@ -206,7 +219,12 @@ def test_analyze_local_rdb_with_mysql_route_does_not_fall_into_remote_discovery(
 
     rows_fixture = Path("tests/fixtures/rdb/direct/sample_key_records.json")
     rows = json.loads(rows_fixture.read_text(encoding="utf-8"))
-    captured: dict[str, object] = {}
+    captured: dict[str, object] = {"approvals": 0}
+
+    class ApproveHandler:
+        def request_approval(self, request):
+            captured["approvals"] += 1
+            return ApprovalResponse(status=ApprovalStatus.APPROVED, action=request.action)
 
     monkeypatch.setattr(
         "dba_assistant.capabilities.redis_rdb_analysis.service._parse_rdb_rows",
@@ -222,7 +240,7 @@ def test_analyze_local_rdb_with_mysql_route_does_not_fall_into_remote_discovery(
     )
     monkeypatch.setattr(
         "dba_assistant.orchestrator.tools._load_dataset",
-        lambda _adaptor, _connection, table_name: (
+        lambda _adaptor, _connection, table_name, limit="100000": (
             captured.setdefault("loaded_table", table_name),
             json.dumps({"source": f"mysql:{table_name}", "rows": rows}),
         )[-1],
@@ -249,15 +267,137 @@ def test_analyze_local_rdb_with_mysql_route_does_not_fall_into_remote_discovery(
         password="Root@1234!",
         database="rcs",
     )
-    tools = build_all_tools(request, mysql_connection=mysql_connection)
+    tools = build_all_tools(
+        request,
+        mysql_connection=mysql_connection,
+        approval_handler=ApproveHandler(),
+    )
     analyze_tool = next(t for t in tools if t.__name__ == "analyze_local_rdb")
 
     result = analyze_tool(input_paths="/tmp/dump.rdb")
 
     assert "KeyError" not in result
+    assert captured["approvals"] == 1
     assert captured["staged_count"] == len(rows)
     assert captured["loaded_table"] == captured["staged_table"]
-    assert "samples" in result.lower()
+    assert "样本" in result
+
+
+def test_analyze_local_rdb_mysql_route_requires_approval_before_staging(monkeypatch) -> None:
+    import json
+
+    from dba_assistant.adaptors.mysql_adaptor import MySQLConnectionConfig
+
+    rows_fixture = Path("tests/fixtures/rdb/direct/sample_key_records.json")
+    rows = json.loads(rows_fixture.read_text(encoding="utf-8"))
+    captured: dict[str, object] = {"approvals": 0}
+
+    class DenyHandler:
+        def request_approval(self, request):
+            captured["approvals"] += 1
+            captured["approval_request"] = request
+            return ApprovalResponse(status=ApprovalStatus.DENIED, action=request.action)
+
+    monkeypatch.setattr(
+        "dba_assistant.capabilities.redis_rdb_analysis.service._parse_rdb_rows",
+        lambda _path: rows,
+    )
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._stage_rows",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("stage write must not happen after denial")),
+    )
+
+    request = _make_request(
+        prompt="analyze local rdb via mysql",
+        runtime_inputs=RuntimeInputs(
+            output_mode="summary",
+            path_mode="database_backed_analysis",
+            input_paths=(Path("/tmp/dump.rdb"),),
+            mysql_host="192.168.23.176",
+            mysql_port=3306,
+            mysql_user="root",
+            mysql_database="rcs",
+            mysql_table="rdb",
+        ),
+    )
+    mysql_connection = MySQLConnectionConfig(
+        host="192.168.23.176",
+        port=3306,
+        user="root",
+        password="Root@1234!",
+        database="rcs",
+    )
+    tools = build_all_tools(request, mysql_connection=mysql_connection, approval_handler=DenyHandler())
+    analyze_tool = next(t for t in tools if t.__name__ == "analyze_local_rdb")
+
+    result = analyze_tool(input_paths="/tmp/dump.rdb")
+
+    assert result == "Operation denied by user."
+    assert captured["approvals"] == 1
+    assert captured["approval_request"].action == "stage_rdb_rows_to_mysql"
+
+
+def test_analyze_local_rdb_mysql_route_stages_only_after_approval(monkeypatch) -> None:
+    import json
+
+    from dba_assistant.adaptors.mysql_adaptor import MySQLConnectionConfig
+
+    rows_fixture = Path("tests/fixtures/rdb/direct/sample_key_records.json")
+    rows = json.loads(rows_fixture.read_text(encoding="utf-8"))
+    captured: dict[str, object] = {"approvals": 0}
+
+    class ApproveHandler:
+        def request_approval(self, request):
+            captured["approvals"] += 1
+            return ApprovalResponse(status=ApprovalStatus.APPROVED, action=request.action)
+
+    monkeypatch.setattr(
+        "dba_assistant.capabilities.redis_rdb_analysis.service._parse_rdb_rows",
+        lambda _path: rows,
+    )
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._stage_rows",
+        lambda _adaptor, _connection, table_name, parsed_rows: (
+            captured.setdefault("staged_table", table_name),
+            captured.setdefault("staged_count", len(parsed_rows)),
+            json.dumps({"table": table_name, "staged": len(parsed_rows)}),
+        )[-1],
+    )
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._load_dataset",
+        lambda _adaptor, _connection, table_name, limit="100000": json.dumps(
+            {"source": f"mysql:{table_name}", "rows": rows}
+        ),
+    )
+
+    request = _make_request(
+        prompt="analyze local rdb via mysql",
+        runtime_inputs=RuntimeInputs(
+            output_mode="summary",
+            path_mode="database_backed_analysis",
+            input_paths=(Path("/tmp/dump.rdb"),),
+            mysql_host="192.168.23.176",
+            mysql_port=3306,
+            mysql_user="root",
+            mysql_database="rcs",
+            mysql_table="rdb",
+        ),
+    )
+    mysql_connection = MySQLConnectionConfig(
+        host="192.168.23.176",
+        port=3306,
+        user="root",
+        password="Root@1234!",
+        database="rcs",
+    )
+    tools = build_all_tools(request, mysql_connection=mysql_connection, approval_handler=ApproveHandler())
+    analyze_tool = next(t for t in tools if t.__name__ == "analyze_local_rdb")
+
+    result = analyze_tool(input_paths="/tmp/dump.rdb")
+
+    assert captured["approvals"] == 1
+    assert captured["staged_count"] == len(rows)
+    assert "样本" in result
 
 
 def test_analyze_preparsed_dataset_tool_uses_mysql_source_from_request(monkeypatch) -> None:
@@ -272,6 +412,7 @@ def test_analyze_preparsed_dataset_tool_uses_mysql_source_from_request(monkeypat
         *,
         input_kind="local_rdb",
         profile_name="generic",
+        report_language="zh-CN",
         path_mode="auto",
         profile_overrides=None,
         mysql_table=None,
@@ -372,6 +513,7 @@ def test_fetch_remote_rdb_via_ssh_tool_fetches_and_continues_analysis(monkeypatc
         *,
         input_kind="local_rdb",
         profile_name="generic",
+        report_language="zh-CN",
         path_mode="auto",
         profile_overrides=None,
         service=None,
@@ -394,7 +536,7 @@ def test_fetch_remote_rdb_via_ssh_tool_fetches_and_continues_analysis(monkeypatc
     monkeypatch.setattr("dba_assistant.orchestrator.tools.analyze_rdb_tool", fake_analyze_rdb_tool)
     monkeypatch.setattr(
         "dba_assistant.core.reporter.report_model.render_summary_text",
-        lambda report: "remote summary",
+        lambda report, *, language=None: "remote summary",
     )
 
     request = _make_request()
@@ -487,6 +629,7 @@ def test_fetch_remote_rdb_via_ssh_tool_preserves_database_backed_route(monkeypat
         *,
         input_kind="local_rdb",
         profile_name="generic",
+        report_language="zh-CN",
         path_mode="auto",
         profile_overrides=None,
         mysql_table=None,
@@ -530,6 +673,75 @@ def test_fetch_remote_rdb_via_ssh_tool_preserves_database_backed_route(monkeypat
     assert "ok" in result
     assert captured["path_mode"] == "database_backed_analysis"
     assert captured["service"] is not None
+
+
+def test_fetch_remote_rdb_via_ssh_mysql_route_requires_approval_before_staging(monkeypatch) -> None:
+    import json
+
+    from dba_assistant.adaptors.mysql_adaptor import MySQLConnectionConfig
+
+    rows = json.loads(Path("tests/fixtures/rdb/direct/sample_key_records.json").read_text(encoding="utf-8"))
+    captured: dict[str, object] = {"approvals": 0}
+
+    class DenyHandler:
+        def request_approval(self, request):
+            captured["approvals"] += 1
+            captured["approval_request"] = request
+            return ApprovalResponse(status=ApprovalStatus.DENIED, action=request.action)
+
+    def fake_discover(adaptor, connection):
+        return {
+            "rdb_path": "/data/dump.rdb",
+            "lastsave": 12345,
+            "bgsave_in_progress": False,
+            "rdb_path_source": "discovered",
+        }
+
+    class FakeSSHAdaptor:
+        def fetch_file(self, config, remote_path, local_path):
+            local_path.write_text("fixture", encoding="utf-8")
+            return local_path
+
+    monkeypatch.setattr("dba_assistant.orchestrator.tools.discover_remote_rdb", fake_discover)
+    monkeypatch.setattr("dba_assistant.orchestrator.tools.SSHAdaptor", FakeSSHAdaptor)
+    monkeypatch.setattr(
+        "dba_assistant.capabilities.redis_rdb_analysis.service._parse_rdb_rows",
+        lambda _path: rows,
+    )
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._stage_rows",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("stage write must not happen after denial")),
+    )
+
+    request = _make_request(
+        prompt="analyze remote redis via mysql",
+        runtime_inputs=RuntimeInputs(
+            output_mode="summary",
+            path_mode="database_backed_analysis",
+            mysql_host="db.example",
+            mysql_port=3306,
+            mysql_user="analyst",
+            mysql_database="analysis_db",
+        ),
+        secrets=Secrets(mysql_password="secret"),
+    )
+    connection = RedisConnectionConfig(host="redis.example", port=6379)
+    mysql_connection = MySQLConnectionConfig(
+        host="db.example", port=3306, user="analyst", password="secret", database="analysis_db",
+    )
+    tools = build_all_tools(
+        request,
+        connection=connection,
+        mysql_connection=mysql_connection,
+        approval_handler=DenyHandler(),
+    )
+    fetch_tool = next(t for t in tools if t.__name__ == "fetch_remote_rdb_via_ssh")
+
+    result = fetch_tool()
+
+    assert result == "Operation denied by user."
+    assert captured["approvals"] == 1
+    assert captured["approval_request"].action == "stage_rdb_rows_to_mysql"
 
 
 def test_fetch_remote_rdb_via_ssh_tool_prefers_discovery_path_over_tool_arg_and_non_override_request(

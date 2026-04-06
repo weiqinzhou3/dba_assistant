@@ -10,6 +10,7 @@ class RuntimeInputs:
     redis_port: int = 6379
     redis_db: int = 0
     output_mode: str = "summary"
+    report_language: str = "zh-CN"
     report_format: str | None = None
     output_path: Path | None = None
     input_paths: tuple[Path, ...] = field(default_factory=tuple)

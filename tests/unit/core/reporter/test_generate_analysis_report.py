@@ -6,13 +6,13 @@ from dba_assistant.core.reporter.types import ReportArtifact, ReportFormat, Repo
 
 def test_generate_analysis_report_returns_summary_artifact() -> None:
     report = AnalysisReport(
-        title="Redis RDB Analysis",
-        sections=[ReportSectionModel(id="summary", title="Summary", blocks=[TextBlock(text="ok")])],
+        title="Redis RDB 分析报告",
+        sections=[ReportSectionModel(id="summary", title="摘要", blocks=[TextBlock(text="ok")])],
     )
 
     artifact = generate_analysis_report(report, ReportOutputConfig(format=ReportFormat.SUMMARY))
 
-    assert artifact.content == "Redis RDB Analysis\n\nSummary\nok"
+    assert artifact.content == "Redis RDB 分析报告\n\n摘要\nok"
 
 
 def test_generate_analysis_report_delegates_docx_rendering(monkeypatch) -> None:

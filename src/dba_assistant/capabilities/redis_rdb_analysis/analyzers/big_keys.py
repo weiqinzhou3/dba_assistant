@@ -8,38 +8,38 @@ from dba_assistant.capabilities.redis_rdb_analysis.types import NormalizedRdbDat
 def analyze_big_keys(
     dataset: NormalizedRdbDataset,
     *,
-    top_n: int | dict[str, int] = 20,
+    top_n: int | dict[str, int] = 100,
 ) -> dict[str, dict[str, object]]:
     top_n_map = _normalize_top_n(top_n)
     ordered_records = sorted(dataset.records, key=lambda record: (-record.size_bytes, record.key_name))
 
     sections: dict[str, dict[str, object]] = {
         "top_big_keys": {
-            "summary": "Largest keys in the dataset.",
-            "columns": ["Key", "Type", "Bytes"],
             "rows": [
                 [record.key_name, record.key_type, str(record.size_bytes)]
                 for record in ordered_records[: top_n_map["top_big_keys"]]
             ],
         },
-        "top_keys_by_type": {
-            "summary": "Largest keys grouped by type.",
-            "columns": ["Type", "Key", "Bytes"],
-            "rows": [
-                [record.key_type, record.key_name, str(record.size_bytes)]
-                for record in sorted(dataset.records, key=lambda record: (record.key_type, -record.size_bytes, record.key_name))
-            ],
-        },
     }
 
-    for key_type, section_name in (("hash", "top_hash_keys"), ("list", "top_list_keys"), ("set", "top_set_keys")):
+    for key_type, section_name, limit_key in (
+        ("string", "top_string_keys", "string_big_keys"),
+        ("hash", "top_hash_keys", "hash_big_keys"),
+        ("list", "top_list_keys", "list_big_keys"),
+        ("set", "top_set_keys", "set_big_keys"),
+        ("zset", "top_zset_keys", "zset_big_keys"),
+        ("stream", "top_stream_keys", "stream_big_keys"),
+    ):
         type_records = [record for record in ordered_records if record.key_type == key_type]
-        limit = top_n_map[f"{key_type}_big_keys"]
+        limit = top_n_map[limit_key]
         sections[section_name] = {
-            "summary": f"Largest {key_type} keys.",
-            "columns": ["Key", "Bytes"],
             "rows": [[record.key_name, str(record.size_bytes)] for record in type_records[:limit]],
         }
+
+    other_records = [record for record in ordered_records if record.key_type not in {"string", "hash", "list", "set", "zset", "stream"}]
+    sections["top_other_keys"] = {
+        "rows": [[record.key_name, str(record.size_bytes)] for record in other_records[: top_n_map["other_big_keys"]]],
+    }
 
     return sections
 
@@ -48,14 +48,22 @@ def _normalize_top_n(top_n: int | dict[str, int]) -> dict[str, int]:
     if isinstance(top_n, int):
         return {
             "top_big_keys": top_n,
+            "string_big_keys": top_n,
             "hash_big_keys": top_n,
             "list_big_keys": top_n,
             "set_big_keys": top_n,
+            "zset_big_keys": top_n,
+            "stream_big_keys": top_n,
+            "other_big_keys": top_n,
         }
 
     return {
-        "top_big_keys": int(top_n.get("top_big_keys", 20)),
-        "hash_big_keys": int(top_n.get("hash_big_keys", 10)),
-        "list_big_keys": int(top_n.get("list_big_keys", 10)),
-        "set_big_keys": int(top_n.get("set_big_keys", 10)),
+        "top_big_keys": int(top_n.get("top_big_keys", 100)),
+        "string_big_keys": int(top_n.get("string_big_keys", 100)),
+        "hash_big_keys": int(top_n.get("hash_big_keys", 100)),
+        "list_big_keys": int(top_n.get("list_big_keys", 100)),
+        "set_big_keys": int(top_n.get("set_big_keys", 100)),
+        "zset_big_keys": int(top_n.get("zset_big_keys", 100)),
+        "stream_big_keys": int(top_n.get("stream_big_keys", 100)),
+        "other_big_keys": int(top_n.get("other_big_keys", 100)),
     }

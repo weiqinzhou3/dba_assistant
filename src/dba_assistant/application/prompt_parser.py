@@ -126,10 +126,10 @@ _PREFIX_OVERRIDE_PATTERNS = (
     ),
 )
 _SECTION_TOP_PATTERN = re.compile(
-    r"(?i)\b(?P<section>prefix|hash|list|set)\s+top\s+(?P<count>\d{1,4})\b"
+    r"(?i)\b(?P<section>prefix|string|hash|list|set|zset|stream|other)\s+top\s+(?P<count>\d{1,4})\b"
 )
 _GENERIC_TOP_PATTERN = re.compile(
-    r"(?i)(?<!prefix\s)(?<!hash\s)(?<!list\s)(?<!set\s)\btop\s+(?P<count>\d{1,4})(?=\s*(?:[,;，。]|$))"
+    r"(?i)(?<!prefix\s)(?<!string\s)(?<!hash\s)(?<!list\s)(?<!set\s)(?<!zset\s)(?<!stream\s)(?<!other\s)\btop\s+(?P<count>\d{1,4})(?=\s*(?:[,;，。]|$))"
 )
 _REPORT_OUTPUT_PATTERN = re.compile(
     r"(?i)(?:输出|导出|export|output|write|save)\s*(?:为|成|as|to|到|:|：)?\s*(?P<format>docx|pdf|html|summary)\b"
@@ -148,7 +148,9 @@ _CLAUSE_BREAK_PATTERN = re.compile(
     r"(?i)[,，。;；!?]|(?:\bbut\b|\bhowever\b|\bthough\b|\balthough\b|\binstead\b|\byet\b|\bexcept\b)|(?:但是|但|不过|然而|可是|而是|却|只是)"
 )
 _WHITESPACE_PATTERN = re.compile(r"\s+")
-_MAX_TOP_N = 100
+_ENGLISH_REPORT_PATTERN = re.compile(r"(?i)(?:\benglish\b|in\s+english|英文版|输出英文|英文报告)")
+_CHINESE_REPORT_PATTERN = re.compile(r"(?i)(?:\bchinese\b|中文|中文版|输出中文|中文报告)")
+_MAX_TOP_N = 1000
 
 
 def normalize_raw_request(
@@ -180,6 +182,7 @@ def normalize_raw_request(
     host_match = _extract_redis_target(prompt, excluded_span=mysql_context_span)
     db_match = _DB_PATTERN.search(prompt)
     output_mode, report_format, output_path = _extract_report_output_intent(prompt, default_output_mode)
+    report_language = _extract_report_language(prompt)
     route_name = _extract_route_name(prompt)
     remote_rdb_path = _extract_remote_rdb_path(
         prompt,
@@ -207,6 +210,7 @@ def normalize_raw_request(
             redis_port=int(host_match.group("port")) if host_match else 6379,
             redis_db=int(db_match.group("db")) if db_match else 0,
             output_mode=output_mode,
+            report_language=report_language,
             report_format=report_format,
             output_path=output_path,
             input_paths=effective_input_paths,
@@ -444,7 +448,17 @@ def _extract_top_n_overrides(prompt: str) -> dict[str, int]:
     for match in _GENERIC_TOP_PATTERN.finditer(prompt):
         count = int(match.group("count"))
         if _is_valid_top_n(count):
-            top_n["top_big_keys"] = count
+            for key in (
+                "top_big_keys",
+                "string_big_keys",
+                "hash_big_keys",
+                "list_big_keys",
+                "set_big_keys",
+                "zset_big_keys",
+                "stream_big_keys",
+                "other_big_keys",
+            ):
+                top_n.setdefault(key, count)
 
     return top_n
 
@@ -604,14 +618,31 @@ def _nearest_scope_distance(prompt: str, pattern: re.Pattern[str], match_start: 
 def _map_section_to_top_key(section: str) -> str:
     return {
         "prefix": "prefix_top",
+        "string": "string_big_keys",
         "hash": "hash_big_keys",
         "list": "list_big_keys",
         "set": "set_big_keys",
+        "zset": "zset_big_keys",
+        "stream": "stream_big_keys",
+        "other": "other_big_keys",
     }[section]
 
 
 def _is_valid_top_n(count: int) -> bool:
     return 1 <= count <= _MAX_TOP_N
+
+
+def _extract_report_language(prompt: str) -> str:
+    last_match_start = -1
+    language = "zh-CN"
+    for pattern, code in ((_CHINESE_REPORT_PATTERN, "zh-CN"), (_ENGLISH_REPORT_PATTERN, "en-US")):
+        for match in pattern.finditer(prompt):
+            if _has_negation_prefix(prompt, match.start()):
+                continue
+            if match.start() >= last_match_start:
+                last_match_start = match.start()
+                language = code
+    return language
 
 
 def _clean_secret(value: str) -> str:

@@ -185,8 +185,14 @@ def test_normalize_raw_request_extracts_task_2_profile_overrides() -> None:
     assert request.rdb_overrides.focus_prefixes == ("order:*",)
     assert request.rdb_overrides.top_n == {
         "prefix_top": 30,
-        "hash_big_keys": 20,
         "top_big_keys": 8,
+        "string_big_keys": 8,
+        "hash_big_keys": 20,
+        "list_big_keys": 8,
+        "set_big_keys": 8,
+        "zset_big_keys": 8,
+        "stream_big_keys": 8,
+        "other_big_keys": 8,
     }
 
 
@@ -368,7 +374,9 @@ def test_normalize_raw_request_ignores_out_of_range_top_n_overrides() -> None:
         default_output_mode="summary",
     )
 
-    assert request.rdb_overrides.top_n == {}
+    assert request.rdb_overrides.top_n == {
+        "hash_big_keys": 101,
+    }
 
 
 def test_normalize_raw_request_extracts_docx_report_request() -> None:
@@ -733,3 +741,30 @@ def test_normalize_raw_request_honors_later_mysql_route_correction() -> None:
     )
 
     assert request.rdb_overrides.route_name == "database_backed_analysis"
+
+
+def test_normalize_raw_request_defaults_report_language_to_chinese() -> None:
+    request = normalize_raw_request(
+        "分析这个 rdb，输出 summary",
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.report_language == "zh-CN"
+
+
+def test_normalize_raw_request_extracts_explicit_english_report_language() -> None:
+    request = normalize_raw_request(
+        "Analyze this rdb and output the report in English",
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.report_language == "en-US"
+
+
+def test_normalize_raw_request_extracts_explicit_chinese_report_language() -> None:
+    request = normalize_raw_request(
+        "请分析这个 rdb，输出中文版报告",
+        default_output_mode="summary",
+    )
+
+    assert request.runtime_inputs.report_language == "zh-CN"

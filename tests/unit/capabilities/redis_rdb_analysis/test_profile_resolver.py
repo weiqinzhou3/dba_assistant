@@ -8,7 +8,12 @@ def test_resolve_generic_profile_exposes_expected_default_sections() -> None:
     assert profile.name == "generic"
     assert "executive_summary" in profile.sections
     assert "expiration_summary" in profile.sections
-    assert profile.top_n["prefix_top"] == 20
+    assert "top_string_keys" in profile.sections
+    assert "top_stream_keys" in profile.sections
+    assert "top_keys_by_type" not in profile.sections
+    assert profile.top_n["prefix_top"] == 100
+    assert profile.top_n["top_big_keys"] == 100
+    assert profile.top_n["string_big_keys"] == 100
 
 
 def test_resolve_generic_profile_merges_defaults_with_prompt_overrides() -> None:
@@ -16,7 +21,7 @@ def test_resolve_generic_profile_merges_defaults_with_prompt_overrides() -> None
         "generic",
         RdbOverrides(
             focus_prefixes=("loan:*", "cis:*"),
-            top_n={"prefix_top": 30, "set_big_keys": 5},
+            top_n={"prefix_top": 30, "stream_big_keys": 5},
         ),
     )
 
@@ -25,7 +30,7 @@ def test_resolve_generic_profile_merges_defaults_with_prompt_overrides() -> None
     assert "expiration_summary" in profile.sections
     assert profile.focus_prefixes[:2] == ("loan:*", "cis:*")
     assert profile.top_n["prefix_top"] == 30
-    assert profile.top_n["set_big_keys"] == 5
+    assert profile.top_n["stream_big_keys"] == 5
 
 
 def test_resolve_rcs_profile_keeps_rcs_specific_sections() -> None:

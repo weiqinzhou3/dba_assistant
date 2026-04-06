@@ -27,6 +27,7 @@ class ReportOutputConfig:
     mode: OutputMode = OutputMode.REPORT
     format: ReportFormat = ReportFormat.DOCX
     template_name: str | None = None
+    language: str = "zh-CN"
 
 
 @dataclass(frozen=True)

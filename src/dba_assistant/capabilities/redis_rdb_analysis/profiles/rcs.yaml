@@ -8,17 +8,25 @@ sections:
   - prefix_top_summary
   - loan_prefix_detail
   - top_big_keys
+  - top_string_keys
   - top_list_keys
   - top_set_keys
   - top_hash_keys
+  - top_zset_keys
+  - top_stream_keys
+  - top_other_keys
   - conclusions
 focus_prefixes:
   - loan:*
   - cis:*
   - tag:*
 top_n:
-  prefix_top: 20
-  top_big_keys: 20
-  list_big_keys: 10
-  hash_big_keys: 10
-  set_big_keys: 10
+  prefix_top: 100
+  top_big_keys: 100
+  string_big_keys: 100
+  list_big_keys: 100
+  hash_big_keys: 100
+  set_big_keys: 100
+  zset_big_keys: 100
+  stream_big_keys: 100
+  other_big_keys: 100

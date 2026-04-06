@@ -49,13 +49,9 @@ def analyze_prefixes(
 
     return {
         "prefix_top_summary": {
-            "summary": "Top prefixes by key count.",
-            "columns": ["Prefix", "Count", "Bytes"],
             "rows": top_rows,
         },
         "prefix_expiration_breakdown": {
-            "summary": "Expiration breakdown for focused prefixes.",
-            "columns": ["Prefix", "Expired", "Persistent", "Total"],
             "rows": focus_rows,
         },
     }

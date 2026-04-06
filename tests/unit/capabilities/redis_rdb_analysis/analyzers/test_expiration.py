@@ -20,4 +20,4 @@ def test_analyze_expiration_counts_expiring_and_persistent_keys() -> None:
 
     assert result["expired_count"] == 1
     assert result["persistent_count"] == 1
-    assert result["rows"] == [["with expiration", "1"], ["without expiration", "1"]]
+    assert "rows" not in result

@@ -23,6 +23,7 @@ from dba_assistant.parsers.rdb_parser_strategy import (
 )
 from dba_assistant.capabilities.redis_rdb_analysis.profile_resolver import resolve_profile
 from dba_assistant.capabilities.redis_rdb_analysis.reports.assembler import assemble_report
+from dba_assistant.capabilities.redis_rdb_analysis.reports.localization import report_title
 from dba_assistant.capabilities.redis_rdb_analysis.types import (
     AnalysisStatus,
     DATABASE_BACKED_ANALYSIS,
@@ -87,7 +88,8 @@ def analyze_rdb(
     report = assemble_report(
         analysis_result,
         profile=effective_profile,
-        title="Redis RDB Analysis",
+        title=report_title(request.report_language),
+        language=request.report_language,
     )
     metadata = {
         **report.metadata,
@@ -103,6 +105,7 @@ def analyze_rdb(
         summary=report.summary,
         sections=report.sections,
         metadata=metadata,
+        language=report.language,
     )
 
 

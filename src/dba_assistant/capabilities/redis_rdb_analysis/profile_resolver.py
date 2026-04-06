@@ -10,11 +10,15 @@ from dba_assistant.capabilities.redis_rdb_analysis.types import EffectiveProfile
 
 _PROFILE_DIR = Path(__file__).resolve().parent / "profiles"
 _DEFAULT_TOP_N = {
-    "prefix_top": 20,
-    "top_big_keys": 20,
-    "list_big_keys": 10,
-    "hash_big_keys": 10,
-    "set_big_keys": 10,
+    "prefix_top": 100,
+    "top_big_keys": 100,
+    "string_big_keys": 100,
+    "list_big_keys": 100,
+    "hash_big_keys": 100,
+    "set_big_keys": 100,
+    "zset_big_keys": 100,
+    "stream_big_keys": 100,
+    "other_big_keys": 100,
 }
 
 

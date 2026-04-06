@@ -29,6 +29,7 @@ class AnalysisReport:
     sections: list[ReportSectionModel]
     summary: str | None = None
     metadata: dict[str, str] = field(default_factory=dict)
+    language: str = "zh-CN"
 
 
 def coerce_analysis_report(analysis: AnalysisReport | AnalysisResult) -> AnalysisReport:
@@ -57,17 +58,19 @@ def coerce_analysis_report(analysis: AnalysisReport | AnalysisResult) -> Analysi
         summary=analysis.summary,
         sections=sections,
         metadata={key: str(value) for key, value in analysis.metadata.items()},
+        language="zh-CN",
     )
 
 
-def render_summary_text(report: AnalysisReport) -> str:
+def render_summary_text(report: AnalysisReport, *, language: str | None = None) -> str:
+    labels = _summary_labels(language or report.language)
     lines = [report.title]
 
     if report.summary:
         lines.extend(["", report.summary])
 
     if report.metadata:
-        lines.extend(["", "Metadata"])
+        lines.extend(["", labels["metadata"]])
         for key, value in sorted(report.metadata.items()):
             lines.append(f"- {key}: {value}")
 
@@ -84,6 +87,16 @@ def render_summary_text(report: AnalysisReport) -> str:
                 lines.append(", ".join(row))
 
     return "\n".join(lines)
+
+
+def _summary_labels(language: str) -> dict[str, str]:
+    if language == "en-US":
+        return {
+            "metadata": "Metadata",
+        }
+    return {
+        "metadata": "元数据",
+    }
 
 
 def _coerce_section(section: ReportSection) -> ReportSectionModel:

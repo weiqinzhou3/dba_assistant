@@ -19,9 +19,7 @@ def analyze_key_types(dataset: NormalizedRdbDataset) -> dict[str, object]:
     ]
 
     return {
-        "summary": f"{len(dataset.records)} keys across {len(counts)} key types.",
         "counts": dict(counts),
         "memory_bytes": dict(memory_bytes),
-        "columns": ["Key Type", "Count", "Bytes"],
         "rows": rows,
     }

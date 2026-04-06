@@ -22,6 +22,8 @@ from dba_assistant.adaptors.redis_adaptor import (
 from dba_assistant.adaptors.ssh_adaptor import SSHAdaptor, SSHConnectionConfig
 from dba_assistant.application.request_models import NormalizedRequest, RdbOverrides
 from dba_assistant.core.reporter.types import OutputMode, ReportFormat, ReportOutputConfig
+from dba_assistant.interface.hitl import HumanApprovalHandler
+from dba_assistant.interface.types import ApprovalRequest, ApprovalStatus
 from dba_assistant.capabilities.redis_rdb_analysis.remote_input import (
     RemoteRedisDiscoveryError,
     discover_remote_rdb,
@@ -44,6 +46,7 @@ def build_all_tools(
     connection: RedisConnectionConfig | None = None,
     mysql_connection: MySQLConnectionConfig | None = None,
     remote_rdb_state: dict[str, Any] | None = None,
+    approval_handler: HumanApprovalHandler | None = None,
 ) -> list:
     """Build the complete tool list available to the unified agent."""
     tools: list = []
@@ -55,6 +58,7 @@ def build_all_tools(
             request,
             mysql_adaptor=mysql_adaptor,
             mysql_connection=mysql_connection,
+            approval_handler=approval_handler,
         )
     )
     tools.append(
@@ -62,6 +66,7 @@ def build_all_tools(
             request,
             mysql_adaptor=mysql_adaptor,
             mysql_connection=mysql_connection,
+            approval_handler=approval_handler,
         )
     )
 
@@ -85,13 +90,21 @@ def build_all_tools(
                 remote_rdb_state=shared_remote_rdb_state,
                 mysql_adaptor=mysql_adaptor,
                 mysql_connection=mysql_connection,
+                approval_handler=approval_handler,
             )
         )
 
     # MySQL tools (only when MySQL connection info is present)
     if mysql_connection is not None:
         assert mysql_adaptor is not None
-        tools.extend(_make_mysql_tools(mysql_adaptor, mysql_connection))
+        tools.extend(
+            _make_mysql_tools(
+                request,
+                mysql_adaptor,
+                mysql_connection,
+                approval_handler=approval_handler,
+            )
+        )
 
     return tools
 
@@ -105,12 +118,15 @@ def _make_analyze_local_rdb_tool(
     *,
     mysql_adaptor: MySQLAdaptor | None = None,
     mysql_connection: MySQLConnectionConfig | None = None,
+    approval_handler: HumanApprovalHandler | None = None,
 ):
     """Combined analyze + report tool for local RDB files."""
 
     analysis_service = _make_phase3_analysis_service(
+        request=request,
         mysql_adaptor=mysql_adaptor,
         mysql_connection=mysql_connection,
+        approval_handler=approval_handler,
     )
 
     def analyze_local_rdb(
@@ -144,12 +160,15 @@ def _make_analyze_local_rdb_tool(
                 input_paths=paths,
                 input_kind="local_rdb",
                 profile_name=profile_name,
+                report_language=request.runtime_inputs.report_language,
                 path_mode=request.runtime_inputs.path_mode or request.rdb_overrides.route_name or "auto",
                 profile_overrides=overrides,
                 service=analysis_service,
             )
         except ValueError as exc:
             return f"Error: {exc}"
+        except PermissionError as exc:
+            return str(exc)
 
         from dba_assistant.core.reporter.generate_analysis_report import (
             generate_analysis_report as _generate,
@@ -165,6 +184,7 @@ def _make_analyze_local_rdb_tool(
             format=fmt,
             output_path=out,
             template_name="rdb-analysis",
+            language=request.runtime_inputs.report_language,
         )
         artifact = _generate(analysis, config)
         if artifact.content is not None:
@@ -193,12 +213,15 @@ def _make_analyze_preparsed_dataset_tool(
     *,
     mysql_adaptor: MySQLAdaptor | None = None,
     mysql_connection: MySQLConnectionConfig | None = None,
+    approval_handler: HumanApprovalHandler | None = None,
 ):
     """Analyze preparsed datasets from local files or MySQL-backed sources."""
 
     analysis_service = _make_phase3_analysis_service(
+        request=request,
         mysql_adaptor=mysql_adaptor,
         mysql_connection=mysql_connection,
+        approval_handler=approval_handler,
     )
 
     def analyze_preparsed_dataset(
@@ -237,6 +260,7 @@ def _make_analyze_preparsed_dataset_tool(
                 input_paths=sources,
                 input_kind=input_kind,
                 profile_name=profile_name,
+                report_language=request.runtime_inputs.report_language,
                 path_mode=request.runtime_inputs.path_mode or request.rdb_overrides.route_name or "auto",
                 profile_overrides=overrides,
                 mysql_table=effective_mysql_table,
@@ -245,6 +269,8 @@ def _make_analyze_preparsed_dataset_tool(
             )
         except ValueError as exc:
             return f"Error: {exc}"
+        except PermissionError as exc:
+            return str(exc)
 
         return _render_analysis_output(
             analysis,
@@ -345,12 +371,15 @@ def _make_remote_rdb_fetch_tools(
     remote_rdb_state: dict[str, Any] | None = None,
     mysql_adaptor: MySQLAdaptor | None = None,
     mysql_connection: MySQLConnectionConfig | None = None,
+    approval_handler: HumanApprovalHandler | None = None,
 ):
     """Remote RDB fetch + analysis tools protected by Deep Agent interrupt_on."""
 
     analysis_service = _make_phase3_analysis_service(
+        request=request,
         mysql_adaptor=mysql_adaptor,
         mysql_connection=mysql_connection,
+        approval_handler=approval_handler,
     )
 
     def _fetch_remote_and_continue(
@@ -480,10 +509,22 @@ def _make_redis_inspection_tools(
 # ---------------------------------------------------------------------------
 
 def _make_mysql_tools(
+    request: NormalizedRequest,
     adaptor: MySQLAdaptor,
     config: MySQLConnectionConfig,
+    *,
+    approval_handler: HumanApprovalHandler | None = None,
 ) -> list:
     """Build the MySQL capability tools."""
+
+    def _stage_rows_with_approval(table_name: str, rows: list[dict[str, object]]) -> dict[str, object]:
+        _request_mysql_staging_approval(
+            request,
+            approval_handler=approval_handler,
+            table_name=table_name,
+            row_count=len(rows),
+        )
+        return json.loads(_stage_rows(adaptor, config, table_name, rows))
 
     def mysql_read_query(sql: str) -> str:
         return _mysql_read(adaptor, config, sql)
@@ -493,7 +534,7 @@ def _make_mysql_tools(
 
     def stage_rdb_rows_to_mysql(table_name: str, rows_json: str) -> str:
         rows = json.loads(rows_json)
-        return _stage_rows(adaptor, config, table_name, rows)
+        return json.dumps(_stage_rows_with_approval(table_name, rows))
 
     return [
         _named_tool(
@@ -513,8 +554,7 @@ def _make_mysql_tools(
             "stage_rdb_rows_to_mysql",
             "Stage parsed RDB rows into a MySQL table for database-backed aggregation. "
             "REQUIRES HUMAN APPROVAL — this is a write operation. "
-            "Call this directly when staging is required; do not ask for plain-text approval first. "
-            "Approval is collected by runtime interrupt_on, not by conversational follow-up. "
+            "Call this directly when staging is required; approval is collected by the shared human approval handler. "
             "Parameters: table_name (staging table name), rows_json (JSON array of row objects).",
         ),
     ]
@@ -522,11 +562,21 @@ def _make_mysql_tools(
 
 def _make_phase3_analysis_service(
     *,
+    request: NormalizedRequest,
     mysql_adaptor: MySQLAdaptor | None,
     mysql_connection: MySQLConnectionConfig | None,
+    approval_handler: HumanApprovalHandler | None,
 ):
     if mysql_adaptor is None or mysql_connection is None:
         return None
+
+    mysql_tools = _make_mysql_tools(
+        request,
+        mysql_adaptor,
+        mysql_connection,
+        approval_handler=approval_handler,
+    )
+    mysql_tool_map = {tool.__name__: tool for tool in mysql_tools}
 
     def run_analysis(request):
         from dba_assistant.capabilities.redis_rdb_analysis.service import analyze_rdb as _analyze_rdb
@@ -536,13 +586,13 @@ def _make_phase3_analysis_service(
             profile=None,
             remote_discovery=lambda *_args, **_kwargs: {},
             mysql_read_query=lambda sql: json.loads(
-                _mysql_read(mysql_adaptor, mysql_connection, sql)
+                mysql_tool_map["mysql_read_query"](sql)
             ),
             stage_rdb_rows_to_mysql=lambda table_name, rows: json.loads(
-                _stage_rows(mysql_adaptor, mysql_connection, table_name, rows)
+                mysql_tool_map["stage_rdb_rows_to_mysql"](table_name, json.dumps(rows))
             ),
             load_preparsed_dataset_from_mysql=lambda table_name: json.loads(
-                _load_dataset(mysql_adaptor, mysql_connection, table_name)
+                mysql_tool_map["load_preparsed_dataset_from_mysql"](table_name)
             ),
         )
 
@@ -758,12 +808,15 @@ def _render_remote_rdb_analysis(
             input_paths=[local_path],
             input_kind="local_rdb",
             profile_name=profile_name,
+            report_language=request.runtime_inputs.report_language,
             path_mode=request.runtime_inputs.path_mode or request.rdb_overrides.route_name or "auto",
             profile_overrides=overrides,
             service=analysis_service,
         )
     except ValueError as exc:
         return f"Error: {exc}"
+    except PermissionError as exc:
+        return str(exc)
 
     from dba_assistant.core.reporter.generate_analysis_report import (
         generate_analysis_report as _generate,
@@ -779,6 +832,7 @@ def _render_remote_rdb_analysis(
         format=fmt,
         output_path=out,
         template_name="rdb-analysis",
+        language=request.runtime_inputs.report_language,
     )
     artifact = _generate(analysis, config)
     if artifact.content is not None:
@@ -808,6 +862,7 @@ def _render_analysis_output(
         format=fmt,
         output_path=output_path,
         template_name="rdb-analysis",
+        language=getattr(analysis, "language", "zh-CN"),
     )
     artifact = _generate(analysis, config)
     if artifact.content is not None:
@@ -815,6 +870,32 @@ def _render_analysis_output(
     if artifact.output_path is not None:
         return str(artifact.output_path)
     return "Analysis complete but no output generated."
+
+
+def _request_mysql_staging_approval(
+    request: NormalizedRequest,
+    *,
+    approval_handler: HumanApprovalHandler | None,
+    table_name: str,
+    row_count: int,
+) -> None:
+    if approval_handler is None:
+        raise PermissionError("MySQL staging requires an approval handler.")
+
+    approval_request = ApprovalRequest(
+        action="stage_rdb_rows_to_mysql",
+        message="写入 MySQL staging table 需要人工审批。",
+        details={
+            "mysql_host": request.runtime_inputs.mysql_host or "",
+            "mysql_port": request.runtime_inputs.mysql_port,
+            "mysql_database": request.runtime_inputs.mysql_database or "",
+            "mysql_table": table_name,
+            "row_count": row_count,
+        },
+    )
+    response = approval_handler.request_approval(approval_request)
+    if response.status is not ApprovalStatus.APPROVED:
+        raise PermissionError("Operation denied by user.")
 
 
 # ---------------------------------------------------------------------------

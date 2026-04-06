@@ -94,7 +94,7 @@ def test_analyze_rdb_returns_analysis_report_for_local_inputs(monkeypatch) -> No
     )
 
     assert isinstance(result, AnalysisReport)
-    assert result.title == "Redis RDB Analysis"
+    assert result.title == "Redis RDB 分析报告"
     assert result.metadata["profile"] == "generic"
     assert result.metadata["route"] == "direct_rdb_analysis"
     assert result.metadata["path"] == "3c"
@@ -139,7 +139,7 @@ def test_analyze_rdb_returns_analysis_report_for_precomputed_inputs() -> None:
     )
 
     assert isinstance(result, AnalysisReport)
-    assert result.title == "Redis RDB Analysis"
+    assert result.title == "Redis RDB 分析报告"
     assert result.metadata["profile"] == "generic"
     assert result.metadata["route"] == "preparsed_dataset_analysis"
     assert result.metadata["path"] == "3b"
@@ -171,6 +171,26 @@ def test_analyze_rdb_returns_analysis_report_for_preparsed_mysql_inputs() -> Non
     assert result.metadata["route"] == "preparsed_dataset_analysis"
     assert result.metadata["path"] == "3b"
     assert any(section.id == "sample_overview" for section in result.sections)
+
+
+def test_analyze_rdb_supports_explicit_english_report_language(monkeypatch) -> None:
+    rows = json.loads(Path("tests/fixtures/rdb/direct/sample_key_records.json").read_text(encoding="utf-8"))
+    request = RdbAnalysisRequest(
+        prompt="Analyze this rdb in English",
+        inputs=[SampleInput(source=Path("/tmp/dump.rdb"), kind=InputSourceKind.LOCAL_RDB)],
+        report_language="en-US",
+    )
+    monkeypatch.setattr("dba_assistant.capabilities.redis_rdb_analysis.service._parse_rdb_rows", lambda _path: rows)
+
+    result = analyze_rdb(
+        request,
+        profile=None,
+        remote_discovery=lambda *_args, **_kwargs: {"rdb_path": "/data/redis/dump.rdb"},
+    )
+
+    assert isinstance(result, AnalysisReport)
+    assert result.title == "Redis RDB Analysis Report"
+    assert result.summary == "1 samples, 3 keys, 224 bytes."
 
 
 def test_analyze_rdb_database_backed_route_stages_rows_and_reloads_mysql_dataset(
@@ -258,7 +278,7 @@ def test_analyze_rdb_database_backed_route_round_trips_mysql_text_values_without
     )
 
     assert isinstance(result, AnalysisReport)
-    assert result.summary == "1 samples, 1 keys, 123 bytes."
+    assert result.summary == "共 1 个样本，1 个 key，123 字节。"
     assert result.metadata["route"] == "database_backed_analysis"
     assert result.metadata["path"] == "3a"
 
@@ -302,6 +322,6 @@ def test_analyze_rdb_uses_hdt_parser_strategy_for_v11_fixture() -> None:
     assert result.metadata["path"] == "3c"
     assert result.metadata["parser_strategy"] == "HdtRdbCliStrategy"
     assert result.metadata["parser_binary"] == str(HDT_BINARY.resolve())
-    assert result.summary == "1 samples, 0 keys, 0 bytes."
+    assert result.summary == "共 1 个样本，0 个 key，0 字节。"
 
     parser_strategy_module.build_default_rdb_parser_strategy.cache_clear()

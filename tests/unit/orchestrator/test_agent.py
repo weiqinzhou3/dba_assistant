@@ -126,7 +126,7 @@ def test_build_unified_agent_wires_tools_and_model(monkeypatch) -> None:
     monkeypatch.setattr(
         agent_module,
         "build_all_tools",
-        lambda req, connection=None, mysql_connection=None, remote_rdb_state=None: ["tool1", "tool2"],
+        lambda req, connection=None, mysql_connection=None, remote_rdb_state=None, approval_handler=None: ["tool1", "tool2"],
     )
 
     def fake_create_deep_agent(**kwargs):
@@ -167,9 +167,16 @@ def test_run_orchestrated_bypasses_agent_and_calls_local_rdb_tool_for_explicit_p
         captured["tool_kwargs"] = kwargs
         return "host analysis done"
 
-    def fake_build_all_tools(request, connection=None, mysql_connection=None, remote_rdb_state=None):
+    def fake_build_all_tools(
+        request,
+        connection=None,
+        mysql_connection=None,
+        remote_rdb_state=None,
+        approval_handler=None,
+    ):
         captured["mysql_connection"] = mysql_connection
         captured["connection"] = connection
+        captured["approval_handler"] = approval_handler
         fake_analyze_local_rdb.__name__ = "analyze_local_rdb"
         return [fake_analyze_local_rdb]
 
@@ -204,6 +211,7 @@ def test_run_orchestrated_bypasses_agent_and_calls_local_rdb_tool_for_explicit_p
     assert result == "host analysis done"
     assert captured["connection"] is None
     assert captured["mysql_connection"] is not None
+    assert captured["approval_handler"] is not None
     assert captured["tool_kwargs"]["input_paths"] == "/tmp/dump.rdb"
     assert captured["tool_kwargs"]["profile_name"] == "generic"
 
@@ -212,7 +220,13 @@ def test_run_orchestrated_does_not_return_agent_file_not_found_guess_for_explici
     def fake_analyze_local_rdb(**kwargs):
         return "Error: input path does not exist on host filesystem: /tmp/dump.rdb"
 
-    def fake_build_all_tools(request, connection=None, mysql_connection=None, remote_rdb_state=None):
+    def fake_build_all_tools(
+        request,
+        connection=None,
+        mysql_connection=None,
+        remote_rdb_state=None,
+        approval_handler=None,
+    ):
         fake_analyze_local_rdb.__name__ = "analyze_local_rdb"
         return [fake_analyze_local_rdb]
 

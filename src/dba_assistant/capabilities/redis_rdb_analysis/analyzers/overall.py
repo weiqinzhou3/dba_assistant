@@ -34,36 +34,24 @@ def analyze_overall(
     ]
 
     overall_summary = {
-        "summary": f"{total_samples} samples, {total_keys} keys, {total_bytes} bytes.",
-        "columns": ["Metric", "Value"],
-        "rows": [
-            ["samples", str(total_samples)],
-            ["keys", str(total_keys)],
-            ["bytes", str(total_bytes)],
-        ],
+        "total_samples": total_samples,
+        "total_keys": total_keys,
+        "total_bytes": total_bytes,
     }
 
     sections: dict[str, dict[str, object]] = {
         "executive_summary": overall_summary,
         "background": {
-            "summary": "Deterministic Phase 3 RDB analysis over normalized datasets.",
-            "columns": ["Metric", "Value"],
-            "rows": [
-                ["profile", profile.name],
-                ["focus prefixes", str(len(profile.focus_prefixes))],
-            ],
+            "profile_name": profile.name,
+            "focus_prefix_count": len(profile.focus_prefixes),
         },
         "analysis_results": overall_summary,
         "sample_overview": {
-            "summary": "Input samples included in the analysis.",
-            "columns": ["Sample", "Kind", "Source"],
-            "rows": sample_rows,
+            "sample_rows": sample_rows,
         },
         "overall_summary": overall_summary,
         "key_type_summary": key_types,
         "key_type_memory_breakdown": {
-            "summary": "Memory grouped by key type.",
-            "columns": ["Key Type", "Bytes"],
             "rows": [
                 [key_type, str(key_types["memory_bytes"][key_type])]
                 for key_type in sorted(key_types["memory_bytes"], key=lambda key: (-key_types["memory_bytes"][key], key))
@@ -71,16 +59,19 @@ def analyze_overall(
         },
         "expiration_summary": expiration,
         "non_expiration_summary": {
-            "summary": f"{expiration['persistent_count']} keys do not expire.",
-            "columns": ["Bucket", "Count"],
-            "rows": [["without expiration", str(expiration["persistent_count"])]],
+            "persistent_count": expiration["persistent_count"],
         },
         "prefix_top_summary": prefixes["prefix_top_summary"],
         "prefix_expiration_breakdown": prefixes["prefix_expiration_breakdown"],
         "top_big_keys": big_keys["top_big_keys"],
-        "top_keys_by_type": big_keys["top_keys_by_type"],
+        "top_string_keys": big_keys["top_string_keys"],
+        "top_hash_keys": big_keys["top_hash_keys"],
+        "top_list_keys": big_keys["top_list_keys"],
+        "top_set_keys": big_keys["top_set_keys"],
+        "top_zset_keys": big_keys["top_zset_keys"],
+        "top_stream_keys": big_keys["top_stream_keys"],
+        "top_other_keys": big_keys["top_other_keys"],
         "conclusions": {
-            "summary": "No additional deterministic concerns were found by the generic analyzers.",
         },
     }
 

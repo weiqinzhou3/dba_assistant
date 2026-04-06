@@ -29,6 +29,8 @@ def test_rdb_template_spec_exposes_cover_and_disclaimer_flags() -> None:
 
     assert module.TEMPLATE["template_name"] == "rdb-analysis"
     assert module.TEMPLATE["include_disclaimer"] is True
+    assert module.TEMPLATE_TEXT["zh-CN"]["cover_title"] == "Redis RDB 分析报告"
+    assert module.TEMPLATE_TEXT["en-US"]["summary_heading"] == "Executive Summary"
 
 
 def test_inspection_template_spec_exposes_summary_heading() -> None:

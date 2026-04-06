@@ -14,8 +14,6 @@ def analyze_rcs_custom(dataset: NormalizedRdbDataset) -> dict[str, dict[str, obj
 
     return {
         "loan_prefix_detail": {
-            "summary": "Loan-prefixed keys in descending size order.",
-            "columns": ["Key", "Type", "Bytes"],
             "rows": loan_rows,
         }
     }

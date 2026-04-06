@@ -64,7 +64,8 @@ Rules:
 - For remote RDB: call discover_remote_rdb first, then fetch_remote_rdb_via_ssh.
 - When the user asks for the latest/fresh RDB snapshot, use fetch_remote_rdb_via_ssh with acquisition_mode='fresh_snapshot'.
 - For approval-gated tools such as fetch_remote_rdb_via_ssh and stage_rdb_rows_to_mysql, never ask the user for approval in plain text.
-- When you determine that an approval-gated tool is the next step, call the tool directly and let runtime interrupt_on collect approval.
+- fetch_remote_rdb_via_ssh collects approval through runtime interrupt_on.
+- stage_rdb_rows_to_mysql collects approval through the shared human approval handler before writing.
 - In single-run CLI flows, do not end with text like "Do you approve?" or "Please confirm" when the next step should be an approval-gated tool.
 - If Redis connection details are available and the user did not provide remote_rdb_path, do not ask the user for dir/dbfilename first; discover them by executing Redis discovery.
 - If Redis discovery fails, surface the exact failure reason and stage. Do not paraphrase it as missing dir/dbfilename unless discovery explicitly returned missing_dir/missing_dbfilename.
@@ -92,6 +93,7 @@ def build_unified_agent(
         connection=connection,
         mysql_connection=mysql_connection,
         remote_rdb_state=remote_rdb_state,
+        approval_handler=approval_handler,
     )
 
     model = build_model(config.model)
@@ -111,12 +113,6 @@ def build_unified_agent(
             ),
         },
     }
-    if mysql_connection is not None:
-        interrupt_on["stage_rdb_rows_to_mysql"] = {
-            "allowed_decisions": ["approve", "reject"],
-            "description": _build_mysql_staging_interrupt_description(request),
-        }
-
     agent = create_deep_agent(
         name="dba-assistant",
         model=model,
@@ -142,7 +138,7 @@ def run_orchestrated(
     approval_handler: HumanApprovalHandler,
 ) -> str:
     """Run the unified Deep Agent and return the final output."""
-    shortcut = _run_explicit_local_rdb_analysis(request)
+    shortcut = _run_explicit_local_rdb_analysis(request, approval_handler=approval_handler)
     if shortcut is not None:
         return shortcut
 
@@ -189,7 +185,11 @@ def run_orchestrated(
     return extract_agent_output(result)
 
 
-def _run_explicit_local_rdb_analysis(request: NormalizedRequest) -> str | None:
+def _run_explicit_local_rdb_analysis(
+    request: NormalizedRequest,
+    *,
+    approval_handler: HumanApprovalHandler,
+) -> str | None:
     if not _has_explicit_local_rdb_inputs(request):
         return None
 
@@ -197,6 +197,7 @@ def _run_explicit_local_rdb_analysis(request: NormalizedRequest) -> str | None:
     tools = build_all_tools(
         request,
         mysql_connection=mysql_connection,
+        approval_handler=approval_handler,
     )
     analyze_tool = next(
         (tool for tool in tools if getattr(tool, "__name__", "") == "analyze_local_rdb"),

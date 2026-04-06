@@ -86,6 +86,7 @@ class RdbAnalysisRequest:
     prompt: str
     inputs: list[SampleInput]
     profile_name: str = "generic"
+    report_language: str = "zh-CN"
     path_mode: str = "auto"
     merge_multiple_inputs: bool = True
     profile_overrides: dict[str, object] = field(default_factory=dict)

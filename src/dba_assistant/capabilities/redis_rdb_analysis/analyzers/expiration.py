@@ -8,12 +8,6 @@ def analyze_expiration(dataset: NormalizedRdbDataset) -> dict[str, object]:
     persistent_count = len(dataset.records) - expired_count
 
     return {
-        "summary": f"{expired_count} keys expire and {persistent_count} keys persist.",
         "expired_count": expired_count,
         "persistent_count": persistent_count,
-        "columns": ["Bucket", "Count"],
-        "rows": [
-            ["with expiration", str(expired_count)],
-            ["without expiration", str(persistent_count)],
-        ],
     }

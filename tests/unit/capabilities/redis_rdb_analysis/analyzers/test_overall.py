@@ -22,14 +22,20 @@ def test_analyze_overall_combines_core_sections_and_rcs_custom_section() -> None
     )
     profile = EffectiveProfile(
         name="rcs",
-        sections=("overall_summary", "key_type_summary", "expiration_summary", "top_big_keys", "loan_prefix_detail"),
+        sections=("overall_summary", "key_type_summary", "expiration_summary", "top_big_keys", "top_string_keys", "loan_prefix_detail"),
         focus_prefixes=("loan:*",),
-        top_n={"top_big_keys": 2, "hash_big_keys": 1, "list_big_keys": 1, "set_big_keys": 1, "prefix_top": 5},
+        top_n={"top_big_keys": 2, "string_big_keys": 1, "hash_big_keys": 1, "list_big_keys": 1, "set_big_keys": 1, "prefix_top": 5},
     )
 
     result = analyze_overall(dataset, profile=profile)
 
-    assert result["overall_summary"]["summary"] == "2 samples, 3 keys, 600 bytes."
+    assert result["overall_summary"] == {
+        "total_samples": 2,
+        "total_keys": 3,
+        "total_bytes": 600,
+    }
     assert result["key_type_summary"]["counts"]["list"] == 1
     assert result["expiration_summary"]["expired_count"] == 1
+    assert "top_string_keys" in result
+    assert "top_keys_by_type" not in result
     assert "loan_prefix_detail" in result

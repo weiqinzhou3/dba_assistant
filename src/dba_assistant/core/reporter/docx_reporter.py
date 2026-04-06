@@ -11,6 +11,7 @@ from docx import Document
 from dba_assistant.core.analyzer.types import AnalysisResult
 from dba_assistant.core.reporter.report_model import AnalysisReport, TableBlock, TextBlock, coerce_analysis_report
 from dba_assistant.core.reporter.types import IReporter, ReportArtifact, ReportFormat, ReportOutputConfig
+from dba_assistant.capabilities.redis_rdb_analysis.reports.localization import normalize_report_language
 
 
 class DocxReporter(IReporter[AnalysisResult | AnalysisReport]):
@@ -22,10 +23,11 @@ class DocxReporter(IReporter[AnalysisResult | AnalysisReport]):
             raise ValueError("DocxReporter requires an output_path.")
 
         template_name = config.template_name or "rdb-analysis"
-        template = self._load_module(
+        template_module = self._load_module(
             self.repository_root / "templates" / "reports" / template_name / "template_spec.py",
             f"{template_name.replace('-', '_')}_template",
-        ).TEMPLATE
+        )
+        template = template_module.TEMPLATE
         cover_module = self._load_module(
             self.repository_root / "templates" / "reports" / "shared" / "cover.py",
             "shared_cover",
@@ -38,10 +40,13 @@ class DocxReporter(IReporter[AnalysisResult | AnalysisReport]):
             self.repository_root / "templates" / "reports" / "shared" / "table_styles.py",
             "shared_table_styles",
         )
+        language = self._resolve_language(analysis, config)
+        template_text = self._resolve_text_map(template_module.TEMPLATE_TEXT, language)
+        disclaimer_text = self._resolve_text_map(disclaimer_module.DISCLAIMER_TEXT, language)
 
         cover = cover_module.build_cover_spec(
-            title=template["cover_title"],
-            subtitle=template["cover_subtitle"],
+            title=template_text["cover_title"],
+            subtitle=template_text["cover_subtitle"],
         )
 
         document = Document()
@@ -49,12 +54,12 @@ class DocxReporter(IReporter[AnalysisResult | AnalysisReport]):
         if cover.subtitle:
             document.add_paragraph(cover.subtitle)
 
-        document.add_heading(template["summary_heading"], level=1)
+        document.add_heading(template_text["summary_heading"], level=1)
         if isinstance(analysis, AnalysisResult):
-            self._render_legacy_analysis_result(document, analysis, cover.metadata_order, template, disclaimer_module, table_style_module.DEFAULT_DOCX_TABLE_STYLE)
+            self._render_legacy_analysis_result(document, analysis, cover.metadata_order, template, disclaimer_text, table_style_module.DEFAULT_DOCX_TABLE_STYLE)
         else:
             report = coerce_analysis_report(analysis)
-            self._render_analysis_report(document, report, cover.metadata_order, template, disclaimer_module, table_style_module.DEFAULT_DOCX_TABLE_STYLE)
+            self._render_analysis_report(document, report, cover.metadata_order, template, disclaimer_text, table_style_module.DEFAULT_DOCX_TABLE_STYLE)
 
         config.output_path.parent.mkdir(parents=True, exist_ok=True)
         document.save(config.output_path)
@@ -66,7 +71,7 @@ class DocxReporter(IReporter[AnalysisResult | AnalysisReport]):
         analysis: AnalysisResult,
         metadata_order,
         template,
-        disclaimer_module,
+        disclaimer_text,
         table_style: str,
     ) -> None:
         for key in metadata_order:
@@ -79,8 +84,8 @@ class DocxReporter(IReporter[AnalysisResult | AnalysisReport]):
         self._render_legacy_sections(document, analysis.sections, table_style)
 
         if template["include_disclaimer"]:
-            document.add_heading(disclaimer_module.DISCLAIMER_TITLE, level=1)
-            for paragraph in disclaimer_module.DISCLAIMER_PARAGRAPHS:
+            document.add_heading(disclaimer_text["title"], level=1)
+            for paragraph in disclaimer_text["paragraphs"]:
                 document.add_paragraph(paragraph)
 
     def _render_analysis_report(
@@ -89,7 +94,7 @@ class DocxReporter(IReporter[AnalysisResult | AnalysisReport]):
         report: AnalysisReport,
         metadata_order,
         template,
-        disclaimer_module,
+        disclaimer_text,
         table_style: str,
     ) -> None:
         for key in metadata_order:
@@ -102,8 +107,8 @@ class DocxReporter(IReporter[AnalysisResult | AnalysisReport]):
         self._render_sections(document, report.sections, table_style)
 
         if template["include_disclaimer"]:
-            document.add_heading(disclaimer_module.DISCLAIMER_TITLE, level=1)
-            for paragraph in disclaimer_module.DISCLAIMER_PARAGRAPHS:
+            document.add_heading(disclaimer_text["title"], level=1)
+            for paragraph in disclaimer_text["paragraphs"]:
                 document.add_paragraph(paragraph)
 
     def _render_sections(self, document: Document, sections, table_style: str) -> None:
@@ -149,3 +154,11 @@ class DocxReporter(IReporter[AnalysisResult | AnalysisReport]):
         module = module_from_spec(spec)
         spec.loader.exec_module(module)
         return module
+
+    def _resolve_language(self, analysis: AnalysisResult | AnalysisReport, config: ReportOutputConfig) -> str:
+        if isinstance(analysis, AnalysisReport):
+            return normalize_report_language(config.language or analysis.language)
+        return normalize_report_language(config.language)
+
+    def _resolve_text_map(self, mapping: dict[str, dict[str, object]], language: str) -> dict[str, object]:
+        return dict(mapping.get(language) or mapping["zh-CN"])

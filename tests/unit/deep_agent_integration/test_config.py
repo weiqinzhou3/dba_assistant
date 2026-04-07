@@ -35,8 +35,9 @@ def test_load_app_config_reads_repository_default_shape(tmp_path: Path) -> None:
           redis_socket_timeout: 6.5
         observability:
           enabled: true
-          level: INFO
           console_enabled: false
+          console_level: ERROR
+          file_level: INFO
           log_dir: outputs/custom-logs
           app_log_file: custom-app.jsonl
           audit_log_file: custom-audit.jsonl
@@ -57,7 +58,8 @@ def test_load_app_config_reads_repository_default_shape(tmp_path: Path) -> None:
     assert config.runtime.redis_socket_timeout == 6.5
     assert config.observability.enabled is True
     assert config.observability.console_enabled is False
-    assert config.observability.level == "INFO"
+    assert config.observability.console_level == "ERROR"
+    assert config.observability.file_level == "INFO"
     assert config.observability.log_dir == REPO_ROOT / "outputs" / "custom-logs"
     assert config.observability.app_log_path == REPO_ROOT / "outputs" / "custom-logs" / "custom-app.jsonl"
     assert config.observability.audit_log_path == REPO_ROOT / "outputs" / "custom-logs" / "custom-audit.jsonl"
@@ -185,8 +187,9 @@ def test_load_app_config_supports_absolute_observability_paths(tmp_path: Path) -
           redis_socket_timeout: 5.0
         observability:
           enabled: true
-          level: DEBUG
           console_enabled: true
+          console_level: DEBUG
+          file_level: INFO
           log_dir: {absolute_log_dir}
           app_log_file: app.jsonl
           audit_log_file: audit.jsonl
@@ -195,7 +198,8 @@ def test_load_app_config_supports_absolute_observability_paths(tmp_path: Path) -
 
     config = load_app_config(config_path)
 
-    assert config.observability.level == "DEBUG"
+    assert config.observability.console_level == "DEBUG"
+    assert config.observability.file_level == "INFO"
     assert config.observability.log_dir == absolute_log_dir
     assert config.observability.app_log_path == absolute_log_dir / "app.jsonl"
     assert config.observability.audit_log_path == absolute_log_dir / "audit.jsonl"
@@ -221,8 +225,9 @@ def test_load_app_config_uses_reasonable_observability_defaults_when_omitted(tmp
     config = load_app_config(config_path)
 
     assert config.observability.enabled is True
-    assert config.observability.level == "INFO"
     assert config.observability.console_enabled is True
+    assert config.observability.console_level == "WARNING"
+    assert config.observability.file_level == "INFO"
     assert config.observability.log_dir == REPO_ROOT / "outputs" / "logs"
     assert config.observability.app_log_path == REPO_ROOT / "outputs" / "logs" / "app.log.jsonl"
     assert config.observability.audit_log_path == REPO_ROOT / "outputs" / "logs" / "audit.jsonl"

@@ -26,8 +26,9 @@ Implemented coverage:
 ```yaml
 observability:
   enabled: true
-  level: INFO
   console_enabled: true
+  console_level: WARNING
+  file_level: INFO
   log_dir: outputs/logs
   app_log_file: app.log.jsonl
   audit_log_file: audit.jsonl
@@ -38,6 +39,7 @@ Notes:
 - Relative paths resolve from the repository root.
 - Absolute paths are supported.
 - `enabled: false` disables file/console observability bootstrap for that config.
+- Console and file handlers are intentionally split so high-frequency INFO progress logs stay in file output by default.
 - Secrets are sanitized before normal logs and audit records are persisted.
 
 ## Audit Event Shape

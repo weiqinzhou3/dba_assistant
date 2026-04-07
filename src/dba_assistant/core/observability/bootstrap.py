@@ -20,8 +20,9 @@ _STATE: dict[str, Any] = {
 def bootstrap_observability(config: ObservabilityConfig) -> None:
     signature = (
         config.enabled,
-        config.level,
         config.console_enabled,
+        config.console_level,
+        config.file_level,
         str(config.log_dir),
         config.app_log_file,
         config.audit_log_file,
@@ -32,7 +33,7 @@ def bootstrap_observability(config: ObservabilityConfig) -> None:
     reset_observability_state()
 
     logger = logging.getLogger("dba_assistant")
-    logger.setLevel(_resolve_level(config.level))
+    logger.setLevel(_resolve_logger_level(config))
     logger.propagate = False
 
     if not config.enabled:
@@ -51,7 +52,7 @@ def bootstrap_observability(config: ObservabilityConfig) -> None:
 
     if config.console_enabled:
         console_handler = logging.StreamHandler()
-        console_handler.setLevel(_resolve_level(config.level))
+        console_handler.setLevel(_resolve_level(config.console_level))
         console_handler.addFilter(sanitize_filter)
         console_handler.setFormatter(
             logging.Formatter("%(levelname)s %(name)s %(message)s")
@@ -60,7 +61,7 @@ def bootstrap_observability(config: ObservabilityConfig) -> None:
         handlers.append(console_handler)
 
     app_handler = logging.FileHandler(config.app_log_path, encoding="utf-8")
-    app_handler.setLevel(_resolve_level(config.level))
+    app_handler.setLevel(_resolve_level(config.file_level))
     app_handler.addFilter(sanitize_filter)
     app_handler.setFormatter(JsonlFormatter())
     logger.addHandler(app_handler)
@@ -96,3 +97,10 @@ def reset_observability_state() -> None:
 
 def _resolve_level(level_name: str) -> int:
     return int(getattr(logging, level_name.upper(), logging.INFO))
+
+
+def _resolve_logger_level(config: ObservabilityConfig) -> int:
+    handler_levels = [_resolve_level(config.file_level)]
+    if config.console_enabled:
+        handler_levels.append(_resolve_level(config.console_level))
+    return min(handler_levels)

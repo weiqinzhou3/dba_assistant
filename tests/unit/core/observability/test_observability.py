@@ -26,7 +26,8 @@ def _read_jsonl(path: Path) -> list[dict[str, object]]:
 def _make_observability_config(tmp_path: Path) -> ObservabilityConfig:
     return ObservabilityConfig(
         enabled=True,
-        level="INFO",
+        console_level="WARNING",
+        file_level="INFO",
         console_enabled=False,
         log_dir=tmp_path / "logs",
         app_log_file="app.log.jsonl",
@@ -49,6 +50,38 @@ def test_bootstrap_observability_uses_configured_paths_and_sanitizes_app_logs(tm
     serialized = json.dumps(records, ensure_ascii=False)
     assert "super-secret" not in serialized
     assert "<redacted>" in serialized
+
+    reset_observability_state()
+
+
+def test_bootstrap_observability_suppresses_info_on_console_but_keeps_it_in_file(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    config = ObservabilityConfig(
+        enabled=True,
+        console_enabled=True,
+        console_level="WARNING",
+        file_level="INFO",
+        log_dir=tmp_path / "logs",
+        app_log_file="app.log.jsonl",
+        audit_log_file="audit.jsonl",
+    )
+    reset_observability_state()
+    bootstrap_observability(config)
+
+    logger = logging.getLogger("dba_assistant.test")
+    logger.info("streaming aggregate progress")
+    logger.warning("high level warning")
+
+    console_output = capsys.readouterr().err
+    records = _read_jsonl(config.app_log_path)
+    messages = [record["message"] for record in records]
+
+    assert "streaming aggregate progress" not in console_output
+    assert "high level warning" in console_output
+    assert "streaming aggregate progress" in messages
+    assert "high level warning" in messages
 
     reset_observability_state()
 

@@ -19,12 +19,16 @@ def _read_jsonl(path: Path) -> list[dict[str, object]]:
     ]
 
 
-def test_streaming_aggregate_collector_emits_structured_performance_logs(tmp_path: Path) -> None:
+def test_streaming_aggregate_collector_emits_structured_performance_logs(
+    tmp_path: Path,
+    capsys,
+) -> None:
     reset_observability_state()
     config = ObservabilityConfig(
         enabled=True,
-        level="INFO",
-        console_enabled=False,
+        console_enabled=True,
+        console_level="WARNING",
+        file_level="INFO",
         log_dir=tmp_path / "logs",
         app_log_file="app.log.jsonl",
         audit_log_file="audit.jsonl",
@@ -58,6 +62,7 @@ def test_streaming_aggregate_collector_emits_structured_performance_logs(tmp_pat
     )
 
     result = collector.collect([rdb_path])
+    console_output = capsys.readouterr().err
 
     assert result.metadata["rows_processed"] == "2"
 
@@ -71,5 +76,6 @@ def test_streaming_aggregate_collector_emits_structured_performance_logs(tmp_pat
     assert performance_records
     assert any(record.get("event_name") == "redis_rdb_stream_progress" for record in performance_records)
     assert any(record.get("event_name") == "redis_rdb_stream_phase" for record in performance_records)
+    assert "streaming aggregate progress" not in console_output
 
     reset_observability_state()

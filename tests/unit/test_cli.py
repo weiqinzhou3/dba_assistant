@@ -187,8 +187,9 @@ def test_cli_ask_produces_execution_audit_record(monkeypatch, tmp_path, capsys) 
 
     observability = ObservabilityConfig(
         enabled=True,
-        level="INFO",
         console_enabled=False,
+        console_level="WARNING",
+        file_level="INFO",
         log_dir=tmp_path / "logs",
         app_log_file="app.log.jsonl",
         audit_log_file="audit.jsonl",
@@ -261,3 +262,56 @@ def test_cli_ask_produces_execution_audit_record(monkeypatch, tmp_path, capsys) 
     assert record["output_path"] == str(tmp_path / "outputs" / "audit-target.docx")
     assert record["report_metadata"]["route"] == "direct_rdb_analysis"
     assert "super-secret" not in json.dumps(records, ensure_ascii=False)
+
+
+def test_cli_ask_does_not_flood_terminal_with_info_progress_logs(monkeypatch, tmp_path, capsys) -> None:
+    import logging
+
+    from dba_assistant.application.request_models import NormalizedRequest, RdbOverrides, RuntimeInputs, Secrets
+    from dba_assistant.deep_agent_integration.config import ObservabilityConfig
+
+    observability = ObservabilityConfig(
+        enabled=True,
+        console_enabled=True,
+        console_level="WARNING",
+        file_level="INFO",
+        log_dir=tmp_path / "logs",
+        app_log_file="app.log.jsonl",
+        audit_log_file="audit.jsonl",
+    )
+    config = SimpleNamespace(
+        runtime=SimpleNamespace(default_output_mode="summary"),
+        model=None,
+        observability=observability,
+    )
+
+    monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
+    monkeypatch.setattr(
+        adapter_module,
+        "normalize_raw_request",
+        lambda raw_prompt, *, default_output_mode, input_paths=(): NormalizedRequest(
+            raw_prompt=raw_prompt,
+            prompt=raw_prompt,
+            runtime_inputs=RuntimeInputs(output_mode="summary"),
+            secrets=Secrets(),
+            rdb_overrides=RdbOverrides(),
+        ),
+    )
+
+    def fake_run_orchestrated(normalized, *, config, approval_handler):
+        logging.getLogger(
+            "dba_assistant.capabilities.redis_rdb_analysis.collectors.streaming_aggregate_collector"
+        ).info(
+            "streaming aggregate progress",
+            extra={"event_name": "redis_rdb_stream_progress", "rows_processed": 100000},
+        )
+        return "final summary"
+
+    monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
+
+    exit_code = cli.main(["ask", "analyze big rdbs"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == "final summary\n"
+    assert "streaming aggregate progress" not in captured.err

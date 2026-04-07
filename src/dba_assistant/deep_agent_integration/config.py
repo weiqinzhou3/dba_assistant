@@ -48,8 +48,9 @@ class RuntimeConfig:
 @dataclass(frozen=True)
 class ObservabilityConfig:
     enabled: bool = True
-    level: str = "INFO"
     console_enabled: bool = True
+    console_level: str = "WARNING"
+    file_level: str = "INFO"
     log_dir: Path = REPO_ROOT / "outputs" / "logs"
     app_log_file: str = "app.log.jsonl"
     audit_log_file: str = "audit.jsonl"
@@ -120,10 +121,20 @@ def _load_runtime_config(data: dict[str, Any]) -> RuntimeConfig:
 
 def _load_observability_config(data: dict[str, Any] | None) -> ObservabilityConfig:
     data = data or {}
+    legacy_level = _optional_string(data, "level", "").upper()
     return ObservabilityConfig(
         enabled=bool(data.get("enabled", True)),
-        level=_optional_string(data, "level", "INFO").upper(),
         console_enabled=bool(data.get("console_enabled", True)),
+        console_level=_optional_string(
+            data,
+            "console_level",
+            legacy_level or "WARNING",
+        ).upper(),
+        file_level=_optional_string(
+            data,
+            "file_level",
+            legacy_level or "INFO",
+        ).upper(),
         log_dir=_resolve_repo_path(data.get("log_dir", "outputs/logs")),
         app_log_file=_optional_string(data, "app_log_file", "app.log.jsonl"),
         audit_log_file=_optional_string(data, "audit_log_file", "audit.jsonl"),

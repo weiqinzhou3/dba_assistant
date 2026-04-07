@@ -30,6 +30,7 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["dba_assistant", "dba_assistant.*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

@@ -48,3 +48,30 @@ Work is expected to proceed phase by phase:
 2. add Deep Agents SDK runtime and collection infrastructure
 3. implement skills incrementally
 4. expand audit, templates, and future safety controls
+
+## Local Development Setup
+
+Use the repository bootstrap instead of ad-hoc `venv` commands:
+
+```bash
+./scripts/bootstrap.sh
+```
+
+That creates or repairs `.venv`, installs the project, verifies `import dba_assistant`, and checks `dba-assistant --help`.
+
+If you also want development extras such as `pytest`, use:
+
+```bash
+./scripts/bootstrap.sh --dev
+```
+
+Useful companion commands:
+
+```bash
+.venv/bin/python scripts/doctor.py --strict
+./scripts/run_cli.sh --help
+```
+
+If you hit `ModuleNotFoundError: dba_assistant`, rerun `./scripts/bootstrap.sh --recreate`.
+
+Detailed setup and recovery notes live in [docs/dev_setup.md](docs/dev_setup.md).

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from dba_assistant.application.request_models import RdbOverrides
+from dba_assistant.application.request_models import DEFAULT_MYSQL_STAGE_BATCH_SIZE
 from dba_assistant.core.reporter.report_model import AnalysisReport
 from dba_assistant.capabilities.redis_rdb_analysis.analyzers.overall import analyze_overall
 from dba_assistant.capabilities.redis_rdb_analysis.collectors.path_a_mysql_backed_collector import (
@@ -111,6 +112,10 @@ def analyze_rdb(
             stream_parser=tracked_stream_parser,
             stage_rows_to_mysql=stage_rdb_rows_to_mysql,
             table_name=request.mysql_table,
+            batch_size=request.mysql_stage_batch_size or DEFAULT_MYSQL_STAGE_BATCH_SIZE,
+            mysql_target_host=request.mysql_host,
+            mysql_target_port=request.mysql_port,
+            mysql_target_database=request.mysql_database,
         )
         staging = collector.collect(paths)
         sample_rows = [
@@ -137,6 +142,8 @@ def analyze_rdb(
             **report.metadata,
             "input_count": str(len(sample_rows)),
             "route": selected_route,
+            "mysql_host": staging.mysql_host or request.mysql_host or "",
+            "mysql_port": "" if staging.mysql_port is None and request.mysql_port is None else str(staging.mysql_port or request.mysql_port or ""),
             "mysql_database": staging.database_name or request.mysql_database or "",
             "mysql_table": staging.table_name,
             "mysql_run_id": staging.run_id,

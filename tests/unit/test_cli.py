@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from dba_assistant import cli
 from dba_assistant.interface import adapter as adapter_module
 from dba_assistant.interface.types import ApprovalRequest, ApprovalStatus
@@ -78,6 +80,7 @@ def test_cli_ask_threads_mysql_flags_to_interface_request(monkeypatch, capsys) -
         "--mysql-password", "secret",
         "--mysql-table", "preparsed_keys",
         "--mysql-query", "SELECT * FROM preparsed_keys",
+        "--mysql-stage-batch-size", "4096",
     ])
 
     assert exit_code == 0
@@ -89,6 +92,23 @@ def test_cli_ask_threads_mysql_flags_to_interface_request(monkeypatch, capsys) -
     assert req.mysql_password == "secret"
     assert req.mysql_table == "preparsed_keys"
     assert req.mysql_query == "SELECT * FROM preparsed_keys"
+    assert req.mysql_stage_batch_size == 4096
+
+
+def test_cli_ask_rejects_non_positive_mysql_stage_batch_size(monkeypatch) -> None:
+    called = {"handle_request": False}
+
+    def fake_handle_request(request, *, approval_handler):
+        called["handle_request"] = True
+        return "ok"
+
+    monkeypatch.setattr(cli, "handle_request", fake_handle_request)
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main(["ask", "analyze rdb via mysql", "--mysql-stage-batch-size", "0"])
+
+    assert exc_info.value.code == 2
+    assert called["handle_request"] is False
 
 
 def test_cli_ask_threads_remote_redis_flags_to_interface_request(monkeypatch, capsys) -> None:

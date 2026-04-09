@@ -91,7 +91,7 @@ def build_unified_agent(
 ) -> object:
     """Build the unified Deep Agent with all available tools."""
     connection = _build_connection(request, config)
-    mysql_connection = _build_mysql_connection(request)
+    mysql_connection = _build_mysql_connection(request, config)
     remote_rdb_state: dict[str, Any] = {}
 
     tools = _build_all_tools_compatible(
@@ -144,7 +144,11 @@ def run_orchestrated(
     approval_handler: HumanApprovalHandler,
 ) -> str:
     """Run the unified Deep Agent and return the final output."""
-    shortcut = _run_explicit_local_rdb_analysis(request, approval_handler=approval_handler)
+    shortcut = _run_explicit_local_rdb_analysis(
+        request,
+        config=config,
+        approval_handler=approval_handler,
+    )
     if shortcut is not None:
         return shortcut
 
@@ -203,12 +207,13 @@ def run_orchestrated(
 def _run_explicit_local_rdb_analysis(
     request: NormalizedRequest,
     *,
+    config: AppConfig,
     approval_handler: HumanApprovalHandler,
 ) -> str | None:
     if not _has_explicit_local_rdb_inputs(request):
         return None
 
-    mysql_connection = _build_mysql_connection(request)
+    mysql_connection = _build_mysql_connection(request, config)
     tools = _build_all_tools_compatible(
         request,
         mysql_connection=mysql_connection,
@@ -308,6 +313,7 @@ def _build_connection(
 
 def _build_mysql_connection(
     request: NormalizedRequest,
+    config: AppConfig,
 ) -> MySQLConnectionConfig | None:
     """Build a MySQL connection config from the normalized request, or None."""
     if not _mysql_context_requested(request):
@@ -318,6 +324,9 @@ def _build_mysql_connection(
         user=request.runtime_inputs.mysql_user or DEFAULT_MYSQL_USER,
         password=request.secrets.mysql_password or "",
         database=request.runtime_inputs.mysql_database or DEFAULT_MYSQL_DATABASE,
+        connect_timeout_seconds=config.runtime.mysql_connect_timeout_seconds,
+        read_timeout_seconds=config.runtime.mysql_read_timeout_seconds,
+        write_timeout_seconds=config.runtime.mysql_write_timeout_seconds,
     )
 
 

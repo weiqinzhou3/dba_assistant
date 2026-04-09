@@ -6,16 +6,21 @@ are captured at construction time — the LLM never sees raw secrets.
 """
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from functools import wraps
 import inspect
 import json
+import logging
 import tempfile
 import time
 from pathlib import Path
 from typing import Any
 
-from dba_assistant.adaptors.mysql_adaptor import MySQLAdaptor, MySQLConnectionConfig
+from dba_assistant.adaptors.mysql_adaptor import (
+    MySQLAdaptor,
+    MySQLConnectionConfig,
+    MySQLOperationError,
+)
 from dba_assistant.adaptors.redis_adaptor import (
     DEFAULT_CONFIG_PATTERN,
     DEFAULT_SLOWLOG_LENGTH,
@@ -48,10 +53,14 @@ from dba_assistant.tools.mysql_tools import (
     database_exists as _database_exists,
     insert_staging_batch as _insert_staging_batch,
     load_preparsed_dataset_from_mysql as _load_dataset,
+    format_mysql_error as _format_mysql_error,
     mysql_read_query as _mysql_read,
     stage_rdb_rows_to_mysql as _stage_rows,
     table_exists as _table_exists,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -185,8 +194,12 @@ def _make_analyze_local_rdb_tool(
                 "report_language": request.runtime_inputs.report_language,
                 "path_mode": request.runtime_inputs.path_mode or request.rdb_overrides.route_name or "auto",
                 "profile_overrides": overrides,
+                "mysql_host": request.runtime_inputs.mysql_host,
+                "mysql_stage_batch_size": request.runtime_inputs.mysql_stage_batch_size,
                 "service": analysis_service,
             }
+            if _callable_accepts_keyword(analyze_rdb_tool, "mysql_port"):
+                analyze_kwargs["mysql_port"] = request.runtime_inputs.mysql_port
             if request.runtime_inputs.mysql_database:
                 analyze_kwargs["mysql_database"] = request.runtime_inputs.mysql_database
             analysis = analyze_rdb_tool(
@@ -330,10 +343,14 @@ def _make_analyze_preparsed_dataset_tool(
                 "report_language": request.runtime_inputs.report_language,
                 "path_mode": request.runtime_inputs.path_mode or request.rdb_overrides.route_name or "auto",
                 "profile_overrides": overrides,
+                "mysql_host": request.runtime_inputs.mysql_host,
                 "mysql_table": effective_mysql_table,
                 "mysql_query": effective_mysql_query,
+                "mysql_stage_batch_size": request.runtime_inputs.mysql_stage_batch_size,
                 "service": analysis_service,
             }
+            if _callable_accepts_keyword(analyze_rdb_tool, "mysql_port"):
+                analyze_kwargs["mysql_port"] = request.runtime_inputs.mysql_port
             if request.runtime_inputs.mysql_database:
                 analyze_kwargs["mysql_database"] = request.runtime_inputs.mysql_database
             analysis = analyze_rdb_tool(
@@ -581,6 +598,16 @@ def _make_redis_inspection_tools(
 # MySQL tools (Phase 3.2)
 # ---------------------------------------------------------------------------
 
+
+@dataclass(frozen=True)
+class MySQLStagingTargetPlan:
+    database_name: str
+    table_name: str
+    defaulted_database: bool
+    defaulted_table: bool
+    will_create_database: bool
+    will_create_table: bool
+
 def _make_mysql_tools(
     request: NormalizedRequest,
     adaptor: MySQLAdaptor,
@@ -593,52 +620,73 @@ def _make_mysql_tools(
     approved_write_sessions: set[tuple[str, str]] = set()
 
     def mysql_read_query(sql: str) -> str:
-        return _mysql_read(adaptor, config, sql)
+        try:
+            return _mysql_read(adaptor, config, sql)
+        except MySQLOperationError as exc:
+            return _format_mysql_error(exc)
 
     def load_preparsed_dataset_from_mysql(table_name: str, limit: str = "100000") -> str:
-        return _load_dataset(adaptor, config, table_name, limit=limit)
+        try:
+            return _load_dataset(adaptor, config, table_name, limit=limit)
+        except MySQLOperationError as exc:
+            return _format_mysql_error(exc)
 
     def stage_rdb_rows_to_mysql(
         table_name: str,
         rows_json: str,
         source_file: str = "manual",
         run_id: str = "manual",
+        batch_number: int | None = None,
+        cumulative_rows: int | None = None,
     ) -> str:
         rows = json.loads(rows_json)
         effective_table = table_name or build_default_mysql_table_name()
+        effective_batch_size = _effective_mysql_stage_batch_size(request)
         session_key = (effective_table, run_id)
         session = prepared_sessions.get(session_key)
-        if session is None:
-            session = _prepare_mysql_staging_session(
-                request,
+        try:
+            if session is None:
+                plan = _plan_mysql_staging_session(
+                    request,
+                    adaptor,
+                    config,
+                    table_name=effective_table,
+                )
+                if session_key not in approved_write_sessions:
+                    _request_mysql_staging_approval(
+                        request,
+                        approval_handler=approval_handler,
+                        plan=plan,
+                        row_count=len(rows),
+                        batch_size=effective_batch_size,
+                    )
+                    approved_write_sessions.add(session_key)
+                session = _prepare_mysql_staging_session(
+                    adaptor,
+                    config,
+                    plan=plan,
+                    run_id=run_id,
+                    batch_size=effective_batch_size,
+                )
+                prepared_sessions[session_key] = session
+            count = _call_insert_staging_batch(
+                _insert_staging_batch,
                 adaptor,
-                config,
-                approval_handler=approval_handler,
-                table_name=effective_table,
-                run_id=run_id,
-                batch_size=max(len(rows), 1),
+                session,
+                source_file=source_file or "manual",
+                rows=rows,
+                batch_number=batch_number,
+                cumulative_rows=cumulative_rows,
             )
-            prepared_sessions[session_key] = session
-        if session_key not in approved_write_sessions:
-            _request_mysql_staging_approval(
-                request,
-                approval_handler=approval_handler,
-                table_name=session.table_name,
-                row_count=len(rows),
-                database_name=session.database_name,
-            )
-            approved_write_sessions.add(session_key)
-        count = _insert_staging_batch(
-            adaptor,
-            session,
-            source_file=source_file or "manual",
-            rows=rows,
-        )
+        except MySQLOperationError as exc:
+            return _format_mysql_error(exc)
         return json.dumps(
             {
                 "staged": count,
                 "table": session.table_name,
                 "database": session.database_name,
+                "mysql_host": request.runtime_inputs.effective_mysql_host(),
+                "mysql_port": request.runtime_inputs.mysql_port,
                 "run_id": session.run_id,
                 "source_file": source_file or "manual",
                 "created_database": session.created_database,
@@ -646,6 +694,7 @@ def _make_mysql_tools(
                 "defaulted_database": session.defaulted_database,
                 "defaulted_table": session.defaulted_table,
                 "cleanup_mode": session.cleanup_mode,
+                "mysql_stage_batch_size": session.batch_size,
             }
         )
 
@@ -694,7 +743,7 @@ def _make_phase3_analysis_service(
             profile=None,
             remote_discovery=lambda *_args, **_kwargs: {},
             mysql_read_query=lambda sql: mysql_adaptor.read_query(mysql_connection, sql),
-            stage_rdb_rows_to_mysql=lambda table_name, rows, *, source_file="manual", run_id="manual": _stage_mysql_rows_direct(
+            stage_rdb_rows_to_mysql=lambda table_name, rows, *, source_file="manual", run_id="manual", batch_number=None, cumulative_rows=None: _stage_mysql_rows_direct(
                 normalized_request,
                 mysql_adaptor,
                 mysql_connection,
@@ -705,6 +754,8 @@ def _make_phase3_analysis_service(
                 rows=rows,
                 source_file=source_file,
                 run_id=run_id,
+                batch_number=batch_number,
+                cumulative_rows=cumulative_rows,
             ),
             analyze_staged_rdb_rows=lambda staging, *, profile, sample_rows: _analyze_staged(
                 mysql_adaptor,
@@ -926,16 +977,22 @@ def _render_remote_rdb_analysis(
         overrides["top_n"] = dict(request.rdb_overrides.top_n)
 
     try:
-        analysis = analyze_rdb_tool(
-            prompt=request.prompt,
-            input_paths=[local_path],
-            input_kind="local_rdb",
-            profile_name=profile_name,
-            report_language=request.runtime_inputs.report_language,
-            path_mode=request.runtime_inputs.path_mode or request.rdb_overrides.route_name or "auto",
-            profile_overrides=overrides,
-            service=analysis_service,
-        )
+        analyze_kwargs = {
+            "prompt": request.prompt,
+            "input_paths": [local_path],
+            "input_kind": "local_rdb",
+            "profile_name": profile_name,
+            "report_language": request.runtime_inputs.report_language,
+            "path_mode": request.runtime_inputs.path_mode or request.rdb_overrides.route_name or "auto",
+            "profile_overrides": overrides,
+            "mysql_host": request.runtime_inputs.mysql_host,
+            "mysql_database": request.runtime_inputs.mysql_database,
+            "mysql_stage_batch_size": request.runtime_inputs.mysql_stage_batch_size,
+            "service": analysis_service,
+        }
+        if _callable_accepts_keyword(analyze_rdb_tool, "mysql_port"):
+            analyze_kwargs["mysql_port"] = request.runtime_inputs.mysql_port
+        analysis = analyze_rdb_tool(**analyze_kwargs)
     except ValueError as exc:
         return f"Error: {exc}"
     except PermissionError as exc:
@@ -1018,130 +1075,192 @@ def _request_mysql_staging_approval(
     request: NormalizedRequest,
     *,
     approval_handler: HumanApprovalHandler | None,
-    table_name: str,
+    plan: MySQLStagingTargetPlan,
     row_count: int,
-    database_name: str,
+    batch_size: int,
 ) -> None:
     if approval_handler is None:
         raise PermissionError("MySQL staging requires an approval handler.")
 
+    host = request.runtime_inputs.mysql_host or "127.0.0.1"
+    port = request.runtime_inputs.mysql_port
+    lines = [
+        "MySQL-backed staging requires human approval.",
+        f"Target: {host}:{port}/{plan.database_name}.{plan.table_name}",
+        f"Batch size: {batch_size}",
+        "会写入 staging rows。",
+    ]
+    if plan.will_create_database:
+        lines.append("如果数据库不存在，会创建数据库。")
+    if plan.will_create_table:
+        lines.append("如果表不存在，会创建表。")
+
     approval_request = ApprovalRequest(
         action="stage_rdb_rows_to_mysql",
-        message="写入 MySQL staging table 需要人工审批。",
+        message="\n".join(lines),
         details={
-            "mysql_host": request.runtime_inputs.mysql_host or "127.0.0.1",
-            "mysql_port": request.runtime_inputs.mysql_port,
-            "mysql_database": database_name,
-            "mysql_table": table_name,
+            "mysql_host": host,
+            "mysql_port": port,
+            "mysql_database": plan.database_name,
+            "mysql_table": plan.table_name,
             "row_count": row_count,
+            "mysql_stage_batch_size": batch_size,
+            "session_scope": "mysql_staging_session",
+            "will_create_database": "yes" if plan.will_create_database else "no",
+            "will_create_table": "yes" if plan.will_create_table else "no",
+            "defaulted_database": "yes" if plan.defaulted_database else "no",
+            "defaulted_table": "yes" if plan.defaulted_table else "no",
         },
     )
     response = approval_handler.request_approval(approval_request)
     if response.status is not ApprovalStatus.APPROVED:
         raise PermissionError(
-            f"Operation denied by user: refused MySQL staging write to {database_name}.{table_name}."
+            "Operation denied by user: refused MySQL staging write session for "
+            f"{plan.database_name}.{plan.table_name}."
         )
 
 
-def _request_mysql_database_creation_approval(
-    request: NormalizedRequest,
-    *,
-    approval_handler: HumanApprovalHandler | None,
-    database_name: str,
-) -> None:
-    if approval_handler is None:
-        raise PermissionError("Creating a MySQL database requires an approval handler.")
-    approval_request = ApprovalRequest(
-        action="create_mysql_database",
-        message="创建默认 MySQL 数据库需要人工审批。",
-        details={
-            "mysql_host": request.runtime_inputs.mysql_host or "127.0.0.1",
-            "mysql_port": request.runtime_inputs.mysql_port,
-            "mysql_database": database_name,
-            "defaulted_database": "yes" if not request.runtime_inputs.mysql_database else "no",
-        },
-    )
-    response = approval_handler.request_approval(approval_request)
-    if response.status is not ApprovalStatus.APPROVED:
-        raise PermissionError(
-            f"Operation denied by user: refused creation of MySQL database {database_name}."
-        )
-
-
-def _request_mysql_table_creation_approval(
-    request: NormalizedRequest,
-    *,
-    approval_handler: HumanApprovalHandler | None,
-    database_name: str,
-    table_name: str,
-) -> None:
-    if approval_handler is None:
-        raise PermissionError("Creating a MySQL staging table requires an approval handler.")
-    approval_request = ApprovalRequest(
-        action="create_mysql_staging_table",
-        message="创建 MySQL staging table 需要人工审批。",
-        details={
-            "mysql_host": request.runtime_inputs.mysql_host or "127.0.0.1",
-            "mysql_port": request.runtime_inputs.mysql_port,
-            "mysql_database": database_name,
-            "mysql_table": table_name,
-            "defaulted_table": "yes" if not request.runtime_inputs.mysql_table else "no",
-        },
-    )
-    response = approval_handler.request_approval(approval_request)
-    if response.status is not ApprovalStatus.APPROVED:
-        raise PermissionError(
-            f"Operation denied by user: refused creation of MySQL staging table {database_name}.{table_name}."
-        )
-
-
-def _prepare_mysql_staging_session(
+def _plan_mysql_staging_session(
     request: NormalizedRequest,
     adaptor: MySQLAdaptor,
     config: MySQLConnectionConfig,
     *,
-    approval_handler: HumanApprovalHandler | None,
     table_name: str,
-    run_id: str,
-    batch_size: int,
-) -> MySQLStagingSession:
+) -> MySQLStagingTargetPlan:
     database_name = request.runtime_inputs.mysql_database or config.database or DEFAULT_MYSQL_DATABASE
     defaulted_database = not bool(request.runtime_inputs.mysql_database)
     defaulted_table = not bool(request.runtime_inputs.mysql_table)
     admin_config = replace(config, database=None)
+    database_exists = _database_exists(adaptor, admin_config, database_name)
+    database_config = replace(config, database=database_name)
+    table_exists = database_exists and _table_exists(adaptor, database_config, table_name)
+
+    return MySQLStagingTargetPlan(
+        database_name=database_name,
+        table_name=table_name,
+        defaulted_database=defaulted_database,
+        defaulted_table=defaulted_table,
+        will_create_database=not database_exists,
+        will_create_table=not table_exists,
+    )
+
+
+def _prepare_mysql_staging_session(
+    adaptor: MySQLAdaptor,
+    config: MySQLConnectionConfig,
+    *,
+    plan: MySQLStagingTargetPlan,
+    run_id: str,
+    batch_size: int,
+) -> MySQLStagingSession:
+    admin_config = replace(config, database=None)
     database_created = False
     table_created = False
+    session_started = time.perf_counter()
 
-    if not _database_exists(adaptor, admin_config, database_name):
-        _request_mysql_database_creation_approval(
-            request,
-            approval_handler=approval_handler,
-            database_name=database_name,
-        )
-        _create_database(adaptor, admin_config, database_name)
-        database_created = True
+    _log_mysql_staging_phase(
+        config=config,
+        database_name=plan.database_name,
+        table_name=plan.table_name,
+        mysql_stage_batch_size=batch_size,
+        stage="session_start",
+        elapsed_seconds=0.0,
+        run_id=run_id,
+    )
 
-    database_config = replace(config, database=database_name)
-    if not _table_exists(adaptor, database_config, table_name):
-        _request_mysql_table_creation_approval(
-            request,
-            approval_handler=approval_handler,
-            database_name=database_name,
-            table_name=table_name,
+    if plan.will_create_database:
+        create_database_started = time.perf_counter()
+        _log_mysql_staging_phase(
+            config=config,
+            database_name=plan.database_name,
+            table_name=plan.table_name,
+            mysql_stage_batch_size=batch_size,
+            stage="create_database_start",
+            elapsed_seconds=round(create_database_started - session_started, 6),
+            run_id=run_id,
         )
-        _create_staging_table(adaptor, database_config, table_name)
-        table_created = True
+        try:
+            _create_database(adaptor, admin_config, plan.database_name)
+            database_created = True
+        except Exception as exc:  # noqa: BLE001
+            _log_mysql_staging_phase(
+                config=config,
+                database_name=plan.database_name,
+                table_name=plan.table_name,
+                mysql_stage_batch_size=batch_size,
+                stage="create_database_error",
+                elapsed_seconds=round(time.perf_counter() - session_started, 6),
+                run_id=run_id,
+                error=str(exc),
+            )
+            raise
+        _log_mysql_staging_phase(
+            config=config,
+            database_name=plan.database_name,
+            table_name=plan.table_name,
+            mysql_stage_batch_size=batch_size,
+            stage="create_database_end",
+            elapsed_seconds=round(time.perf_counter() - create_database_started, 6),
+            run_id=run_id,
+        )
+
+    database_config = replace(config, database=plan.database_name)
+    if plan.will_create_table:
+        create_table_started = time.perf_counter()
+        _log_mysql_staging_phase(
+            config=config,
+            database_name=plan.database_name,
+            table_name=plan.table_name,
+            mysql_stage_batch_size=batch_size,
+            stage="create_table_start",
+            elapsed_seconds=round(create_table_started - session_started, 6),
+            run_id=run_id,
+        )
+        try:
+            _create_staging_table(adaptor, database_config, plan.table_name)
+            table_created = True
+        except Exception as exc:  # noqa: BLE001
+            _log_mysql_staging_phase(
+                config=config,
+                database_name=plan.database_name,
+                table_name=plan.table_name,
+                mysql_stage_batch_size=batch_size,
+                stage="create_table_error",
+                elapsed_seconds=round(time.perf_counter() - session_started, 6),
+                run_id=run_id,
+                error=str(exc),
+            )
+            raise
+        _log_mysql_staging_phase(
+            config=config,
+            database_name=plan.database_name,
+            table_name=plan.table_name,
+            mysql_stage_batch_size=batch_size,
+            stage="create_table_end",
+            elapsed_seconds=round(time.perf_counter() - create_table_started, 6),
+            run_id=run_id,
+        )
+
+    _log_mysql_staging_phase(
+        config=config,
+        database_name=plan.database_name,
+        table_name=plan.table_name,
+        mysql_stage_batch_size=batch_size,
+        stage="session_ready",
+        elapsed_seconds=round(time.perf_counter() - session_started, 6),
+        run_id=run_id,
+    )
 
     return MySQLStagingSession(
         connection=database_config,
-        database_name=database_name,
-        table_name=table_name,
+        database_name=plan.database_name,
+        table_name=plan.table_name,
         run_id=run_id,
         batch_size=batch_size,
         created_database=database_created,
         created_table=table_created,
-        defaulted_database=defaulted_database,
-        defaulted_table=defaulted_table,
+        defaulted_database=plan.defaulted_database,
+        defaulted_table=plan.defaulted_table,
         cleanup_mode="retain",
     )
 
@@ -1158,47 +1277,124 @@ def _stage_mysql_rows_direct(
     rows: list[dict[str, object]],
     source_file: str,
     run_id: str,
+    batch_number: int | None = None,
+    cumulative_rows: int | None = None,
 ) -> dict[str, object]:
     effective_table = table_name or request.runtime_inputs.mysql_table or build_default_mysql_table_name()
+    effective_batch_size = _effective_mysql_stage_batch_size(request)
     session_key = (effective_table, run_id)
     session = prepared_sessions.get(session_key)
     if session is None:
-        session = _prepare_mysql_staging_session(
+        plan = _plan_mysql_staging_session(
             request,
             adaptor,
             config,
-            approval_handler=approval_handler,
             table_name=effective_table,
+        )
+        if session_key not in approved_write_sessions:
+            _request_mysql_staging_approval(
+                request,
+                approval_handler=approval_handler,
+                plan=plan,
+                row_count=len(rows),
+                batch_size=effective_batch_size,
+            )
+            approved_write_sessions.add(session_key)
+        session = _prepare_mysql_staging_session(
+            adaptor,
+            config,
+            plan=plan,
             run_id=run_id,
-            batch_size=DEFAULT_MYSQL_STAGE_BATCH_SIZE,
+            batch_size=effective_batch_size,
         )
         prepared_sessions[session_key] = session
-    if session_key not in approved_write_sessions:
-        _request_mysql_staging_approval(
-            request,
-            approval_handler=approval_handler,
-            table_name=session.table_name,
-            row_count=len(rows),
-            database_name=session.database_name,
-        )
-        approved_write_sessions.add(session_key)
-    staged = _insert_staging_batch(
+    staged = _call_insert_staging_batch(
+        _insert_staging_batch,
         adaptor,
         session,
         source_file=source_file,
         rows=rows,
+        batch_number=batch_number,
+        cumulative_rows=cumulative_rows,
     )
     return {
         "staged": staged,
         "table": session.table_name,
         "database": session.database_name,
+        "mysql_host": request.runtime_inputs.effective_mysql_host(),
+        "mysql_port": request.runtime_inputs.mysql_port,
         "run_id": session.run_id,
         "created_database": session.created_database,
         "created_table": session.created_table,
         "defaulted_database": session.defaulted_database,
         "defaulted_table": session.defaulted_table,
         "cleanup_mode": session.cleanup_mode,
+        "mysql_stage_batch_size": session.batch_size,
     }
+
+
+def _log_mysql_staging_phase(
+    *,
+    config: MySQLConnectionConfig,
+    database_name: str,
+    table_name: str,
+    mysql_stage_batch_size: int,
+    stage: str,
+    elapsed_seconds: float,
+    run_id: str,
+    error: str | None = None,
+) -> None:
+    logger.info(
+        "mysql staging phase",
+        extra={
+            "event_name": "mysql_staging_phase",
+            "stage": stage,
+            "mysql_host": config.host,
+            "mysql_port": config.port,
+            "mysql_database": database_name,
+            "mysql_table": table_name,
+            "mysql_stage_batch_size": mysql_stage_batch_size,
+            "batch_number": None,
+            "batch_rows": None,
+            "cumulative_rows": None,
+            "elapsed_seconds": elapsed_seconds,
+            "run_id": run_id,
+            "error": error,
+        },
+    )
+    return None
+
+
+def _call_insert_staging_batch(
+    insert_staging_batch_fn,
+    adaptor: MySQLAdaptor,
+    session: MySQLStagingSession,
+    *,
+    source_file: str,
+    rows: list[dict[str, object]],
+    batch_number: int | None,
+    cumulative_rows: int | None,
+) -> int:
+    kwargs: dict[str, object] = {
+        "source_file": source_file,
+        "rows": rows,
+    }
+    if _callable_accepts_keyword(insert_staging_batch_fn, "batch_number"):
+        kwargs["batch_number"] = batch_number
+    if _callable_accepts_keyword(insert_staging_batch_fn, "cumulative_rows"):
+        kwargs["cumulative_rows"] = cumulative_rows
+    return insert_staging_batch_fn(adaptor, session, **kwargs)
+
+
+def _callable_accepts_keyword(func: Any, keyword: str) -> bool:
+    try:
+        signature = inspect.signature(func)
+    except (TypeError, ValueError):
+        return False
+    for parameter in signature.parameters.values():
+        if parameter.kind is inspect.Parameter.VAR_KEYWORD:
+            return True
+    return keyword in signature.parameters
 
 
 # ---------------------------------------------------------------------------
@@ -1239,3 +1435,7 @@ def _append_mysql_runtime_note(content: str, *, analysis) -> str:
     if note in content:
         return content
     return f"{content}\n\n{note}"
+
+
+def _effective_mysql_stage_batch_size(request: NormalizedRequest) -> int:
+    return request.runtime_inputs.effective_mysql_stage_batch_size()

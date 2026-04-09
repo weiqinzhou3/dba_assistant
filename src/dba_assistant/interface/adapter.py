@@ -11,6 +11,7 @@ from dba_assistant.application.prompt_parser import normalize_raw_request
 from dba_assistant.application.request_models import (
     DEFAULT_LOOPBACK_HOST,
     DEFAULT_MYSQL_DATABASE,
+    DEFAULT_MYSQL_STAGE_BATCH_SIZE,
     DEFAULT_MYSQL_USER,
     NormalizedRequest,
 )
@@ -45,6 +46,7 @@ def handle_request(
         input_paths=request.input_paths,
     )
     normalized = _apply_overrides(normalized, request)
+    normalized = _apply_runtime_defaults(normalized, config)
     normalized = _apply_conventional_defaults(normalized)
     normalized = replace(
         normalized,
@@ -138,6 +140,9 @@ def _apply_overrides(
     if request.mysql_query is not None:
         runtime_inputs = replace(runtime_inputs, mysql_query=request.mysql_query)
 
+    if request.mysql_stage_batch_size is not None:
+        runtime_inputs = replace(runtime_inputs, mysql_stage_batch_size=request.mysql_stage_batch_size)
+
     if request.mysql_password is not None:
         secrets = replace(normalized.secrets, mysql_password=request.mysql_password)
         normalized = replace(normalized, secrets=secrets)
@@ -147,6 +152,23 @@ def _apply_overrides(
         normalized = replace(normalized, secrets=secrets)
 
     return replace(normalized, runtime_inputs=runtime_inputs, rdb_overrides=rdb_overrides)
+
+
+def _apply_runtime_defaults(
+    normalized: NormalizedRequest,
+    config,
+) -> NormalizedRequest:
+    runtime_inputs = normalized.runtime_inputs
+    if runtime_inputs.mysql_stage_batch_size is None:
+        runtime_inputs = replace(
+            runtime_inputs,
+            mysql_stage_batch_size=getattr(
+                config.runtime,
+                "mysql_stage_batch_size",
+                DEFAULT_MYSQL_STAGE_BATCH_SIZE,
+            ),
+        )
+    return replace(normalized, runtime_inputs=runtime_inputs)
 
 
 def _apply_conventional_defaults(normalized: NormalizedRequest) -> NormalizedRequest:
@@ -184,6 +206,7 @@ def _summarize_interface_request(request: InterfaceRequest) -> dict[str, object]
             "mysql_database": request.mysql_database,
             "mysql_table": request.mysql_table,
             "mysql_query": request.mysql_query,
+            "mysql_stage_batch_size": request.mysql_stage_batch_size,
             "secret_presence": {
                 "redis_password": bool(request.redis_password),
                 "ssh_password": bool(request.ssh_password),

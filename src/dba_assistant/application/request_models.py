@@ -40,6 +40,7 @@ class RuntimeInputs:
     mysql_database: str | None = None
     mysql_table: str | None = None
     mysql_query: str | None = None
+    mysql_stage_batch_size: int | None = None
 
     def effective_redis_host(self) -> str:
         return self.redis_host or DEFAULT_LOOPBACK_HOST
@@ -64,6 +65,9 @@ class RuntimeInputs:
         if not self.mysql_table:
             defaults.append("mysql_table")
         return tuple(defaults)
+
+    def effective_mysql_stage_batch_size(self) -> int:
+        return self.mysql_stage_batch_size or DEFAULT_MYSQL_STAGE_BATCH_SIZE
 
 
 @dataclass(frozen=True)

@@ -283,6 +283,7 @@ def _summarize_normalized_request(request: NormalizedRequest) -> dict[str, Any]:
             "mysql_database": runtime_inputs.mysql_database,
             "mysql_table": runtime_inputs.mysql_table,
             "mysql_query": runtime_inputs.mysql_query,
+            "mysql_stage_batch_size": runtime_inputs.mysql_stage_batch_size,
             "profile_name": request.rdb_overrides.profile_name,
             "output_mode": runtime_inputs.output_mode,
             "report_format": runtime_inputs.report_format,

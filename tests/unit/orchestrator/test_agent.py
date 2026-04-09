@@ -674,13 +674,16 @@ def test_build_mysql_connection_uses_defaults_for_database_backed_analysis() -> 
         ),
     )
 
-    connection = agent_module._build_mysql_connection(request)
+    connection = agent_module._build_mysql_connection(request, _make_config())
 
     assert connection is not None
     assert connection.host == "127.0.0.1"
     assert connection.port == 3306
     assert connection.user == "root"
     assert connection.database == "dba_assistant_staging"
+    assert connection.connect_timeout_seconds == 5.0
+    assert connection.read_timeout_seconds == 15.0
+    assert connection.write_timeout_seconds == 30.0
 
 
 def test_remote_rdb_path_resolution_resolver_surfaces_discovery_failure(monkeypatch) -> None:

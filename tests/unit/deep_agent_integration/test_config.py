@@ -33,6 +33,10 @@ def test_load_app_config_reads_repository_default_shape(tmp_path: Path) -> None:
         runtime:
           default_output_mode: summary
           redis_socket_timeout: 6.5
+          mysql_stage_batch_size: 4096
+          mysql_connect_timeout_seconds: 7.5
+          mysql_read_timeout_seconds: 18.0
+          mysql_write_timeout_seconds: 35.0
         observability:
           enabled: true
           console_enabled: false
@@ -56,6 +60,10 @@ def test_load_app_config_reads_repository_default_shape(tmp_path: Path) -> None:
     assert config.model.api_key == "ollama"
     assert config.runtime.default_output_mode == "summary"
     assert config.runtime.redis_socket_timeout == 6.5
+    assert config.runtime.mysql_stage_batch_size == 4096
+    assert config.runtime.mysql_connect_timeout_seconds == 7.5
+    assert config.runtime.mysql_read_timeout_seconds == 18.0
+    assert config.runtime.mysql_write_timeout_seconds == 35.0
     assert config.observability.enabled is True
     assert config.observability.console_enabled is False
     assert config.observability.console_level == "ERROR"
@@ -231,3 +239,50 @@ def test_load_app_config_uses_reasonable_observability_defaults_when_omitted(tmp
     assert config.observability.log_dir == REPO_ROOT / "outputs" / "logs"
     assert config.observability.app_log_path == REPO_ROOT / "outputs" / "logs" / "app.log.jsonl"
     assert config.observability.audit_log_path == REPO_ROOT / "outputs" / "logs" / "audit.jsonl"
+
+
+def test_load_app_config_uses_mysql_timeout_defaults_when_omitted(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    _write_config(
+        config_path,
+        """
+        model:
+          preset_name: ollama_local
+          provider_kind: openai_compatible
+          model_name: qwen3:8b
+          base_url: http://127.0.0.1:11434/v1
+          api_key: ollama
+        runtime:
+          default_output_mode: summary
+          redis_socket_timeout: 5.0
+        """,
+    )
+
+    config = load_app_config(config_path)
+
+    assert config.runtime.mysql_stage_batch_size == 2000
+    assert config.runtime.mysql_connect_timeout_seconds == 5.0
+    assert config.runtime.mysql_read_timeout_seconds == 15.0
+    assert config.runtime.mysql_write_timeout_seconds == 30.0
+
+
+def test_load_app_config_rejects_non_positive_mysql_stage_batch_size(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    _write_config(
+        config_path,
+        """
+        model:
+          preset_name: ollama_local
+          provider_kind: openai_compatible
+          model_name: qwen3:8b
+          base_url: http://127.0.0.1:11434/v1
+          api_key: ollama
+        runtime:
+          default_output_mode: summary
+          redis_socket_timeout: 5.0
+          mysql_stage_batch_size: 0
+        """,
+    )
+
+    with pytest.raises(ValueError, match="runtime.mysql_stage_batch_size"):
+        load_app_config(config_path)

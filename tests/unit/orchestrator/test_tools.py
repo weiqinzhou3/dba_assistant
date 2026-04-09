@@ -1,10 +1,13 @@
 from pathlib import Path
+import json
 
 import pytest
 
 from dba_assistant.adaptors.redis_adaptor import RedisConnectionConfig
 from dba_assistant.application.request_models import NormalizedRequest, RdbOverrides, RuntimeInputs, Secrets
 from dba_assistant.capabilities.redis_rdb_analysis.remote_input import RemoteRedisDiscoveryError
+from dba_assistant.core.observability import bootstrap_observability, reset_observability_state
+from dba_assistant.deep_agent_integration.config import ObservabilityConfig
 from dba_assistant.interface.types import ApprovalResponse, ApprovalStatus
 from dba_assistant.orchestrator.tools import build_all_tools, resolve_remote_rdb_fetch_plan
 
@@ -119,6 +122,8 @@ def test_analyze_local_rdb_tool_runs_full_pipeline(monkeypatch) -> None:
         report_language="zh-CN",
         path_mode="auto",
         profile_overrides=None,
+        mysql_host=None,
+        mysql_stage_batch_size=None,
         service=None,
     ):
         captured["analyze_called"] = True
@@ -163,6 +168,8 @@ def test_analyze_local_rdb_tool_passes_request_top_n_and_explicit_focus_prefix_o
         report_language="zh-CN",
         path_mode="auto",
         profile_overrides=None,
+        mysql_host=None,
+        mysql_stage_batch_size=None,
         service=None,
     ):
         captured["profile_name"] = profile_name
@@ -215,6 +222,8 @@ def test_analyze_local_rdb_tool_passes_focus_only_override(monkeypatch) -> None:
         report_language="zh-CN",
         path_mode="auto",
         profile_overrides=None,
+        mysql_host=None,
+        mysql_stage_batch_size=None,
         service=None,
     ):
         captured["profile_overrides"] = dict(profile_overrides or {})
@@ -261,6 +270,8 @@ def test_analyze_local_rdb_tool_validates_host_paths_before_analysis(monkeypatch
         report_language="zh-CN",
         path_mode="auto",
         profile_overrides=None,
+        mysql_host=None,
+        mysql_stage_batch_size=None,
         service=None,
     ):
         captured["input_paths"] = input_paths
@@ -304,6 +315,8 @@ def test_analyze_local_rdb_tool_returns_docx_path_when_request_is_docx_without_e
         report_language="zh-CN",
         path_mode="auto",
         profile_overrides=None,
+        mysql_host=None,
+        mysql_stage_batch_size=None,
         service=None,
     ):
         from dba_assistant.core.reporter.report_model import AnalysisReport, ReportSectionModel, TextBlock
@@ -493,6 +506,8 @@ def test_analyze_local_rdb_tool_forces_local_input_kind_even_when_request_is_pol
         report_language="zh-CN",
         path_mode="auto",
         profile_overrides=None,
+        mysql_host=None,
+        mysql_stage_batch_size=None,
         service=None,
     ):
         captured["input_kind"] = input_kind
@@ -741,6 +756,301 @@ def test_analyze_local_rdb_mysql_route_stages_only_after_approval(monkeypatch) -
     assert "样本" in result
 
 
+def test_analyze_local_rdb_mysql_route_uses_one_session_level_approval_for_create_and_write(
+    monkeypatch,
+) -> None:
+    import json
+
+    from dba_assistant.adaptors.mysql_adaptor import MySQLConnectionConfig
+
+    rows_fixture = Path("tests/fixtures/rdb/direct/sample_key_records.json")
+    rows = json.loads(rows_fixture.read_text(encoding="utf-8"))
+    source = Path("/tmp/dba-assistant-local-mysql-single-approval.rdb")
+    source.write_text("fixture", encoding="utf-8")
+    captured: dict[str, object] = {"approvals": 0, "created_database": 0, "created_table": 0}
+
+    class ApproveHandler:
+        def request_approval(self, request):
+            captured["approvals"] += 1
+            captured["approval_request"] = request
+            return ApprovalResponse(status=ApprovalStatus.APPROVED, action=request.action)
+
+    def mark_created_database(*_args, **_kwargs):
+        captured["created_database"] += 1
+        return 1
+
+    def mark_created_table(*_args, **_kwargs):
+        captured["created_table"] += 1
+        return 1
+
+    monkeypatch.setattr(
+        "dba_assistant.skills.redis_rdb_analysis.service._stream_rdb_rows",
+        lambda _path: _streamed_rows(rows),
+    )
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._database_exists",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._table_exists",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr("dba_assistant.orchestrator.tools._create_database", mark_created_database)
+    monkeypatch.setattr("dba_assistant.orchestrator.tools._create_staging_table", mark_created_table)
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._insert_staging_batch",
+        lambda _adaptor, _session, *, source_file, rows: len(rows),
+    )
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._analyze_staged",
+        lambda _adaptor, _session, *, profile, sample_rows: _mysql_analysis_payload(
+            sample_rows=sample_rows
+        ),
+    )
+
+    request = _make_request(
+        prompt="analyze local rdb via mysql",
+        runtime_inputs=RuntimeInputs(
+            output_mode="summary",
+            path_mode="database_backed_analysis",
+            input_paths=(source,),
+            mysql_host="192.168.23.176",
+            mysql_port=3306,
+            mysql_user="root",
+            mysql_database="rcs",
+            mysql_table="rdb",
+            mysql_stage_batch_size=4096,
+        ),
+    )
+    mysql_connection = MySQLConnectionConfig(
+        host="192.168.23.176",
+        port=3306,
+        user="root",
+        password="Root@1234!",
+        database="rcs",
+    )
+    tools = build_all_tools(request, mysql_connection=mysql_connection, approval_handler=ApproveHandler())
+    analyze_tool = next(t for t in tools if t.__name__ == "analyze_local_rdb")
+
+    result = analyze_tool(input_paths=str(source))
+
+    assert "样本" in result
+    assert captured["approvals"] == 1
+    assert captured["created_database"] == 1
+    assert captured["created_table"] == 1
+    assert captured["approval_request"].action == "stage_rdb_rows_to_mysql"
+    assert "会写入 staging rows" in captured["approval_request"].message
+    assert "batch size" in captured["approval_request"].message.lower()
+    assert "4096" in captured["approval_request"].message
+    assert captured["approval_request"].details["mysql_stage_batch_size"] == 4096
+
+
+def test_stage_rdb_rows_to_mysql_tool_does_not_repeat_approval_for_same_session(monkeypatch) -> None:
+    from dba_assistant.adaptors.mysql_adaptor import MySQLConnectionConfig
+
+    captured: dict[str, object] = {"approvals": 0, "created_database": 0, "created_table": 0, "writes": 0}
+
+    class ApproveHandler:
+        def request_approval(self, request):
+            captured["approvals"] += 1
+            return ApprovalResponse(status=ApprovalStatus.APPROVED, action=request.action)
+
+    def mark_created_database(*_args, **_kwargs):
+        captured["created_database"] += 1
+        return 1
+
+    def mark_created_table(*_args, **_kwargs):
+        captured["created_table"] += 1
+        return 1
+
+    def mark_write(*_args, **_kwargs):
+        captured["writes"] += 1
+        return 1
+
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._database_exists",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._table_exists",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr("dba_assistant.orchestrator.tools._create_database", mark_created_database)
+    monkeypatch.setattr("dba_assistant.orchestrator.tools._create_staging_table", mark_created_table)
+    monkeypatch.setattr("dba_assistant.orchestrator.tools._insert_staging_batch", mark_write)
+
+    request = _make_request(
+        prompt="stage rows via mysql",
+        runtime_inputs=RuntimeInputs(
+            output_mode="summary",
+            mysql_host="192.168.23.176",
+            mysql_port=3306,
+            mysql_user="root",
+            mysql_database="rcs",
+            mysql_table="rdb_stage",
+        ),
+    )
+    mysql_connection = MySQLConnectionConfig(
+        host="192.168.23.176",
+        port=3306,
+        user="root",
+        password="Root@1234!",
+        database="rcs",
+    )
+    tools = build_all_tools(request, mysql_connection=mysql_connection, approval_handler=ApproveHandler())
+    stage_tool = next(t for t in tools if t.__name__ == "stage_rdb_rows_to_mysql")
+
+    stage_tool("rdb_stage", '[{"key_name":"a","key_type":"string","size_bytes":1}]', run_id="same-run")
+    stage_tool("rdb_stage", '[{"key_name":"b","key_type":"string","size_bytes":2}]', run_id="same-run")
+
+    assert captured["approvals"] == 1
+    assert captured["created_database"] == 1
+    assert captured["created_table"] == 1
+    assert captured["writes"] == 2
+
+
+def test_stage_rdb_rows_to_mysql_tool_returns_clear_error_when_session_approval_is_denied(
+    monkeypatch,
+) -> None:
+    from dba_assistant.adaptors.mysql_adaptor import MySQLConnectionConfig
+
+    captured: dict[str, object] = {"approvals": 0}
+
+    class DenyHandler:
+        def request_approval(self, request):
+            captured["approvals"] += 1
+            captured["approval_request"] = request
+            return ApprovalResponse(status=ApprovalStatus.DENIED, action=request.action)
+
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._database_exists",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._table_exists",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._create_database",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("must not create database after denial")
+        ),
+    )
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._create_staging_table",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("must not create table after denial")
+        ),
+    )
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._insert_staging_batch",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("must not write after denial")
+        ),
+    )
+
+    request = _make_request(
+        prompt="stage rows via mysql",
+        runtime_inputs=RuntimeInputs(
+            output_mode="summary",
+            mysql_host="192.168.23.176",
+            mysql_port=3306,
+            mysql_user="root",
+            mysql_database="rcs",
+            mysql_table="rdb_stage",
+        ),
+    )
+    mysql_connection = MySQLConnectionConfig(
+        host="192.168.23.176",
+        port=3306,
+        user="root",
+        password="Root@1234!",
+        database="rcs",
+    )
+    tools = build_all_tools(request, mysql_connection=mysql_connection, approval_handler=DenyHandler())
+    stage_tool = next(t for t in tools if t.__name__ == "stage_rdb_rows_to_mysql")
+
+    with pytest.raises(PermissionError, match="refused MySQL staging write"):
+        stage_tool("rdb_stage", '[{"key_name":"a","key_type":"string","size_bytes":1}]', run_id="same-run")
+
+    assert captured["approvals"] == 1
+    assert captured["approval_request"].action == "stage_rdb_rows_to_mysql"
+
+
+def test_prepare_mysql_staging_session_emits_session_and_ddl_phase_logs(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from dba_assistant.adaptors.mysql_adaptor import MySQLConnectionConfig
+    from dba_assistant.orchestrator import tools as tools_module
+
+    reset_observability_state()
+    observability = ObservabilityConfig(
+        enabled=True,
+        console_enabled=True,
+        console_level="WARNING",
+        file_level="INFO",
+        log_dir=tmp_path / "logs",
+        app_log_file="app.log.jsonl",
+        audit_log_file="audit.jsonl",
+    )
+    bootstrap_observability(observability)
+
+    monkeypatch.setattr("dba_assistant.orchestrator.tools._create_database", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr("dba_assistant.orchestrator.tools._create_staging_table", lambda *_args, **_kwargs: 1)
+
+    config = MySQLConnectionConfig(
+        host="192.168.23.176",
+        port=3306,
+        user="root",
+        password="Root@1234!",
+        database="analysis_db",
+    )
+    plan = tools_module.MySQLStagingTargetPlan(
+        database_name="analysis_db",
+        table_name="rdb_stage_runtime",
+        defaulted_database=False,
+        defaulted_table=False,
+        will_create_database=True,
+        will_create_table=True,
+    )
+
+    session = tools_module._prepare_mysql_staging_session(
+        object(),
+        config,
+        plan=plan,
+        run_id="run-1",
+        batch_size=4096,
+    )
+
+    assert session.table_name == "rdb_stage_runtime"
+    records = [
+        json.loads(line)
+        for line in observability.app_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    phase_records = [
+        record
+        for record in records
+        if record.get("event_name") == "mysql_staging_phase"
+    ]
+    stages = {record.get("stage") for record in phase_records}
+
+    assert "session_start" in stages
+    assert "create_database_start" in stages
+    assert "create_database_end" in stages
+    assert "create_table_start" in stages
+    assert "create_table_end" in stages
+    assert "session_ready" in stages
+    assert any(record.get("mysql_host") == "192.168.23.176" for record in phase_records)
+    assert any(record.get("mysql_port") == 3306 for record in phase_records)
+    assert any(record.get("mysql_database") == "analysis_db" for record in phase_records)
+    assert any(record.get("mysql_table") == "rdb_stage_runtime" for record in phase_records)
+    assert any(record.get("mysql_stage_batch_size") == 4096 for record in phase_records)
+
+    reset_observability_state()
+
+
 def test_analyze_local_rdb_mysql_route_returns_docx_path_when_requested_without_explicit_output(
     monkeypatch,
     tmp_path,
@@ -839,6 +1149,8 @@ def test_analyze_preparsed_dataset_tool_uses_mysql_source_from_request(monkeypat
         report_language="zh-CN",
         path_mode="auto",
         profile_overrides=None,
+        mysql_host=None,
+        mysql_stage_batch_size=None,
         mysql_database=None,
         mysql_table=None,
         mysql_query=None,
@@ -943,6 +1255,9 @@ def test_fetch_remote_rdb_via_ssh_tool_fetches_and_continues_analysis(monkeypatc
         report_language="zh-CN",
         path_mode="auto",
         profile_overrides=None,
+        mysql_host=None,
+        mysql_database=None,
+        mysql_stage_batch_size=None,
         service=None,
     ):
         captured["analyze_prompt"] = prompt
@@ -1117,6 +1432,9 @@ def test_fetch_remote_rdb_via_ssh_tool_preserves_database_backed_route(monkeypat
         report_language="zh-CN",
         path_mode="auto",
         profile_overrides=None,
+        mysql_host=None,
+        mysql_database=None,
+        mysql_stage_batch_size=None,
         mysql_table=None,
         mysql_query=None,
         service=None,

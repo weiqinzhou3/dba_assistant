@@ -7,9 +7,9 @@ from typing import Any
 
 import yaml
 
-
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_CONFIG_PATH = REPO_ROOT / "config" / "config.yaml"
+DEFAULT_MYSQL_STAGE_BATCH_SIZE = 2000
 
 SUPPORTED_PRESET_NAMES = frozenset(
     {
@@ -43,6 +43,10 @@ class ModelConfig:
 class RuntimeConfig:
     default_output_mode: str = "summary"
     redis_socket_timeout: float = 5.0
+    mysql_stage_batch_size: int = DEFAULT_MYSQL_STAGE_BATCH_SIZE
+    mysql_connect_timeout_seconds: float = 5.0
+    mysql_read_timeout_seconds: float = 15.0
+    mysql_write_timeout_seconds: float = 30.0
 
 
 @dataclass(frozen=True)
@@ -116,6 +120,13 @@ def _load_runtime_config(data: dict[str, Any]) -> RuntimeConfig:
     return RuntimeConfig(
         default_output_mode=_require_string(data, "default_output_mode", "runtime"),
         redis_socket_timeout=float(data.get("redis_socket_timeout", 5.0)),
+        mysql_stage_batch_size=_require_positive_int(
+            data.get("mysql_stage_batch_size", DEFAULT_MYSQL_STAGE_BATCH_SIZE),
+            "runtime.mysql_stage_batch_size",
+        ),
+        mysql_connect_timeout_seconds=float(data.get("mysql_connect_timeout_seconds", 5.0)),
+        mysql_read_timeout_seconds=float(data.get("mysql_read_timeout_seconds", 15.0)),
+        mysql_write_timeout_seconds=float(data.get("mysql_write_timeout_seconds", 30.0)),
     )
 
 
@@ -180,3 +191,11 @@ def _resolve_repo_path(value: str | Path) -> Path:
     if path.is_absolute():
         return path
     return REPO_ROOT / path
+
+
+def _require_positive_int(value: Any, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"Config field {field_name} must be an integer.")
+    if value <= 0:
+        raise ValueError(f"Config field {field_name} must be > 0.")
+    return value

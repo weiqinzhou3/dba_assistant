@@ -817,6 +817,7 @@ def test_analyze_rdb_database_backed_route_uses_one_shared_staging_table_for_mul
             SampleInput(source=Path("/tmp/c.rdb"), kind=InputSourceKind.LOCAL_RDB),
         ],
         path_mode="database_backed_analysis",
+        mysql_stage_batch_size=2,
     )
     staged_tables: list[str] = []
 
@@ -850,6 +851,7 @@ def test_analyze_rdb_database_backed_route_uses_one_shared_staging_table_for_mul
     assert isinstance(result, AnalysisReport)
     assert len(set(staged_tables)) == 1
     assert result.metadata["route"] == "database_backed_analysis"
+    assert result.metadata["mysql_stage_batch_size"] == "2"
 
 
 def test_analyze_rdb_database_backed_route_prefers_stream_rows_result_over_parse_rows_result(

@@ -91,9 +91,12 @@ class RdbAnalysisRequest:
     path_mode: str = "auto"
     merge_multiple_inputs: bool = True
     profile_overrides: dict[str, object] = field(default_factory=dict)
+    mysql_host: str | None = None
+    mysql_port: int | None = None
     mysql_database: str | None = None
     mysql_table: str | None = None
     mysql_query: str | None = None
+    mysql_stage_batch_size: int | None = None
 
 
 @dataclass(frozen=True)

@@ -24,9 +24,12 @@ def analyze_rdb_tool(
     report_language: str = "zh-CN",
     path_mode: str = "auto",
     profile_overrides: dict[str, object] | None = None,
+    mysql_host: str | None = None,
+    mysql_port: int | None = None,
     mysql_database: str | None = None,
     mysql_table: str | None = None,
     mysql_query: str | None = None,
+    mysql_stage_batch_size: int | None = None,
     service: Callable[[RdbAnalysisRequest], object] | None = None,
 ):
     source_kind = _INPUT_KIND_MAP.get(input_kind, InputSourceKind.LOCAL_RDB)
@@ -37,9 +40,12 @@ def analyze_rdb_tool(
         report_language=report_language,
         path_mode=path_mode,
         profile_overrides=dict(profile_overrides or {}),
+        mysql_host=mysql_host,
+        mysql_port=mysql_port,
         mysql_database=mysql_database,
         mysql_table=mysql_table,
         mysql_query=mysql_query,
+        mysql_stage_batch_size=mysql_stage_batch_size,
     )
     runner = service or _run_phase3_analysis
     return runner(request)

@@ -32,9 +32,12 @@ def resolve_profile(profile_name: str, overrides: RdbOverrides) -> EffectiveProf
 
     sections = tuple(_as_str_list(profile_data.get("sections")))
     focus_prefixes = tuple(_as_str_list(profile_data.get("focus_prefixes", [])))
-    top_n = dict(_DEFAULT_TOP_N)
-    top_n.update(_as_int_mapping(profile_data.get("top_n", {})))
-    top_n.update(overrides.top_n)
+    top_n = normalize_profile_top_n(
+        {
+            **_as_int_mapping(profile_data.get("top_n", {})),
+            **overrides.top_n,
+        }
+    )
     effective_focus_prefixes = overrides.focus_prefixes or focus_prefixes
 
     return EffectiveProfile(
@@ -44,6 +47,19 @@ def resolve_profile(profile_name: str, overrides: RdbOverrides) -> EffectiveProf
         focus_only=overrides.focus_only,
         top_n=top_n,
     )
+
+
+def normalize_profile_top_n(top_n: int | dict[str, int] | None) -> dict[str, int]:
+    if top_n is None:
+        return dict(_DEFAULT_TOP_N)
+
+    if isinstance(top_n, int):
+        return {key: int(top_n) for key in _DEFAULT_TOP_N}
+
+    normalized = dict(_DEFAULT_TOP_N)
+    for key, value in top_n.items():
+        normalized[str(key)] = int(value)
+    return normalized
 
 
 def _load_profile(profile_name: str) -> dict[str, Any]:
@@ -57,6 +73,8 @@ def _load_profile(profile_name: str) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError(f"Profile file {path} must contain a mapping.")
     return data
+
+
 def _as_str_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         raise ValueError("Profile field must be a list of strings.")

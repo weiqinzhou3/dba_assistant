@@ -13,6 +13,16 @@ from dba_assistant.interface.hitl import CliApprovalHandler
 from dba_assistant.interface.types import InterfaceRequest
 
 
+def _positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid integer value: {value!r}") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("mysql-stage-batch-size must be > 0")
+    return parsed
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="dba-assistant")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -58,6 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
     ask_parser.add_argument("--mysql-password", default=None)
     ask_parser.add_argument("--mysql-table", default=None)
     ask_parser.add_argument("--mysql-query", default=None)
+    ask_parser.add_argument("--mysql-stage-batch-size", default=None, type=_positive_int)
     return parser
 
 
@@ -90,6 +101,7 @@ def main(argv: list[str] | None = None) -> int:
             mysql_password=args.mysql_password,
             mysql_table=args.mysql_table,
             mysql_query=args.mysql_query,
+            mysql_stage_batch_size=args.mysql_stage_batch_size,
         )
         result = handle_request(request, approval_handler=CliApprovalHandler())
         print(result)

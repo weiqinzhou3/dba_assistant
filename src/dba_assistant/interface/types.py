@@ -46,6 +46,7 @@ class InterfaceRequest:
     mysql_password: str | None = None
     mysql_table: str | None = None
     mysql_query: str | None = None
+    mysql_stage_batch_size: int | None = None
 
 
 @dataclass(frozen=True)

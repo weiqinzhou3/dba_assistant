@@ -93,10 +93,21 @@ class HdtRdbCliStrategy:
             output_path = Path(tmpdir) / "dump.json"
             os.mkfifo(output_path)
             error_box: dict[str, Exception] = {}
+            process_box: dict[str, subprocess.Popen] = {}
 
             def writer() -> None:
                 try:
-                    self._run_cli(["-c", "json", "-o", str(output_path), str(path)])
+                    # Modify _run_cli to return the process or handle it here
+                    cmd = [str(self._binary_path), "-c", "json", "-o", str(output_path), str(path)]
+                    p = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    process_box["p"] = p
+                    exit_code = p.wait()
+                    if exit_code != 0:
+                        raise RuntimeError(f"rdb command failed with {exit_code}")
                 except Exception as exc:  # noqa: BLE001
                     error_box["error"] = exc
 
@@ -106,7 +117,11 @@ class HdtRdbCliStrategy:
                 with output_path.open("r", encoding="utf-8") as handle:
                     yield from _iter_json_array_objects(handle)
             finally:
-                writer_thread.join()
+                # Force kill the process if still running to unblock FIFO
+                p = process_box.get("p")
+                if p and p.poll() is None:
+                    p.terminate()
+                writer_thread.join(timeout=2.0)
                 if "error" in error_box:
                     raise error_box["error"]
 
@@ -162,21 +177,29 @@ class HdtRdbCliStrategy:
     def _run_csv_command(self, path: Path, args: list[str]) -> list[dict[str, str]]:
         with tempfile.TemporaryDirectory(prefix="dba-assistant-rdb-csv-") as tmpdir:
             output_path = Path(tmpdir) / "report.csv"
-            self._run_cli([*args, "-o", str(output_path), str(path)])
+            # Ensure output flag is used correctly
+            full_args = list(args)
+            if "-o" not in full_args:
+                full_args.extend(["-o", str(output_path)])
+            full_args.append(str(path))
+            
+            self._run_cli(full_args)
             with output_path.open("r", encoding="utf-8", newline="") as handle:
                 return list(csv.DictReader(handle))
 
-    def _run_cli(self, args: list[str]) -> subprocess.CompletedProcess[str]:
-        completed = self._runner(
+    def _run_cli(self, args: list[str]) -> None:
+        """Run the CLI binary without capturing output to avoid pipe deadlocks."""
+        # Using DEVNULL for both stdout and stderr because the main data 
+        # is being redirected to a file or FIFO via the '-o' argument.
+        # This prevents the sub-process from blocking on a full pipe buffer.
+        process = subprocess.Popen(
             [str(self._binary_path), *args],
-            check=False,
-            text=True,
-            capture_output=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
-        if completed.returncode != 0:
-            detail = completed.stderr.strip() or completed.stdout.strip()
-            raise RuntimeError(f"HDT3213/rdb command failed: {detail}")
-        return completed
+        exit_code = process.wait()
+        if exit_code != 0:
+            raise RuntimeError(f"HDT3213/rdb command failed with exit code {exit_code}")
 
 
 class LegacyRdbtoolsStrategy:

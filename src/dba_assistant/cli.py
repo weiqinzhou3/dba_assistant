@@ -6,6 +6,7 @@ are delegated to the interface adapter and orchestrator layers.
 from __future__ import annotations
 
 import argparse
+import uuid
 from pathlib import Path
 
 from dba_assistant.interface.adapter import handle_request
@@ -28,7 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     ask_parser = subparsers.add_parser("ask")
-    ask_parser.add_argument("prompt")
+    ask_parser.add_argument("prompt", nargs="?", default=None)
     ask_parser.add_argument("--config", default=None)
     ask_parser.add_argument("--input", action="append", default=[], type=Path)
     ask_parser.add_argument("--profile", default=None)
@@ -77,8 +78,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "ask":
-        request = InterfaceRequest(
-            prompt=args.prompt,
+        # Initial request from CLI flags
+        initial_request = InterfaceRequest(
+            prompt=args.prompt or "",
             input_paths=args.input,
             output_path=args.output,
             config_path=args.config,
@@ -103,9 +105,92 @@ def main(argv: list[str] | None = None) -> int:
             mysql_query=args.mysql_query,
             mysql_stage_batch_size=args.mysql_stage_batch_size,
         )
-        result = handle_request(request, approval_handler=CliApprovalHandler())
-        print(result)
+
+        approval_handler = CliApprovalHandler()
+        thread_id = f"cli-session-{uuid.uuid4()}"
+        
+        # State to carry across turns
+        current_input_paths = list(args.input)
+        current_mysql_host = args.mysql_host
+        current_mysql_port = args.mysql_port
+        current_mysql_user = args.mysql_user
+        current_mysql_database = args.mysql_database
+        current_mysql_table = args.mysql_table
+
+        def _update_state(normalized: NormalizedRequest):
+            nonlocal current_input_paths, current_mysql_host, current_mysql_port
+            nonlocal current_mysql_user, current_mysql_database, current_mysql_table
+            if normalized.runtime_inputs.input_paths:
+                current_input_paths = list(normalized.runtime_inputs.input_paths)
+            if normalized.runtime_inputs.mysql_host:
+                current_mysql_host = normalized.runtime_inputs.mysql_host
+            if normalized.runtime_inputs.mysql_port:
+                current_mysql_port = normalized.runtime_inputs.mysql_port
+            if normalized.runtime_inputs.mysql_user:
+                current_mysql_user = normalized.runtime_inputs.mysql_user
+            if normalized.runtime_inputs.mysql_database:
+                current_mysql_database = normalized.runtime_inputs.mysql_database
+            if normalized.runtime_inputs.mysql_table:
+                current_mysql_table = normalized.runtime_inputs.mysql_table
+
+        if args.prompt:
+            # Execute the first turn if a prompt was provided
+            print("\n--- DBA Assistant: Thinking... ---")
+            result, last_norm = handle_request(
+                initial_request, 
+                approval_handler=approval_handler,
+                thread_id=thread_id,
+            )
+            print(f"\n{result}")
+            _update_state(last_norm)
+
+        # Enter the Interactive REPL Loop
+        print("\n--- Welcome to DBA Assistant Shell ---")
+        print("--- (Ctrl+C or 'exit' to quit) ---")
+        
+        while True:
+            try:
+                user_input = input("\nDBA Assistant > ").strip()
+                if not user_input or user_input.lower() in ("exit", "quit", "q"):
+                    break
+                
+                # Merge current state into the new request
+                follow_up = InterfaceRequest(
+                    prompt=user_input,
+                    config_path=args.config,
+                    input_paths=current_input_paths,
+                    mysql_host=current_mysql_host,
+                    mysql_port=current_mysql_port,
+                    mysql_user=current_mysql_user,
+                    mysql_database=current_mysql_database,
+                    mysql_table=current_mysql_table,
+                    mysql_password=args.mysql_password, # Always use initial/env password
+                    profile=args.profile,
+                    report_format=args.report_format,
+                    output_path=args.output,
+                )
+                
+                print("\n--- Thinking... ---")
+                result, last_norm = handle_request(
+                    follow_up, 
+                    approval_handler=approval_handler,
+                    thread_id=thread_id,
+                )
+                print(f"\n{result}")
+                _update_state(last_norm)
+                
+            except KeyboardInterrupt:
+                print("\nExiting interactive mode.")
+                break
+            except Exception as exc:
+                print(f"\nError: {exc}")
+
         return 0
 
     parser.error(f"Unsupported command: {args.command}")
     return 2
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main())

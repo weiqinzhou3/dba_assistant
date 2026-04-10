@@ -9,15 +9,11 @@ from dba_assistant.interface.types import ApprovalRequest, ApprovalResponse, App
 
 
 class HumanApprovalHandler(Protocol):
-    """Protocol for HITL confirmation handlers.
-
-    Implementations:
-    - CliApprovalHandler  — interactive stdin prompt (CLI)
-    - AutoApproveHandler  — testing / trusted-automation
-    - (future) WebhookApprovalHandler — Web / API async callback
-    """
+    """Protocol for HITL confirmation handlers."""
 
     def request_approval(self, request: ApprovalRequest) -> ApprovalResponse: ...
+
+    def collect_input(self, prompt: str, secure: bool = False) -> str: ...
 
 
 class CliApprovalHandler:
@@ -33,13 +29,27 @@ class CliApprovalHandler:
         status = ApprovalStatus.APPROVED if response in ("y", "yes") else ApprovalStatus.DENIED
         return ApprovalResponse(status=status, action=request.action)
 
+    def collect_input(self, prompt: str, secure: bool = False) -> str:
+        import getpass
+        print(f"\n[Input Required] {prompt}")
+        if secure:
+            return getpass.getpass("Input: ").strip()
+        return input("Input: ").strip()
+
 
 class AutoApproveHandler:
     """Auto-approve handler for testing and trusted automation."""
 
-    def __init__(self, *, approve: bool = True, deny_reason: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        approve: bool = True,
+        deny_reason: str | None = None,
+        predefined_inputs: dict[str, str] | None = None,
+    ) -> None:
         self._approve = approve
         self._deny_reason = deny_reason
+        self._inputs = predefined_inputs or {}
 
     def request_approval(self, request: ApprovalRequest) -> ApprovalResponse:
         status = ApprovalStatus.APPROVED if self._approve else ApprovalStatus.DENIED
@@ -48,6 +58,13 @@ class AutoApproveHandler:
             action=request.action,
             reason=None if status is ApprovalStatus.APPROVED else self._deny_reason,
         )
+
+    def collect_input(self, prompt: str, secure: bool = False) -> str:
+        # Simple heuristic: try to find a key in predefined_inputs that matches the prompt
+        for key, value in self._inputs.items():
+            if key.lower() in prompt.lower():
+                return value
+        return ""
 
 
 class AuditedApprovalHandler:
@@ -90,3 +107,7 @@ class AuditedApprovalHandler:
             action=response.action,
             reason=sanitized_reason,
         )
+
+    def collect_input(self, prompt: str, secure: bool = False) -> str:
+        # Note: input collection is not audited currently to protect potential secrets
+        return self._delegate.collect_input(prompt, secure=secure)

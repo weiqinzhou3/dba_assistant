@@ -15,4 +15,5 @@ def build_model(config: ModelConfig) -> ChatOpenAI:
         base_url=config.base_url,
         temperature=config.temperature,
         stream_usage=False,
+        max_retries=5,  # Automatically retry on 429 or 5xx errors
     )

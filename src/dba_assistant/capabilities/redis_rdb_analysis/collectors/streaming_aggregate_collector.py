@@ -76,6 +76,7 @@ class StreamingAnalysisPipeline:
         key_type = str(row["key_type"])
         size_bytes = _coerce_required_int(row.get("size_bytes"), "size_bytes")
         has_expiration = _coerce_bool(row.get("has_expiration"))
+        
         prefix_label = _prefix_label(key_name)
 
         self._total_keys += 1
@@ -89,6 +90,7 @@ class StreamingAnalysisPipeline:
         self._key_type_bytes[key_type] += size_bytes
         self._prefix_counts[prefix_label] += 1
         self._prefix_bytes[prefix_label] += size_bytes
+        
         self._big_keys.add(
             key_name=key_name,
             key_type=key_type,
@@ -257,9 +259,20 @@ class StreamingAggregateCollector:
             file_start = perf_counter()
             file_rows = 0
             next_progress_mark = self._progress_log_interval
+            
+            # Real-time console reporting setup
             for row in streamed.rows:
                 pipeline.consume_row(dict(row))
                 file_rows += 1
+                
+                if file_rows % 10_000 == 0:
+                    elapsed = perf_counter() - file_start
+                    rps = file_rows / elapsed if elapsed > 0 else 0
+                    sys.stderr.write(
+                        f"\r[RDB Streaming] Processed {file_rows:,} rows | Speed: {rps:,.0f} rows/s | Mem: {_peak_memory_human()}"
+                    )
+                    sys.stderr.flush()
+
                 if file_rows >= next_progress_mark:
                     logger.info(
                         "streaming aggregate progress",
@@ -272,41 +285,21 @@ class StreamingAggregateCollector:
                         },
                     )
                     next_progress_mark += self._progress_log_interval
+            
+            sys.stderr.write("\n")
+            sys.stderr.flush()
 
             file_elapsed = perf_counter() - file_start
             file_rows_per_second = file_rows / file_elapsed if file_elapsed > 0 else 0.0
             progress.append(
                 f"path={path} rows={file_rows} elapsed={file_elapsed:.3f}s rows_per_sec={file_rows_per_second:.2f}"
             )
-            logger.info(
-                "streaming aggregate phase complete",
-                extra={
-                    "event_name": "redis_rdb_stream_phase",
-                    "phase": "parse_aggregate",
-                    "path": str(path),
-                    "parser_strategy": streamed.strategy_name,
-                    "rows_processed": file_rows,
-                    "rows_per_sec": round(file_rows_per_second, 2),
-                    "elapsed_seconds": round(file_elapsed, 3),
-                    "peak_memory_bytes_estimate": _peak_memory_bytes_estimate(),
-                },
-            )
 
         total_elapsed = perf_counter() - total_start
         total_rows = pipeline.rows_processed
         total_rows_per_second = total_rows / total_elapsed if total_elapsed > 0 else 0.0
         peak_memory = _peak_memory_bytes_estimate()
-        logger.info(
-            "streaming aggregate total complete",
-            extra={
-                "event_name": "redis_rdb_stream_phase",
-                "phase": "parse_aggregate_total",
-                "rows_processed": total_rows,
-                "rows_per_sec": round(total_rows_per_second, 2),
-                "elapsed_seconds": round(total_elapsed, 3),
-                "peak_memory_bytes_estimate": peak_memory,
-            },
-        )
+        
         metadata = {
             "analysis_mode": "streaming_summary",
             "rows_processed": str(total_rows),
@@ -338,10 +331,22 @@ def _matches_prefix(key_name: str, prefix: str) -> bool:
     return key_name == prefix
 
 
+def _peak_memory_human() -> str:
+    bytes_val = _peak_memory_bytes_estimate()
+    if bytes_val is None:
+        return "N/A"
+    
+    val = float(bytes_val)
+    for unit in ["B", "KB", "MB", "GB"]:
+        if val < 1024:
+            return f"{val:.1f} {unit}"
+        val /= 1024
+    return f"{val:.1f} TB"
+
+
 def _peak_memory_bytes_estimate() -> int | None:
     try:
         import resource
-
         raw_value = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
     except Exception:  # noqa: BLE001
         return None

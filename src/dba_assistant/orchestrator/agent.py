@@ -49,38 +49,21 @@ APPROVAL_REQUEST_PHRASES = (
 SYSTEM_PROMPT = """\
 You are DBA Assistant, a specialized database administration assistant focused on Redis diagnostics and analysis.
 
-Available capabilities (use the corresponding tool):
-1. **analyze_local_rdb** — Analyze local Redis RDB dump files. Use when local .rdb file paths are provided.
-2. **analyze_preparsed_dataset** — Analyze a preparsed dataset from local JSON or MySQL-backed source.
-3. **discover_remote_rdb** — Read-only discovery of remote Redis RDB location and persistence info.
-4. **fetch_remote_rdb_via_ssh** — Fetch a remote RDB via SSH (requires human approval) and, when needed, trigger BGSAVE for a fresh snapshot before analysis.
-5. **redis_ping / redis_info / redis_config_get / redis_slowlog_get / redis_client_list** — \
-Live read-only Redis inspection.
-6. **mysql_read_query** — Execute a bounded read-only SQL query against MySQL.
-7. **load_preparsed_dataset_from_mysql** — Load a preparsed dataset from a MySQL table.
-8. **stage_rdb_rows_to_mysql** — Stage parsed RDB rows into MySQL for database-backed analysis \
-(requires human approval).
+### Standard Operating Procedure (SOP)
+1. **Inspect First**: Always call `inspect_local_rdb` first to check file size and existence, UNLESS the file metadata was already provided via `[Automated File Inspection]` or a previous turn.
+2. **Handle Large Files (> 512MB)**:
+   - **Step 1 (Intent)**: Tell the user the file is large and ask if they agree to use MySQL-backed staging for full analysis. **Wait for user confirmation.**
+   - **Step 2 (User Choice)**:
+     - If user says **Yes**: Follow Step 3 & 4 (collect config if missing, then stage).
+     - If user says **No** or "just analyze": Warn about potential memory/partial analysis risks, then **immediately call `analyze_local_rdb_stream`**.
+   - **Step 3 (Collection)**: If info is missing, use `ask_user_for_config` to collect host, user, and password from the user interactively.
+   - **Step 4 (Execution)**: Once info is ready, call `stage_local_rdb_to_mysql` (triggers HITL approval) then `analyze_staged_rdb`.
+3. **Handle Small Files (< 512MB)**: Call `analyze_local_rdb_stream` directly.
 
-Rules:
-- If explicit local input paths are already present in context, treat them as authoritative host filesystem paths.
-- For explicit local `.rdb` paths, do not use filesystem browsing tools to verify, replace, or search for alternatives before analysis.
-- Do not claim that an explicit local path is missing unless analyze_local_rdb itself returns that host-side validation error.
-- When explicit local `.rdb` paths are provided, call analyze_local_rdb directly rather than exploring the repository for sample files.
-- Redis inspection tools are read-only. Remote fetch remains approval-gated, and fresh_snapshot may trigger approved BGSAVE before fetch.
-- For remote RDB: call discover_remote_rdb first, then fetch_remote_rdb_via_ssh.
-- When the user asks for the latest/fresh RDB snapshot, use fetch_remote_rdb_via_ssh with acquisition_mode='fresh_snapshot'.
-- For approval-gated tools such as fetch_remote_rdb_via_ssh and stage_rdb_rows_to_mysql, never ask the user for approval in plain text.
-- fetch_remote_rdb_via_ssh collects approval through runtime interrupt_on.
-- stage_rdb_rows_to_mysql collects approval through the shared human approval handler before writing.
-- In single-run CLI flows, do not end with text like "Do you approve?" or "Please confirm" when the next step should be an approval-gated tool.
-- If Redis connection details are available and the user did not provide remote_rdb_path, do not ask the user for dir/dbfilename first; discover them by executing Redis discovery.
-- If Redis discovery fails, surface the exact failure reason and stage. Do not paraphrase it as missing dir/dbfilename unless discovery explicitly returned missing_dir/missing_dbfilename.
-- Only ask the user for dir/dbfilename/remote_rdb_path when Redis discovery explicitly returned missing_dir/missing_dbfilename and you need the user to override it.
-- MySQL read operations (mysql_read_query, load_preparsed_dataset_from_mysql) are lower-risk.
-- MySQL write operations (stage_rdb_rows_to_mysql) require human approval before execution.
-- Use the profile the user requests (generic, rcs). Default to generic.
-- Generate reports in the requested format (summary / docx). Default to summary.
-- Be concise. Return tool output directly when it already answers the user's question.
+### Rules & Constraints
+- **Respect User Overrides**: If the user insists on "direct analysis", "direct execution", or says "just do it" after being warned about MySQL, you MUST immediately call `analyze_local_rdb_stream`.
+- **Path Fidelity**: Use the EXACT file path established earlier in the conversation (e.g., from `[Automated File Inspection]`). Do not invent default file paths.
+- **Stateful Intelligence**: You are in a stateful conversation. Remember the user's previous refusals and file paths.
 """
 
 
@@ -142,19 +125,12 @@ def run_orchestrated(
     *,
     config: AppConfig,
     approval_handler: HumanApprovalHandler,
+    thread_id: str | None = None,
 ) -> str:
     """Run the unified Deep Agent and return the final output."""
-    shortcut = _run_explicit_local_rdb_analysis(
-        request,
-        config=config,
-        approval_handler=approval_handler,
-    )
-    if shortcut is not None:
-        return shortcut
-
     agent = build_unified_agent(request, config, approval_handler)
     user_message = _build_user_message(request)
-    run_config = {"configurable": {"thread_id": f"dba-assistant-{uuid4()}"}}
+    run_config = {"configurable": {"thread_id": thread_id or f"dba-assistant-{uuid4()}"}}
     result = agent.invoke(
         {"messages": [{"role": "user", "content": user_message}]},
         config=run_config,
@@ -202,55 +178,6 @@ def run_orchestrated(
         )
 
     return extract_agent_output(result)
-
-
-def _run_explicit_local_rdb_analysis(
-    request: NormalizedRequest,
-    *,
-    config: AppConfig,
-    approval_handler: HumanApprovalHandler,
-) -> str | None:
-    if not _has_explicit_local_rdb_inputs(request):
-        return None
-
-    mysql_connection = _build_mysql_connection(request, config)
-    tools = _build_all_tools_compatible(
-        request,
-        mysql_connection=mysql_connection,
-        approval_handler=approval_handler,
-    )
-    analyze_tool = next(
-        (tool for tool in tools if getattr(tool, "__name__", "") == "analyze_local_rdb"),
-        None,
-    )
-    if analyze_tool is None:
-        raise RuntimeError("analyze_local_rdb tool is unavailable for explicit local RDB inputs.")
-
-    profile_name = request.rdb_overrides.profile_name or "generic"
-    output_mode = request.runtime_inputs.output_mode or "summary"
-    report_format = request.runtime_inputs.report_format or "summary"
-    output_path = str(request.runtime_inputs.output_path) if request.runtime_inputs.output_path else ""
-    focus_prefixes = ",".join(request.rdb_overrides.focus_prefixes)
-    input_paths = ",".join(str(path) for path in request.runtime_inputs.input_paths)
-    return analyze_tool(
-        input_paths=input_paths,
-        profile_name=profile_name,
-        output_mode=output_mode,
-        report_format=report_format,
-        output_path=output_path,
-        focus_prefixes=focus_prefixes,
-    )
-
-
-def _has_explicit_local_rdb_inputs(request: NormalizedRequest) -> bool:
-    paths = request.runtime_inputs.input_paths
-    if not paths:
-        return False
-    if request.runtime_inputs.input_kind == "local_rdb":
-        return all(str(path).lower().endswith(".rdb") for path in paths)
-    if request.runtime_inputs.redis_host is not None:
-        return False
-    return all(str(path).lower().endswith(".rdb") for path in paths)
 
 
 def _build_all_tools_compatible(

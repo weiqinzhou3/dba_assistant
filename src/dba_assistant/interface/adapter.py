@@ -6,12 +6,12 @@ Handles request normalization, HITL delegation, and artifact formatting.
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 
 from dba_assistant.application.prompt_parser import normalize_raw_request
 from dba_assistant.application.request_models import (
     DEFAULT_LOOPBACK_HOST,
     DEFAULT_MYSQL_DATABASE,
-    DEFAULT_MYSQL_STAGE_BATCH_SIZE,
     DEFAULT_MYSQL_USER,
     NormalizedRequest,
 )
@@ -28,15 +28,9 @@ def handle_request(
     request: InterfaceRequest,
     *,
     approval_handler: HumanApprovalHandler,
-) -> str:
-    """Unified entry point for all interfaces.
-
-    1. Load config
-    2. Normalize raw prompt into structured request
-    3. Apply interface-level overrides (--profile, --output, etc.)
-    4. Delegate to the orchestrator (unified Deep Agent)
-    5. Return formatted output
-    """
+    thread_id: str | None = None,
+) -> tuple[str, NormalizedRequest]:
+    """Unified entry point for all interfaces."""
     config = load_app_config(request.config_path)
     bootstrap_observability(getattr(config, "observability", ObservabilityConfig()))
 
@@ -58,12 +52,34 @@ def handle_request(
     raw_request_summary = _summarize_interface_request(request)
     audited_handler = AuditedApprovalHandler(approval_handler)
 
+    # Fast-Track: Inject pre-inspected file metadata
+    if normalized.runtime_inputs.input_paths:
+        metadata_lines = []
+        for path in normalized.runtime_inputs.input_paths:
+            p = Path(path).expanduser()
+            if p.exists() and p.is_file():
+                size = p.stat().st_size
+                metadata_lines.append(f"- {path}: {size / (1024*1024*1024):.2f} GB (exists)")
+            else:
+                metadata_lines.append(f"- {path}: missing or invalid")
+        
+        if metadata_lines:
+            pre_inspection_context = "\n[Automated File Inspection]\n" + "\n".join(metadata_lines)
+            pre_inspection_context += "\n**CRITICAL**: Stick to these files. Do NOT search for or analyze other files unless explicitly asked."
+            normalized = replace(normalized, prompt=normalized.prompt + pre_inspection_context)
+
     with start_execution_session(
         interface_surface=request.surface,
         normalized_request=normalized,
         raw_request_summary=raw_request_summary,
     ):
-        return run_orchestrated(normalized, config=config, approval_handler=audited_handler)
+        result = run_orchestrated(
+            normalized,
+            config=config,
+            approval_handler=audited_handler,
+            thread_id=thread_id,
+        )
+        return result, normalized
 
 
 def _apply_overrides(
@@ -91,126 +107,68 @@ def _apply_overrides(
         rdb_overrides = replace(rdb_overrides, profile_name=request.profile)
 
     if request.input_kind is not None:
-        runtime_inputs = replace(runtime_inputs, input_kind=request.input_kind)
+        rdb_overrides = replace(rdb_overrides, input_kind=request.input_kind)
 
     if request.path_mode is not None:
-        runtime_inputs = replace(runtime_inputs, path_mode=request.path_mode)
+        rdb_overrides = replace(rdb_overrides, route_name=request.path_mode)
 
-    if request.redis_password is not None:
-        secrets = replace(normalized.secrets, redis_password=request.redis_password)
-        normalized = replace(normalized, secrets=secrets)
-
-    if request.ssh_host is not None:
-        runtime_inputs = replace(runtime_inputs, ssh_host=request.ssh_host)
-
-    if request.ssh_port is not None:
-        runtime_inputs = replace(runtime_inputs, ssh_port=request.ssh_port)
-
-    if request.ssh_username is not None:
-        runtime_inputs = replace(runtime_inputs, ssh_username=request.ssh_username)
-
-    if request.remote_rdb_path is not None:
-        runtime_inputs = replace(
-            runtime_inputs,
-            remote_rdb_path=request.remote_rdb_path,
-            remote_rdb_path_source=request.remote_rdb_path_source or "user_override",
-        )
-
-    if request.require_fresh_rdb_snapshot is not None:
-        runtime_inputs = replace(
-            runtime_inputs,
-            require_fresh_rdb_snapshot=request.require_fresh_rdb_snapshot,
-        )
-
-    if request.mysql_host is not None:
-        runtime_inputs = replace(runtime_inputs, mysql_host=request.mysql_host)
-
-    if request.mysql_port is not None:
-        runtime_inputs = replace(runtime_inputs, mysql_port=request.mysql_port)
-
-    if request.mysql_user is not None:
-        runtime_inputs = replace(runtime_inputs, mysql_user=request.mysql_user)
-
-    if request.mysql_database is not None:
-        runtime_inputs = replace(runtime_inputs, mysql_database=request.mysql_database)
-
-    if request.mysql_table is not None:
-        runtime_inputs = replace(runtime_inputs, mysql_table=request.mysql_table)
-
-    if request.mysql_query is not None:
-        runtime_inputs = replace(runtime_inputs, mysql_query=request.mysql_query)
-
-    if request.mysql_stage_batch_size is not None:
-        runtime_inputs = replace(runtime_inputs, mysql_stage_batch_size=request.mysql_stage_batch_size)
-
-    if request.mysql_password is not None:
-        secrets = replace(normalized.secrets, mysql_password=request.mysql_password)
-        normalized = replace(normalized, secrets=secrets)
-
-    if request.ssh_password is not None:
-        secrets = replace(normalized.secrets, ssh_password=request.ssh_password)
-        normalized = replace(normalized, secrets=secrets)
-
-    return replace(normalized, runtime_inputs=runtime_inputs, rdb_overrides=rdb_overrides)
+    return replace(
+        normalized,
+        runtime_inputs=runtime_inputs,
+        rdb_overrides=rdb_overrides,
+    )
 
 
 def _apply_runtime_defaults(
     normalized: NormalizedRequest,
-    config,
+    config: AppConfig,
 ) -> NormalizedRequest:
-    runtime_inputs = normalized.runtime_inputs
-    if runtime_inputs.mysql_stage_batch_size is None:
-        runtime_inputs = replace(
-            runtime_inputs,
-            mysql_stage_batch_size=getattr(
-                config.runtime,
-                "mysql_stage_batch_size",
-                DEFAULT_MYSQL_STAGE_BATCH_SIZE,
-            ),
-        )
-    return replace(normalized, runtime_inputs=runtime_inputs)
+    """Inject configuration defaults into the request."""
+    runtime = normalized.runtime_inputs
+    if runtime.mysql_stage_batch_size is None:
+        runtime = replace(runtime, mysql_stage_batch_size=config.runtime.mysql_stage_batch_size)
+    
+    return replace(normalized, runtime_inputs=runtime)
 
 
 def _apply_conventional_defaults(normalized: NormalizedRequest) -> NormalizedRequest:
-    runtime_inputs = normalized.runtime_inputs
-    if runtime_inputs.path_mode == "database_backed_analysis" or runtime_inputs.input_kind == "preparsed_mysql":
-        runtime_inputs = replace(
-            runtime_inputs,
-            mysql_host=runtime_inputs.mysql_host or DEFAULT_LOOPBACK_HOST,
-            mysql_user=runtime_inputs.mysql_user or DEFAULT_MYSQL_USER,
-            mysql_database=runtime_inputs.mysql_database or DEFAULT_MYSQL_DATABASE,
-        )
+    """Apply business-level conventional defaults."""
+    runtime = normalized.runtime_inputs
+    if not runtime.mysql_host:
+        runtime = replace(runtime, mysql_host=DEFAULT_LOOPBACK_HOST)
+    if not runtime.mysql_database:
+        runtime = replace(runtime, mysql_database=DEFAULT_MYSQL_DATABASE)
+    if not runtime.mysql_user:
+        runtime = replace(runtime, mysql_user=DEFAULT_MYSQL_USER)
+    return replace(normalized, runtime_inputs=runtime)
 
-    return replace(normalized, runtime_inputs=runtime_inputs)
 
-
-def _summarize_interface_request(request: InterfaceRequest) -> dict[str, object]:
-    return sanitize_mapping(
-        {
-            "surface": request.surface.value,
-            "prompt_summary": summarize_prompt(request.prompt),
-            "input_paths": [str(path) for path in request.input_paths],
-            "output_path": None if request.output_path is None else str(request.output_path),
-            "config_path": request.config_path,
-            "profile": request.profile,
-            "report_format": request.report_format,
-            "input_kind": request.input_kind,
-            "path_mode": request.path_mode,
-            "ssh_host": request.ssh_host,
-            "ssh_port": request.ssh_port,
-            "ssh_username": request.ssh_username,
-            "remote_rdb_path": request.remote_rdb_path,
-            "mysql_host": request.mysql_host,
-            "mysql_port": request.mysql_port,
-            "mysql_user": request.mysql_user,
-            "mysql_database": request.mysql_database,
-            "mysql_table": request.mysql_table,
-            "mysql_query": request.mysql_query,
-            "mysql_stage_batch_size": request.mysql_stage_batch_size,
-            "secret_presence": {
-                "redis_password": bool(request.redis_password),
-                "ssh_password": bool(request.ssh_password),
-                "mysql_password": bool(request.mysql_password),
-            },
-        }
-    )
+def _summarize_interface_request(request: InterfaceRequest) -> dict[str, Any]:
+    """Provide a summarized version of the raw interface request for auditing."""
+    return {
+        "surface": request.surface,
+        "prompt_summary": summarize_prompt(request.prompt),
+        "input_paths": [str(p) for p in request.input_paths],
+        "output_path": str(request.output_path) if request.output_path else None,
+        "config_path": str(request.config_path) if request.config_path else None,
+        "profile": request.profile,
+        "report_format": request.report_format,
+        "input_kind": request.input_kind,
+        "path_mode": request.path_mode,
+        "ssh_host": request.ssh_host,
+        "ssh_port": request.ssh_port,
+        "ssh_username": request.ssh_username,
+        "remote_rdb_path": request.remote_rdb_path,
+        "mysql_host": request.mysql_host,
+        "mysql_port": request.mysql_port,
+        "mysql_user": request.mysql_user,
+        "mysql_database": request.mysql_database,
+        "mysql_table": request.mysql_table,
+        "mysql_query": request.mysql_query,
+        "mysql_stage_batch_size": request.mysql_stage_batch_size,
+        "secret_presence": {
+            "redis_password": bool(request.redis_password),
+            "ssh_password": bool(request.ssh_password),
+            "mysql_password": bool(request.mysql_password),
+        },
+    }

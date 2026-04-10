@@ -79,9 +79,28 @@ def build_all_tools(
     tools: list = []
     mysql_adaptor = MySQLAdaptor() if mysql_connection is not None else None
 
-    # Local RDB analysis (always available)
+    # Local RDB analysis & inspection
     tools.append(
-        _make_analyze_local_rdb_tool(
+        _make_inspect_local_rdb_tool()
+    )
+    tools.append(
+        _make_analyze_local_rdb_stream_tool(
+            request,
+            mysql_adaptor=mysql_adaptor,
+            mysql_connection=mysql_connection,
+            approval_handler=approval_handler,
+        )
+    )
+    tools.append(
+        _make_analyze_staged_rdb_tool(
+            request,
+            mysql_adaptor=mysql_adaptor,
+            mysql_connection=mysql_connection,
+            approval_handler=approval_handler,
+        )
+    )
+    tools.append(
+        _make_stage_local_rdb_to_mysql_tool(
             request,
             mysql_adaptor=mysql_adaptor,
             mysql_connection=mysql_connection,
@@ -133,21 +152,72 @@ def build_all_tools(
             )
         )
 
+    # Generic input collection tool
+    if approval_handler is not None:
+        tools.append(_make_ask_user_for_config_tool(approval_handler))
+
     return [_instrument_tool(tool) for tool in tools]
+
+
+# ---------------------------------------------------------------------------
+# Local RDB inspection (Phase 3)
+# ---------------------------------------------------------------------------
+
+def _make_inspect_local_rdb_tool():
+    """Tool to provide file metadata to the LLM."""
+
+    def inspect_local_rdb(input_paths: str) -> str:
+        paths = [Path(p.strip()).expanduser() for p in input_paths.split(",") if p.strip()]
+        if not paths:
+            return "Error: no input paths provided."
+
+        results = []
+        for path in paths:
+            exists = path.exists()
+            size = path.stat().st_size if exists and path.is_file() else 0
+            results.append(
+                {
+                    "path": str(path),
+                    "exists": exists,
+                    "is_file": path.is_file() if exists else False,
+                    "size_bytes": size,
+                    "size_human": _human_readable_size(size),
+                }
+            )
+        return json.dumps(results, indent=2)
+
+    return _named_tool(
+        inspect_local_rdb,
+        "inspect_local_rdb",
+        (
+            "Inspect local Redis RDB dump files to see metadata before analysis. "
+            "Returns JSON with existence, size, and file status. "
+            "Use this BEFORE analysis to decide if a file is too large for direct analysis. "
+            "Parameter: input_paths (comma-separated file paths)."
+        ),
+    )
+
+
+def _human_readable_size(size: int) -> str:
+    for unit in ["B", "KB", "MB", "GB"]:
+        if size < 1024:
+            return f"{size:.2f} {unit}"
+        size /= 1024
+    return f"{size:.2f} TB"
 
 
 # ---------------------------------------------------------------------------
 # Local RDB analysis (Phase 3)
 # ---------------------------------------------------------------------------
 
-def _make_analyze_local_rdb_tool(
+def _make_analyze_local_rdb_stream_tool(
     request: NormalizedRequest,
     *,
     mysql_adaptor: MySQLAdaptor | None = None,
     mysql_connection: MySQLConnectionConfig | None = None,
     approval_handler: HumanApprovalHandler | None = None,
 ):
-    """Combined analyze + report tool for local RDB files."""
+    """Combined analyze + report tool for local RDB files (streaming)."""
 
     analysis_service = _make_phase3_analysis_service(
         request=request,
@@ -156,7 +226,7 @@ def _make_analyze_local_rdb_tool(
         approval_handler=approval_handler,
     )
 
-    def analyze_local_rdb(
+    def analyze_local_rdb_stream(
         input_paths: str,
         profile_name: str = "generic",
         output_mode: str = "",
@@ -192,16 +262,10 @@ def _make_analyze_local_rdb_tool(
                 "input_kind": "local_rdb",
                 "profile_name": profile_name,
                 "report_language": request.runtime_inputs.report_language,
-                "path_mode": request.runtime_inputs.path_mode or request.rdb_overrides.route_name or "auto",
+                "path_mode": "direct_rdb_analysis",  # Locked to streaming
                 "profile_overrides": overrides,
-                "mysql_host": request.runtime_inputs.mysql_host,
-                "mysql_stage_batch_size": request.runtime_inputs.mysql_stage_batch_size,
                 "service": analysis_service,
             }
-            if _callable_accepts_keyword(analyze_rdb_tool, "mysql_port"):
-                analyze_kwargs["mysql_port"] = request.runtime_inputs.mysql_port
-            if request.runtime_inputs.mysql_database:
-                analyze_kwargs["mysql_database"] = request.runtime_inputs.mysql_database
             analysis = analyze_rdb_tool(
                 **analyze_kwargs,
             )
@@ -243,22 +307,203 @@ def _make_analyze_local_rdb_tool(
         )
         artifact = _generate(analysis, config)
         if artifact.content is not None:
-            return _append_mysql_runtime_note(artifact.content, analysis=analysis)
+            return artifact.content
         if artifact.output_path is not None:
             return str(artifact.output_path)
         return "Analysis complete but no output generated."
 
     return _named_tool(
-        analyze_local_rdb,
-        "analyze_local_rdb",
+        analyze_local_rdb_stream,
+        "analyze_local_rdb_stream",
         (
-            "Analyze local Redis RDB dump files and generate a report. "
+            "Analyze local Redis RDB dump files using direct streaming and generate a report. "
+            "Best for small to medium files (< 512MB). "
             "Parameters: input_paths (comma-separated file paths), "
             "profile_name ('generic' or 'rcs'), "
             "output_mode ('summary' or 'report'), "
             "report_format ('summary' or 'docx'), "
             "output_path (file path, required for docx), "
             "focus_prefixes (optional, comma-separated key prefixes like 'cache:*,session:*')."
+        ),
+    )
+
+
+def _make_analyze_staged_rdb_tool(
+    request: NormalizedRequest,
+    *,
+    mysql_adaptor: MySQLAdaptor | None = None,
+    mysql_connection: MySQLConnectionConfig | None = None,
+    approval_handler: HumanApprovalHandler | None = None,
+):
+    """Analyze RDB data already staged in MySQL."""
+
+    analysis_service = _make_phase3_analysis_service(
+        request=request,
+        mysql_adaptor=mysql_adaptor,
+        mysql_connection=mysql_connection,
+        approval_handler=approval_handler,
+    )
+
+    def analyze_staged_rdb(
+        mysql_table: str,
+        mysql_run_id: str = "manual",
+        profile_name: str = "generic",
+        output_mode: str = "",
+        report_format: str = "",
+        output_path: str = "",
+        focus_prefixes: str = "",
+    ) -> str:
+        if not mysql_table:
+            return "Error: mysql_table is required for staged analysis."
+
+        overrides: dict[str, object] = {}
+        if focus_prefixes:
+            overrides["focus_prefixes"] = tuple(
+                p.strip() for p in focus_prefixes.split(",") if p.strip()
+            )
+        elif request.rdb_overrides.focus_prefixes:
+            overrides["focus_prefixes"] = request.rdb_overrides.focus_prefixes
+
+        try:
+            analyze_kwargs = {
+                "prompt": request.prompt,
+                "input_paths": ["mysql:staged"],
+                "input_kind": "local_rdb",  # Indicates origin
+                "profile_name": profile_name,
+                "report_language": request.runtime_inputs.report_language,
+                "path_mode": "database_backed_analysis",  # Locked to MySQL backed
+                "profile_overrides": overrides,
+                "mysql_host": request.runtime_inputs.mysql_host,
+                "mysql_database": request.runtime_inputs.mysql_database,
+                "mysql_table": mysql_table,
+                "service": analysis_service,
+            }
+            analysis = analyze_rdb_tool(**analyze_kwargs)
+        except ValueError as exc:
+            return f"Error: {exc}"
+
+        return _render_analysis_output(
+            analysis,
+            runtime_inputs=request.runtime_inputs,
+            output_mode=output_mode or request.runtime_inputs.output_mode or "summary",
+            report_format=report_format or request.runtime_inputs.report_format or "summary",
+            output_path=Path(output_path) if output_path else request.runtime_inputs.output_path,
+        )
+
+    return _named_tool(
+        analyze_staged_rdb,
+        "analyze_staged_rdb",
+        (
+            "Analyze Redis RDB data that has been previously staged in a MySQL table. "
+            "Use this AFTER stage_rdb_rows_to_mysql. "
+            "Parameters: mysql_table (the staging table name), mysql_run_id, "
+            "profile_name, output_mode, report_format, output_path, focus_prefixes."
+        ),
+    )
+
+
+def _make_stage_local_rdb_to_mysql_tool(
+    request: NormalizedRequest,
+    *,
+    mysql_adaptor: MySQLAdaptor | None = None,
+    mysql_connection: MySQLConnectionConfig | None = None,
+    approval_handler: HumanApprovalHandler | None = None,
+):
+    """Stage local RDB files into MySQL for heavy-duty analysis."""
+
+    def stage_local_rdb_to_mysql(
+        input_paths: str,
+        mysql_table: str = "",
+    ) -> str:
+        if mysql_adaptor is None or mysql_connection is None:
+            return (
+                "Error: MySQL connection is not configured. "
+                "To use MySQL-backed staging for large files, the user must provide "
+                "MySQL connection details via CLI flags (e.g., --mysql-host, --mysql-user) "
+                "or the configuration file. Please inform the user to re-run the command "
+                "with the necessary MySQL flags."
+            )
+
+        paths = [Path(p.strip()).expanduser() for p in input_paths.split(",") if p.strip()]
+        if not paths:
+            return "Error: no input paths provided."
+
+        effective_table = mysql_table or build_default_mysql_table_name()
+        run_id = f"rdb_stage_{int(time.time())}"
+
+        try:
+            # 1. Plan and seek approval
+            plan = _plan_mysql_staging_session(
+                request,
+                mysql_adaptor,
+                mysql_connection,
+                table_name=effective_table,
+            )
+            _request_mysql_staging_approval(
+                request,
+                approval_handler=approval_handler,
+                plan=plan,
+                row_count=1000000,  # Estimated for large files
+                batch_size=_effective_mysql_stage_batch_size(request),
+            )
+
+            # 2. Perform the actual heavy-duty staging via the capability service
+            from dba_assistant.capabilities.redis_rdb_analysis.service import analyze_rdb as _analyze_rdb
+            
+            # This triggers the Path A collector internally
+            _analyze_rdb(
+                RdbAnalysisRequest(
+                    prompt=request.prompt,
+                    inputs=[SampleInput(source=p, kind=InputSourceKind.LOCAL_RDB) for p in paths],
+                    profile_name="generic",
+                    report_language=request.runtime_inputs.report_language,
+                    path_mode="database_backed_analysis",
+                    mysql_host=request.runtime_inputs.mysql_host,
+                    mysql_port=request.runtime_inputs.mysql_port,
+                    mysql_database=request.runtime_inputs.mysql_database,
+                    mysql_table=effective_table,
+                ),
+                profile=None,
+                remote_discovery=lambda *_args, **_kwargs: {},
+                stage_rdb_rows_to_mysql=lambda table_name, rows, **kwargs: _stage_mysql_rows_direct(
+                    request,
+                    mysql_adaptor,
+                    mysql_connection,
+                    approval_handler=None, # Already approved above
+                    prepared_sessions={},
+                    approved_write_sessions={(effective_table, run_id)},
+                    table_name=table_name,
+                    rows=rows,
+                    source_file=kwargs.get("source_file", "manual"),
+                    run_id=run_id,
+                ),
+                analyze_staged_rdb_rows=lambda staging, **_kwargs: None, # Don't analyze yet
+            )
+        except MySQLOperationError as exc:
+            return _format_mysql_error(exc)
+        except PermissionError as exc:
+            return str(exc)
+        except Exception as exc: # noqa: BLE001
+            return f"Error during staging: {exc}"
+
+        return json.dumps(
+            {
+                "status": "staged",
+                "mysql_table": effective_table,
+                "mysql_run_id": run_id,
+                "message": "Data successfully staged to MySQL. Now call analyze_staged_rdb.",
+            }
+        )
+
+    return _named_tool(
+        stage_local_rdb_to_mysql,
+        "stage_local_rdb_to_mysql",
+        (
+            "Stage local RDB files into MySQL for database-backed analysis. "
+            "Use this for LARGE files (> 512MB). "
+            "REQUIRES HUMAN APPROVAL. "
+            "After calling this, call analyze_staged_rdb to generate the report. "
+            "Parameters: input_paths (comma-separated file paths), mysql_table (optional)."
         ),
     )
 
@@ -1395,6 +1640,24 @@ def _callable_accepts_keyword(func: Any, keyword: str) -> bool:
         if parameter.kind is inspect.Parameter.VAR_KEYWORD:
             return True
     return keyword in signature.parameters
+
+
+def _make_ask_user_for_config_tool(approval_handler: HumanApprovalHandler):
+    """Tool to ask the user for missing information interactively."""
+
+    def ask_user_for_config(question: str, secure: bool = False) -> str:
+        return approval_handler.collect_input(question, secure=secure)
+
+    return _named_tool(
+        ask_user_for_config,
+        "ask_user_for_config",
+        (
+            "Ask the user a question to collect missing configuration or parameters. "
+            "Use this if you need information like MySQL host, user, or password "
+            "that was not provided in the original request. "
+            "Parameters: question (text to show to the user), secure (True for passwords)."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

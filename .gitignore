@@ -21,3 +21,4 @@ references/**
 !references/report-samples/README.md
 outputs/
 tmp/
+large_tool_results/

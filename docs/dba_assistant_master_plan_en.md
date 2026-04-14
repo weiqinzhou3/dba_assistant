@@ -186,19 +186,20 @@ dba-assistant/
 │   └── profiles/
 ├── src/
 │   ├── dba_assistant/
-│   │   ├── application/               # Shared request models and prompt normalization
+│   │   ├── application/               # Shared request models, explicit surface fields, and secret scrubbing
 │   │   ├── interface/                 # CLI / API / WebUI shared boundary
 │   │   ├── orchestrator/              # Unified Deep Agent assembly and tool exposure
 │   │   ├── deep_agent_integration/    # Deep Agents runtime support
+│   │   ├── prompts/                   # Externalized system prompts and agent instructions
 │   │   ├── core/                      # Shared collector / reporter / analyzer / audit layers
 │   │   ├── adaptors/                  # External system integrations
-│   │   ├── skills/                    # Repository skills
-│   │   │   ├── redis_rdb_analysis/
-│   │   │   ├── redis_inspection_report/
-│   │   │   └── redis_cve_report/
 │   │   └── tools/                     # Agent-visible business tools
 │   ├── claude-code-source-code/       # Reference-only source layer
 │   └── docs/                          # Reference-only docs layer
+├── skills/                            # Repository skill docs
+│   ├── redis-rdb-analysis/
+│   ├── redis-inspection-report/
+│   └── redis-cve-report/
 ├── templates/                         # Report templates
 │   └── reports/
 │       ├── shared/                    # Shared template components
@@ -309,7 +310,7 @@ dba-assistant/
 
 #### Phase 3a: `legacy_sql_pipeline` (Deliver First)
 
-1. Write `src/dba_assistant/skills/redis_rdb_analysis/SKILL.md` defining input/output contracts.
+1. Write `skills/redis-rdb-analysis/SKILL.md` defining input/output contracts.
 2. Implement RDB Offline Collector:
    - Accept RDB file paths (supporting multiple files and directory scanning).
    - Invoke rdb-tools to parse RDB files, outputting structured intermediate data.
@@ -372,7 +373,7 @@ dba-assistant/
 
 #### Phase 4a: Offline Source Data Path (Deliver First)
 
-1. Write `src/dba_assistant/skills/redis_inspection_report/SKILL.md` defining inspection scope, data contract, and output contract.
+1. Write `skills/redis-inspection-report/SKILL.md` defining inspection scope, data contract, and output contract.
 2. Implement Inspection Offline Collector:
    - Accept a local source data directory path.
    - Auto-detect and parse source data files in multiple formats (INFO output, CONFIG output, SLOWLOG export, custom collection script output, etc.).
@@ -454,7 +455,7 @@ dba-assistant/
 
 **Tasks:**
 
-1. Write `src/dba_assistant/skills/redis_cve_report/SKILL.md` defining the input contract:
+1. Write `skills/redis-cve-report/SKILL.md` defining the input contract:
    - Required: time range (supports natural language parsing, e.g., "last three months").
    - Optional: Redis version range (e.g., `6.2.0-7.0.15`) for impact assessment.
    - Optional: data source priority configuration.

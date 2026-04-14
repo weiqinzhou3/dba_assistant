@@ -32,22 +32,22 @@ def test_choose_path_uses_preparsed_dataset_for_preparsed_mysql_inputs() -> None
     assert choose_path(request) == "preparsed_dataset_analysis"
 
 
-def test_choose_path_uses_database_backed_analysis_for_explicit_mysql_staging_request() -> None:
+def test_choose_path_does_not_switch_to_database_backed_analysis_from_prompt_text_alone() -> None:
     request = RdbAnalysisRequest(
         prompt="analyze this rdb via mysql staging",
         inputs=[SampleInput(source=Path("/tmp/dump.rdb"), kind=InputSourceKind.LOCAL_RDB)],
     )
 
-    assert choose_path(request) == "database_backed_analysis"
+    assert choose_path(request) == "direct_rdb_analysis"
 
 
-def test_choose_path_uses_database_backed_analysis_for_explicit_mysql_request() -> None:
+def test_choose_path_does_not_switch_to_database_backed_analysis_from_mysql_hint_text() -> None:
     request = RdbAnalysisRequest(
         prompt="analyze this rdb via mysql",
         inputs=[SampleInput(source=Path("/tmp/dump.rdb"), kind=InputSourceKind.LOCAL_RDB)],
     )
 
-    assert choose_path(request) == "database_backed_analysis"
+    assert choose_path(request) == "direct_rdb_analysis"
 
 
 def test_choose_path_honors_explicit_path_mode_override() -> None:

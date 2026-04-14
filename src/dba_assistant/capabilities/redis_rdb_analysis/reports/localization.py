@@ -2,14 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-
-def normalize_report_language(language: str | None) -> str:
-    if not language:
-        return "zh-CN"
-    lowered = language.lower()
-    if lowered.startswith("en"):
-        return "en-US"
-    return "zh-CN"
+from dba_assistant.core.reporter.localization import normalize_report_language
 
 
 def report_title(language: str) -> str:

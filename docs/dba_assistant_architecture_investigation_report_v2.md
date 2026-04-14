@@ -6,8 +6,9 @@
 
 ### 1.1 大脑与四肢的解耦
 - **大脑 (LLM)**: 负责理解用户意图、查阅 `SKILL.md` 手册、规划执行步骤、决定工具调用顺序。
-- **四肢 (Python Runtime)**: 负责暴露原子工具、注入凭据、强制执行 HITL (人工审批)、安全审计及结果归一化。
+- **四肢 (Python Runtime)**: 负责暴露原子工具、注入凭据、强制执行 HITL (人工审批)、安全审计以及产物契约校验。
 - **挂载点 (Harness)**: 通过 `orchestrator/tools.py` 将复杂的 DBA 能力平整地挂载到 Agent 运行时中。
+- **共享边界 (`application/`)**: 只负责共享请求契约、硬事实提取与密钥清洗，不再承担自由文本业务推断。
 
 ---
 
@@ -24,7 +25,7 @@
 | 旧工具 (Blackbox) | 新原子工具 (Atomic) | 职责描述 |
 | :--- | :--- | :--- |
 | `analyze_local_rdb` | `inspect_local_rdb` | **先看眼**: 返回文件大小、元数据，供 LLM 决策。 |
-| (隐藏逻辑) | `analyze_local_rdb_stream` | **流式算**: 仅用于小文件 (<512MB) 的内存流分析。 |
+| (隐藏逻辑) | `analyze_local_rdb_stream` | **流式算**: 用于小到中等文件（<=1GB）或用户拒绝 MySQL staging 后的直接流式分析。 |
 | (隐藏逻辑) | `analyze_staged_rdb` | **查 MySQL**: 仅用于分析已倒入 MySQL 的暂存数据。 |
 | (自动触发) | `stage_rdb_rows_to_mysql` | **入库**: 显式调用，受 HITL 守卫，须 LLM 发起。 |
 
@@ -46,15 +47,17 @@
 
 - **HITL (Human-In-The-Loop)**: 对于 `fetch_remote_rdb_via_ssh` 和 `stage_rdb_rows_to_mysql` 等写操作/敏感操作，Agent 只能发起请求，审批权限牢牢掌握在人类手中。
 - **审计溯源**: 每一条 LLM 的决策路径都记录在 `outputs/logs/audit.jsonl` 中，可回溯“大脑”为何做出特定选择。
-- **规则约束**: 通过 `SYSTEM_PROMPT` 确立了“禁止伪造路径”、“禁止静默切换模式”等铁律。
+- **规则约束**: 通过外置的 `src/dba_assistant/prompts/unified_system_prompt.md` 确立“禁止伪造路径”、“禁止静默切换模式”等铁律。
+- **DOCX 兑现契约**: 一旦本轮执行已选择 `docx` 路径，运行时必须看到真实 `.docx` 产物，否则按失败处理，而不是接受终端纯文本总结。
 
 ---
 
 ## 5. 遗留清理 (Legacy Cleanup)
 
 - **废除 Phase 概念**: 生产代码中不再出现 `phase2`, `phase3` 等阶段性命名。
-- **入口归一化**: 统合为唯一的 `build_unified_agent`。
-- **代码整洁**: 移除了冗余的 Agent Builder 和调试脚本，确保项目语义与 Master Plan 高度契合。
+- **入口归一化**: 统合为唯一的 `build_unified_agent` / `run_orchestrated` 执行链。
+- **Skill 目录去实现化**: `skills/` 只保留 Skill 文档，Python 业务实现迁回 capability/domain 包。
+- **代码整洁**: 移除了旧的 `phase2` 入口、冗余 builder 与工具注册器，并将 `application` 收缩回共享边界职责。
 
 ---
 
@@ -67,4 +70,4 @@
 - **懂规矩**: 遵守大小限制和审批流程。
 - **能思考**: 会根据文件现状动态调整分析方案。
 
-**本项目已完成真正的 AI Agent 化改造。**
+核心 Agent 化改造已经完成，剩余工作主要是仓库卫生与历史文档同步，而不是把业务路由重新塞回 Python。

@@ -8,12 +8,99 @@ from dba_assistant.interface.hitl import AuditedApprovalHandler, AutoApproveHand
 from dba_assistant.interface.types import InterfaceRequest
 
 
+def _base_config(*, mysql_stage_batch_size: int = 2000):
+    return SimpleNamespace(
+        runtime=SimpleNamespace(
+            default_output_mode="summary",
+            mysql_stage_batch_size=mysql_stage_batch_size,
+        ),
+        model=None,
+    )
+
+
+def _base_normalized(*, input_paths=()) -> NormalizedRequest:
+    return NormalizedRequest(
+        raw_prompt="test",
+        prompt="test",
+        runtime_inputs=RuntimeInputs(output_mode="summary", input_paths=tuple(input_paths)),
+        secrets=Secrets(),
+        rdb_overrides=RdbOverrides(),
+    )
+
+
 def test_handle_request_normalizes_and_delegates_to_orchestrator(monkeypatch) -> None:
     captured: dict[str, object] = {}
-    config = SimpleNamespace(runtime=SimpleNamespace(default_output_mode="summary"), model=None)
+    config = _base_config()
 
     monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
+    monkeypatch.setattr(
+        adapter_module,
+        "normalize_raw_request",
+        lambda raw_prompt, *, default_output_mode, input_paths=(): _base_normalized(
+            input_paths=input_paths,
+        ),
+    )
 
+    def fake_run_orchestrated(normalized, *, config, approval_handler, thread_id=None):
+        captured["normalized"] = normalized
+        captured["handler"] = approval_handler
+        return "orchestrated result"
+
+    monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
+
+    handler = AutoApproveHandler()
+    result, normalized = handle_request(
+        InterfaceRequest(prompt="analyze rdb", input_paths=[Path("/tmp/dump.rdb")]),
+        approval_handler=handler,
+    )
+
+    assert result == "orchestrated result"
+    assert normalized.runtime_inputs.input_paths == (Path("/tmp/dump.rdb"),)
+    assert isinstance(captured["handler"], AuditedApprovalHandler)
+    assert captured["handler"]._delegate is handler
+
+
+def test_handle_request_applies_profile_and_report_overrides(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    config = _base_config()
+
+    monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
+    monkeypatch.setattr(
+        adapter_module,
+        "normalize_raw_request",
+        lambda raw_prompt, *, default_output_mode, input_paths=(): _base_normalized(
+            input_paths=input_paths,
+        ),
+    )
+
+    def fake_run_orchestrated(normalized, *, config, approval_handler, thread_id=None):
+        captured["normalized"] = normalized
+        return "ok"
+
+    monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
+
+    _, normalized = handle_request(
+        InterfaceRequest(
+            prompt="test",
+            profile="rcs",
+            report_format="docx",
+            output_path=Path("/tmp/out.docx"),
+        ),
+        approval_handler=AutoApproveHandler(),
+    )
+
+    assert normalized.rdb_overrides.profile_name == "rcs"
+    assert normalized.runtime_inputs.output_mode == "report"
+    assert normalized.runtime_inputs.report_format == "docx"
+    assert normalized.runtime_inputs.output_path == Path("/tmp/out.docx")
+    assert captured["normalized"] == normalized
+
+
+def test_handle_request_applies_explicit_runtime_and_secret_overrides(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    config = _base_config()
+
+    monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
     monkeypatch.setattr(
         adapter_module,
         "normalize_raw_request",
@@ -22,75 +109,101 @@ def test_handle_request_normalizes_and_delegates_to_orchestrator(monkeypatch) ->
             prompt=raw_prompt,
             runtime_inputs=RuntimeInputs(
                 output_mode="summary",
+                redis_host="prompt-redis",
+                ssh_host="prompt-ssh",
+                mysql_host="prompt-db",
                 input_paths=tuple(input_paths),
             ),
-            secrets=Secrets(),
+            secrets=Secrets(
+                redis_password="prompt-redis-secret",
+                ssh_password="prompt-ssh-secret",
+                mysql_password="prompt-db-secret",
+            ),
             rdb_overrides=RdbOverrides(),
         ),
     )
 
-    def fake_run_orchestrated(normalized, *, config, approval_handler):
-        captured["prompt"] = normalized.prompt
-        captured["handler"] = approval_handler
-        return "orchestrated result"
-
-    monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
-
-    handler = AutoApproveHandler()
-    request = InterfaceRequest(prompt="analyze rdb", input_paths=[Path("/tmp/dump.rdb")])
-
-    result = handle_request(request, approval_handler=handler)
-
-    assert result == "orchestrated result"
-    assert captured["prompt"] == "analyze rdb"
-    assert isinstance(captured["handler"], AuditedApprovalHandler)
-    assert captured["handler"]._delegate is handler
-
-
-def test_handle_request_applies_overrides(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-    config = SimpleNamespace(runtime=SimpleNamespace(default_output_mode="summary"), model=None)
-
-    monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
-
-    from dba_assistant.application.request_models import NormalizedRequest, RdbOverrides, RuntimeInputs, Secrets
-
-    monkeypatch.setattr(
-        adapter_module,
-        "normalize_raw_request",
-        lambda raw_prompt, *, default_output_mode, input_paths=(): NormalizedRequest(
-            raw_prompt=raw_prompt,
-            prompt=raw_prompt,
-            runtime_inputs=RuntimeInputs(output_mode="summary", input_paths=tuple(input_paths)),
-            secrets=Secrets(),
-            rdb_overrides=RdbOverrides(),
-        ),
-    )
-
-    def fake_run_orchestrated(normalized, *, config, approval_handler):
+    def fake_run_orchestrated(normalized, *, config, approval_handler, thread_id=None):
         captured["normalized"] = normalized
         return "ok"
 
     monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
 
-    request = InterfaceRequest(
-        prompt="test",
-        profile="rcs",
-        report_format="docx",
-        output_path=Path("/tmp/out.docx"),
+    _, normalized = handle_request(
+        InterfaceRequest(
+            prompt="test",
+            input_kind="preparsed_mysql",
+            path_mode="preparsed_dataset_analysis",
+            redis_password="cli-redis-secret",
+            ssh_host="explicit-ssh",
+            ssh_port=2222,
+            ssh_username="root",
+            ssh_password="cli-ssh-secret",
+            remote_rdb_path="/explicit/dump.rdb",
+            require_fresh_rdb_snapshot=True,
+            mysql_host="explicit-db",
+            mysql_port=3307,
+            mysql_user="analyst",
+            mysql_database="analysis_db",
+            mysql_password="cli-db-secret",
+            mysql_table="preparsed_keys",
+            mysql_query="SELECT * FROM preparsed_keys",
+            mysql_stage_batch_size=4096,
+        ),
+        approval_handler=AutoApproveHandler(),
     )
-    handle_request(request, approval_handler=AutoApproveHandler())
 
-    n = captured["normalized"]
-    assert n.rdb_overrides.profile_name == "rcs"
-    assert n.runtime_inputs.output_mode == "report"
-    assert n.runtime_inputs.report_format == "docx"
-    assert n.runtime_inputs.output_path == Path("/tmp/out.docx")
+    assert normalized.runtime_inputs.input_kind == "preparsed_mysql"
+    assert normalized.runtime_inputs.path_mode == "preparsed_dataset_analysis"
+    assert normalized.runtime_inputs.ssh_host == "explicit-ssh"
+    assert normalized.runtime_inputs.ssh_port == 2222
+    assert normalized.runtime_inputs.ssh_username == "root"
+    assert normalized.runtime_inputs.remote_rdb_path == "/explicit/dump.rdb"
+    assert normalized.runtime_inputs.remote_rdb_path_source == "user_override"
+    assert normalized.runtime_inputs.require_fresh_rdb_snapshot is True
+    assert normalized.runtime_inputs.mysql_host == "explicit-db"
+    assert normalized.runtime_inputs.mysql_port == 3307
+    assert normalized.runtime_inputs.mysql_user == "analyst"
+    assert normalized.runtime_inputs.mysql_database == "analysis_db"
+    assert normalized.runtime_inputs.mysql_table == "preparsed_keys"
+    assert normalized.runtime_inputs.mysql_query == "SELECT * FROM preparsed_keys"
+    assert normalized.runtime_inputs.mysql_stage_batch_size == 4096
+    assert normalized.secrets.redis_password == "cli-redis-secret"
+    assert normalized.secrets.ssh_password == "cli-ssh-secret"
+    assert normalized.secrets.mysql_password == "cli-db-secret"
+    assert captured["normalized"] == normalized
 
 
-def test_handle_request_generates_default_docx_output_path_when_prompt_requests_docx_without_path(
+def test_handle_request_uses_config_mysql_stage_batch_size_when_not_overridden(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    config = _base_config(mysql_stage_batch_size=3072)
+
+    monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
+    monkeypatch.setattr(
+        adapter_module,
+        "normalize_raw_request",
+        lambda raw_prompt, *, default_output_mode, input_paths=(): _base_normalized(
+            input_paths=input_paths,
+        ),
+    )
+
+    def fake_run_orchestrated(normalized, *, config, approval_handler, thread_id=None):
+        captured["normalized"] = normalized
+        return "ok"
+
+    monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
+
+    _, normalized = handle_request(
+        InterfaceRequest(prompt="test"),
+        approval_handler=AutoApproveHandler(),
+    )
+
+    assert normalized.runtime_inputs.mysql_stage_batch_size == 3072
+    assert captured["normalized"] == normalized
+
+
+def test_handle_request_falls_back_to_default_mysql_stage_batch_size_when_config_is_sparse(
     monkeypatch,
-    tmp_path,
 ) -> None:
     captured: dict[str, object] = {}
     config = SimpleNamespace(runtime=SimpleNamespace(default_output_mode="summary"), model=None)
@@ -99,43 +212,29 @@ def test_handle_request_generates_default_docx_output_path_when_prompt_requests_
     monkeypatch.setattr(
         adapter_module,
         "normalize_raw_request",
-        lambda raw_prompt, *, default_output_mode, input_paths=(): NormalizedRequest(
-            raw_prompt=raw_prompt,
-            prompt=raw_prompt,
-            runtime_inputs=RuntimeInputs(output_mode="report", report_format="docx", input_paths=tuple(input_paths)),
-            secrets=Secrets(),
-            rdb_overrides=RdbOverrides(),
-        ),
-    )
-    monkeypatch.setattr(
-        adapter_module,
-        "ensure_report_output_path",
-        lambda runtime_inputs, report_format: RuntimeInputs(
-            **{
-                **runtime_inputs.__dict__,
-                "output_mode": "report",
-                "report_format": "docx",
-                "output_path": tmp_path / "outputs" / "auto.docx",
-            }
+        lambda raw_prompt, *, default_output_mode, input_paths=(): _base_normalized(
+            input_paths=input_paths,
         ),
     )
 
-    def fake_run_orchestrated(normalized, *, config, approval_handler):
+    def fake_run_orchestrated(normalized, *, config, approval_handler, thread_id=None):
         captured["normalized"] = normalized
         return "ok"
 
     monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
 
-    handle_request(InterfaceRequest(prompt="输出word给我"), approval_handler=AutoApproveHandler())
+    _, normalized = handle_request(
+        InterfaceRequest(prompt="test"),
+        approval_handler=AutoApproveHandler(),
+    )
 
-    n = captured["normalized"]
-    assert n.runtime_inputs.report_format == "docx"
-    assert n.runtime_inputs.output_path == tmp_path / "outputs" / "auto.docx"
+    assert normalized.runtime_inputs.mysql_stage_batch_size == 2000
+    assert captured["normalized"] == normalized
 
 
-def test_handle_request_keeps_prompt_output_path_over_auto_generated_default(monkeypatch) -> None:
+def test_handle_request_preserves_prompt_supplied_docx_output_path(monkeypatch) -> None:
     captured: dict[str, object] = {}
-    config = SimpleNamespace(runtime=SimpleNamespace(default_output_mode="summary"), model=None)
+    config = _base_config()
 
     monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
     monkeypatch.setattr(
@@ -148,454 +247,22 @@ def test_handle_request_keeps_prompt_output_path_over_auto_generated_default(mon
                 output_mode="report",
                 report_format="docx",
                 output_path=Path("/tmp/from-prompt.docx"),
-                input_paths=tuple(input_paths),
             ),
             secrets=Secrets(),
             rdb_overrides=RdbOverrides(),
         ),
     )
 
-    def fake_run_orchestrated(normalized, *, config, approval_handler):
+    def fake_run_orchestrated(normalized, *, config, approval_handler, thread_id=None):
         captured["normalized"] = normalized
         return "ok"
 
     monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
 
-    handle_request(InterfaceRequest(prompt="输出docx"), approval_handler=AutoApproveHandler())
-
-    assert captured["normalized"].runtime_inputs.output_path == Path("/tmp/from-prompt.docx")
-
-
-def test_handle_request_prefers_cli_output_path_over_prompt_output_path(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-    config = SimpleNamespace(runtime=SimpleNamespace(default_output_mode="summary"), model=None)
-
-    monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
-    monkeypatch.setattr(
-        adapter_module,
-        "normalize_raw_request",
-        lambda raw_prompt, *, default_output_mode, input_paths=(): NormalizedRequest(
-            raw_prompt=raw_prompt,
-            prompt=raw_prompt,
-            runtime_inputs=RuntimeInputs(
-                output_mode="report",
-                report_format="docx",
-                output_path=Path("/tmp/from-prompt.docx"),
-                input_paths=tuple(input_paths),
-            ),
-            secrets=Secrets(),
-            rdb_overrides=RdbOverrides(),
-        ),
-    )
-
-    def fake_run_orchestrated(normalized, *, config, approval_handler):
-        captured["normalized"] = normalized
-        return "ok"
-
-    monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
-
-    handle_request(
-        InterfaceRequest(prompt="输出docx", output_path=Path("/tmp/from-cli.docx")),
+    _, normalized = handle_request(
+        InterfaceRequest(prompt="输出 docx 到 /tmp/from-prompt.docx"),
         approval_handler=AutoApproveHandler(),
     )
 
-    assert captured["normalized"].runtime_inputs.output_path == Path("/tmp/from-cli.docx")
-
-
-def test_handle_request_does_not_generate_docx_path_for_summary_requests(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-    config = SimpleNamespace(runtime=SimpleNamespace(default_output_mode="summary"), model=None)
-
-    monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
-    monkeypatch.setattr(
-        adapter_module,
-        "normalize_raw_request",
-        lambda raw_prompt, *, default_output_mode, input_paths=(): NormalizedRequest(
-            raw_prompt=raw_prompt,
-            prompt=raw_prompt,
-            runtime_inputs=RuntimeInputs(output_mode="summary", report_format=None, input_paths=tuple(input_paths)),
-            secrets=Secrets(),
-            rdb_overrides=RdbOverrides(),
-        ),
-    )
-
-    def fake_run_orchestrated(normalized, *, config, approval_handler):
-        captured["normalized"] = normalized
-        return "ok"
-
-    monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
-
-    handle_request(InterfaceRequest(prompt="分析一下"), approval_handler=AutoApproveHandler())
-
-    assert captured["normalized"].runtime_inputs.output_path is None
-
-
-def test_handle_request_applies_mysql_overrides(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-    config = SimpleNamespace(runtime=SimpleNamespace(default_output_mode="summary"), model=None)
-
-    monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
-
-    monkeypatch.setattr(
-        adapter_module,
-        "normalize_raw_request",
-        lambda raw_prompt, *, default_output_mode, input_paths=(): NormalizedRequest(
-            raw_prompt=raw_prompt,
-            prompt=raw_prompt,
-            runtime_inputs=RuntimeInputs(output_mode="summary", input_paths=tuple(input_paths)),
-            secrets=Secrets(),
-            rdb_overrides=RdbOverrides(),
-        ),
-    )
-
-    def fake_run_orchestrated(normalized, *, config, approval_handler):
-        captured["normalized"] = normalized
-        return "ok"
-
-    monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
-
-    request = InterfaceRequest(
-        prompt="test",
-        mysql_host="db.example",
-        mysql_port=3307,
-        mysql_user="analyst",
-        mysql_database="analysis_db",
-        mysql_password="secret",
-        mysql_table="preparsed_keys",
-        mysql_query="SELECT * FROM preparsed_keys",
-        mysql_stage_batch_size=4096,
-    )
-    handle_request(request, approval_handler=AutoApproveHandler())
-
-    n = captured["normalized"]
-    assert n.runtime_inputs.mysql_host == "db.example"
-    assert n.runtime_inputs.mysql_port == 3307
-    assert n.runtime_inputs.mysql_user == "analyst"
-    assert n.runtime_inputs.mysql_database == "analysis_db"
-    assert n.runtime_inputs.mysql_table == "preparsed_keys"
-    assert n.runtime_inputs.mysql_query == "SELECT * FROM preparsed_keys"
-    assert n.runtime_inputs.mysql_stage_batch_size == 4096
-    assert n.secrets.mysql_password == "secret"
-
-
-def test_handle_request_uses_config_mysql_stage_batch_size_when_cli_does_not_override(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-    config = SimpleNamespace(
-        runtime=SimpleNamespace(default_output_mode="summary", mysql_stage_batch_size=3072),
-        model=None,
-    )
-
-    monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
-    monkeypatch.setattr(
-        adapter_module,
-        "normalize_raw_request",
-        lambda raw_prompt, *, default_output_mode, input_paths=(): NormalizedRequest(
-            raw_prompt=raw_prompt,
-            prompt=raw_prompt,
-            runtime_inputs=RuntimeInputs(output_mode="summary", input_paths=tuple(input_paths)),
-            secrets=Secrets(),
-            rdb_overrides=RdbOverrides(),
-        ),
-    )
-
-    def fake_run_orchestrated(normalized, *, config, approval_handler):
-        captured["normalized"] = normalized
-        return "ok"
-
-    monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
-
-    handle_request(InterfaceRequest(prompt="test"), approval_handler=AutoApproveHandler())
-
-    assert captured["normalized"].runtime_inputs.mysql_stage_batch_size == 3072
-
-
-def test_handle_request_prefers_cli_mysql_stage_batch_size_over_config(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-    config = SimpleNamespace(
-        runtime=SimpleNamespace(default_output_mode="summary", mysql_stage_batch_size=2048),
-        model=None,
-    )
-
-    monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
-    monkeypatch.setattr(
-        adapter_module,
-        "normalize_raw_request",
-        lambda raw_prompt, *, default_output_mode, input_paths=(): NormalizedRequest(
-            raw_prompt=raw_prompt,
-            prompt=raw_prompt,
-            runtime_inputs=RuntimeInputs(output_mode="summary", input_paths=tuple(input_paths)),
-            secrets=Secrets(),
-            rdb_overrides=RdbOverrides(),
-        ),
-    )
-
-    def fake_run_orchestrated(normalized, *, config, approval_handler):
-        captured["normalized"] = normalized
-        return "ok"
-
-    monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
-
-    handle_request(
-        InterfaceRequest(prompt="test", mysql_stage_batch_size=4096),
-        approval_handler=AutoApproveHandler(),
-    )
-
-    assert captured["normalized"].runtime_inputs.mysql_stage_batch_size == 4096
-
-
-def test_handle_request_applies_ssh_overrides(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-    config = SimpleNamespace(runtime=SimpleNamespace(default_output_mode="summary"), model=None)
-
-    monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
-    monkeypatch.setattr(
-        adapter_module,
-        "normalize_raw_request",
-        lambda raw_prompt, *, default_output_mode, input_paths=(): NormalizedRequest(
-            raw_prompt=raw_prompt,
-            prompt=raw_prompt,
-            runtime_inputs=RuntimeInputs(output_mode="summary", input_paths=tuple(input_paths)),
-            secrets=Secrets(),
-            rdb_overrides=RdbOverrides(),
-        ),
-    )
-
-    def fake_run_orchestrated(normalized, *, config, approval_handler):
-        captured["normalized"] = normalized
-        return "ok"
-
-    monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
-
-    request = InterfaceRequest(
-        prompt="test",
-        ssh_host="ssh.example",
-        ssh_port=2222,
-        ssh_username="root",
-        ssh_password="secret",
-    )
-    handle_request(request, approval_handler=AutoApproveHandler())
-
-    n = captured["normalized"]
-    assert n.runtime_inputs.ssh_host == "ssh.example"
-    assert n.runtime_inputs.ssh_port == 2222
-    assert n.runtime_inputs.ssh_username == "root"
-    assert n.secrets.ssh_password == "secret"
-
-
-def test_handle_request_cli_redis_password_overrides_prompt_extracted_value(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-    config = SimpleNamespace(runtime=SimpleNamespace(default_output_mode="summary"), model=None)
-
-    monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
-    monkeypatch.setattr(
-        adapter_module,
-        "normalize_raw_request",
-        lambda raw_prompt, *, default_output_mode, input_paths=(): NormalizedRequest(
-            raw_prompt=raw_prompt,
-            prompt=raw_prompt,
-            runtime_inputs=RuntimeInputs(
-                output_mode="summary",
-                redis_host="192.168.23.54",
-                redis_port=6379,
-            ),
-            secrets=Secrets(redis_password="prompt-secret"),
-            rdb_overrides=RdbOverrides(),
-        ),
-    )
-
-    def fake_run_orchestrated(normalized, *, config, approval_handler):
-        captured["normalized"] = normalized
-        return "ok"
-
-    monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
-
-    request = InterfaceRequest(
-        prompt="analyze remote redis",
-        redis_password="cli-secret",
-    )
-    handle_request(request, approval_handler=AutoApproveHandler())
-
-    n = captured["normalized"]
-    assert n.secrets.redis_password == "cli-secret"
-
-
-def test_handle_request_keeps_prompt_redis_password_when_cli_does_not_override(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-    config = SimpleNamespace(runtime=SimpleNamespace(default_output_mode="summary"), model=None)
-
-    monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
-    monkeypatch.setattr(
-        adapter_module,
-        "normalize_raw_request",
-        lambda raw_prompt, *, default_output_mode, input_paths=(): NormalizedRequest(
-            raw_prompt=raw_prompt,
-            prompt=raw_prompt,
-            runtime_inputs=RuntimeInputs(
-                output_mode="summary",
-                redis_host="192.168.23.54",
-                redis_port=6379,
-            ),
-            secrets=Secrets(redis_password="prompt-secret"),
-            rdb_overrides=RdbOverrides(),
-        ),
-    )
-
-    def fake_run_orchestrated(normalized, *, config, approval_handler):
-        captured["normalized"] = normalized
-        return "ok"
-
-    monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
-
-    request = InterfaceRequest(prompt="analyze remote redis")
-    handle_request(request, approval_handler=AutoApproveHandler())
-
-    n = captured["normalized"]
-    assert n.secrets.redis_password == "prompt-secret"
-
-
-def test_handle_request_marks_remote_rdb_path_override_as_user_override(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-    config = SimpleNamespace(runtime=SimpleNamespace(default_output_mode="summary"), model=None)
-
-    monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
-    monkeypatch.setattr(
-        adapter_module,
-        "normalize_raw_request",
-        lambda raw_prompt, *, default_output_mode, input_paths=(): NormalizedRequest(
-            raw_prompt=raw_prompt,
-            prompt=raw_prompt,
-            runtime_inputs=RuntimeInputs(output_mode="summary", input_paths=tuple(input_paths)),
-            secrets=Secrets(),
-            rdb_overrides=RdbOverrides(),
-        ),
-    )
-
-    def fake_run_orchestrated(normalized, *, config, approval_handler):
-        captured["normalized"] = normalized
-        return "ok"
-
-    monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
-
-    request = InterfaceRequest(
-        prompt="test",
-        remote_rdb_path="/custom/override.rdb",
-        require_fresh_rdb_snapshot=True,
-    )
-    handle_request(request, approval_handler=AutoApproveHandler())
-
-    n = captured["normalized"]
-    assert n.runtime_inputs.remote_rdb_path == "/custom/override.rdb"
-    assert n.runtime_inputs.remote_rdb_path_source == "user_override"
-    assert n.runtime_inputs.require_fresh_rdb_snapshot is True
-
-
-def test_handle_request_keeps_prompt_first_but_allows_explicit_overrides(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-    config = SimpleNamespace(runtime=SimpleNamespace(default_output_mode="summary"), model=None)
-
-    monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
-    monkeypatch.setattr(
-        adapter_module,
-        "normalize_raw_request",
-        lambda raw_prompt, *, default_output_mode, input_paths=(): NormalizedRequest(
-            raw_prompt=raw_prompt,
-            prompt=raw_prompt,
-            runtime_inputs=RuntimeInputs(
-                output_mode="summary",
-                input_paths=(Path("/prompt/source.rdb"),),
-                input_kind="local_rdb",
-                mysql_host="prompt-db",
-                mysql_port=3306,
-                mysql_user="prompt-user",
-                mysql_database="prompt-db-name",
-                mysql_table="prompt_rows",
-            ),
-            secrets=Secrets(mysql_password="prompt-secret"),
-            rdb_overrides=RdbOverrides(profile_name="generic"),
-        ),
-    )
-
-    def fake_run_orchestrated(normalized, *, config, approval_handler):
-        captured["normalized"] = normalized
-        return "ok"
-
-    monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
-
-    request = InterfaceRequest(
-        prompt="analyze /prompt/source.rdb",
-        input_paths=[Path("/explicit/source.rdb")],
-        profile="rcs",
-        input_kind="preparsed_mysql",
-        mysql_host="explicit-db",
-        mysql_port=3307,
-        mysql_user="explicit-user",
-        mysql_database="explicit-db-name",
-        mysql_password="explicit-secret",
-        mysql_query="SELECT 1",
-    )
-    handle_request(request, approval_handler=AutoApproveHandler())
-
-    n = captured["normalized"]
-    assert n.runtime_inputs.input_paths == (Path("/explicit/source.rdb"),)
-    assert n.runtime_inputs.input_kind == "preparsed_mysql"
-    assert n.runtime_inputs.mysql_host == "explicit-db"
-    assert n.runtime_inputs.mysql_port == 3307
-    assert n.runtime_inputs.mysql_user == "explicit-user"
-    assert n.runtime_inputs.mysql_database == "explicit-db-name"
-    assert n.runtime_inputs.mysql_table == "prompt_rows"
-    assert n.runtime_inputs.mysql_query == "SELECT 1"
-    assert n.secrets.mysql_password == "explicit-secret"
-    assert n.rdb_overrides.profile_name == "rcs"
-
-
-def test_handle_request_lets_explicit_remote_redis_flags_override_prompt_values(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-    config = SimpleNamespace(runtime=SimpleNamespace(default_output_mode="summary"), model=None)
-
-    monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
-    monkeypatch.setattr(
-        adapter_module,
-        "normalize_raw_request",
-        lambda raw_prompt, *, default_output_mode, input_paths=(): NormalizedRequest(
-            raw_prompt=raw_prompt,
-            prompt=raw_prompt,
-            runtime_inputs=RuntimeInputs(
-                output_mode="summary",
-                ssh_host="prompt-host",
-                ssh_port=22,
-                ssh_username="prompt-user",
-                remote_rdb_path="/prompt/dump.rdb",
-                remote_rdb_path_source="user_override",
-                require_fresh_rdb_snapshot=False,
-            ),
-            secrets=Secrets(ssh_password="prompt-secret"),
-            rdb_overrides=RdbOverrides(),
-        ),
-    )
-
-    def fake_run_orchestrated(normalized, *, config, approval_handler):
-        captured["normalized"] = normalized
-        return "ok"
-
-    monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
-
-    request = InterfaceRequest(
-        prompt="analyze remote redis",
-        ssh_host="explicit-host",
-        ssh_port=2222,
-        ssh_username="explicit-user",
-        ssh_password="explicit-secret",
-        remote_rdb_path="/explicit/dump.rdb",
-        remote_rdb_path_source="user_override",
-        require_fresh_rdb_snapshot=True,
-    )
-    handle_request(request, approval_handler=AutoApproveHandler())
-
-    n = captured["normalized"]
-    assert n.runtime_inputs.ssh_host == "explicit-host"
-    assert n.runtime_inputs.ssh_port == 2222
-    assert n.runtime_inputs.ssh_username == "explicit-user"
-    assert n.secrets.ssh_password == "explicit-secret"
-    assert n.runtime_inputs.remote_rdb_path == "/explicit/dump.rdb"
-    assert n.runtime_inputs.remote_rdb_path_source == "user_override"
-    assert n.runtime_inputs.require_fresh_rdb_snapshot is True
+    assert normalized.runtime_inputs.output_path == Path("/tmp/from-prompt.docx")
+    assert captured["normalized"] == normalized

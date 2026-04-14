@@ -4,7 +4,9 @@
       "Bash(pip install:*)",
       "Bash(pip list:*)",
       "Bash(python3.11 -m pytest tests/ -x -v)",
-      "Bash(python3.11 -m pytest tests/ -v)"
+      "Bash(python3.11 -m pytest tests/ -v)",
+      "Bash(ls -la /Users/zqw/Desktop/Project/dba_assistant/*.md)",
+      "Bash(find /Users/zqw/Desktop/Project/dba_assistant/tests -name \"*.py\" -exec wc -l {} +)"
     ]
   }
 }

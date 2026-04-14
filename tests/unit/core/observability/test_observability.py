@@ -126,6 +126,44 @@ def test_audited_approval_handler_records_first_class_approval_events(tmp_path: 
     reset_observability_state()
 
 
+def test_audited_approval_handler_does_not_mark_fallback_denial_as_execution_denied(
+    tmp_path: Path,
+) -> None:
+    config = _make_observability_config(tmp_path)
+    reset_observability_state()
+    bootstrap_observability(config)
+
+    normalized = NormalizedRequest(
+        raw_prompt="analyze large rdb",
+        prompt="analyze large rdb",
+        runtime_inputs=RuntimeInputs(output_mode="summary"),
+        secrets=Secrets(),
+        rdb_overrides=RdbOverrides(),
+    )
+
+    with start_execution_session(
+        interface_surface=InterfaceSurface.CLI,
+        normalized_request=normalized,
+        raw_request_summary={},
+    ):
+        handler = AuditedApprovalHandler(AutoApproveHandler(approve=False))
+        response = handler.request_approval(
+            ApprovalRequest(
+                action="stage_local_rdb_to_mysql",
+                message="MySQL staging write requires approval.",
+                details={"denial_semantics": "fallback"},
+            )
+        )
+
+    assert response.status is ApprovalStatus.DENIED
+
+    events = _read_jsonl(config.audit_log_path)
+    completion = [event for event in events if event["event_type"] == "execution_completed"][0]
+    assert completion["final_status"] == "success"
+
+    reset_observability_state()
+
+
 def test_execution_session_records_tool_sequence_and_artifact_metadata(tmp_path: Path) -> None:
     config = _make_observability_config(tmp_path)
     reset_observability_state()
@@ -151,7 +189,7 @@ def test_execution_session_records_tool_sequence_and_artifact_metadata(tmp_path:
         raw_request_summary={"prompt": "password=super-secret"},
     ) as session:
         result = observe_tool_call(
-            "analyze_local_rdb",
+            "analyze_local_rdb_stream",
             {"redis_password": "super-secret", "input_paths": ["/tmp/dump.rdb"]},
             lambda: "analysis complete",
         )
@@ -170,8 +208,8 @@ def test_execution_session_records_tool_sequence_and_artifact_metadata(tmp_path:
     assert len(completion_events) == 1
     completion = completion_events[0]
     assert completion["final_status"] == "success"
-    assert completion["selected_capability"] == "analyze_local_rdb"
-    assert completion["tool_invocation_sequence"][0]["tool_name"] == "analyze_local_rdb"
+    assert completion["selected_capability"] == "analyze_local_rdb_stream"
+    assert completion["tool_invocation_sequence"][0]["tool_name"] == "analyze_local_rdb_stream"
     assert completion["output_mode"] == "report"
     assert completion["output_path"] == str(tmp_path / "outputs" / "report.docx")
     assert completion["report_metadata"]["route"] == "direct_rdb_analysis"

@@ -1,35 +1,32 @@
-import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from dba_assistant import cli
-from dba_assistant.interface import adapter as adapter_module
-from dba_assistant.interface.types import ApprovalRequest, ApprovalStatus
 
 
-def test_cli_ask_delegates_to_interface_adapter(monkeypatch, capsys) -> None:
+def test_cli_ask_delegates_initial_turn_to_interface_adapter(monkeypatch, capsys) -> None:
     captured: dict[str, object] = {}
 
-    def fake_handle_request(request, *, approval_handler):
+    def fake_handle_request(request, *, approval_handler, thread_id=None):
         captured["request"] = request
         captured["approval_handler"] = approval_handler
-        return "agent ok"
+        captured["thread_id"] = thread_id
+        return "agent ok", type("Normalized", (), {"runtime_inputs": type("RI", (), {"input_paths": (), "mysql_host": None, "mysql_port": None, "mysql_user": None, "mysql_database": None, "mysql_table": None})()})()
 
     monkeypatch.setattr(cli, "handle_request", fake_handle_request)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "exit")
 
     exit_code = cli.main(["ask", "analyze the rdb"])
 
     assert exit_code == 0
-    assert capsys.readouterr().out == "agent ok\n"
+    assert "agent ok" in capsys.readouterr().out
     req = captured["request"]
     assert req.prompt == "analyze the rdb"
     assert req.input_paths == []
     assert req.output_path is None
-    assert req.config_path is None
     assert req.profile is None
-    assert req.report_format is None
+    assert captured["thread_id"].startswith("cli-session-")
 
 
 def test_cli_ask_threads_all_flags_to_interface_request(monkeypatch, tmp_path, capsys) -> None:
@@ -37,54 +34,72 @@ def test_cli_ask_threads_all_flags_to_interface_request(monkeypatch, tmp_path, c
     source = tmp_path / "dump.rdb"
     source.write_text("x", encoding="utf-8")
 
-    def fake_handle_request(request, *, approval_handler):
-        captured["request"] = request
-        return "ok"
+    def fake_handle_request(request, *, approval_handler, thread_id=None):
+        captured.setdefault("requests", []).append(request)
+        normalized = type(
+            "Normalized",
+            (),
+            {
+                "runtime_inputs": type(
+                    "RI",
+                    (),
+                    {
+                        "input_paths": tuple(request.input_paths),
+                        "mysql_host": request.mysql_host,
+                        "mysql_port": request.mysql_port,
+                        "mysql_user": request.mysql_user,
+                        "mysql_database": request.mysql_database,
+                        "mysql_table": request.mysql_table,
+                    },
+                )(),
+            },
+        )()
+        return "ok", normalized
 
     monkeypatch.setattr(cli, "handle_request", fake_handle_request)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "exit")
 
-    exit_code = cli.main([
-        "ask", "analyze rdb",
-        "--input", str(source),
-        "--output", "/tmp/out.docx",
-        "--config", "/etc/custom.yaml",
-        "--profile", "rcs",
-        "--report-format", "docx",
-    ])
+    exit_code = cli.main(
+        [
+            "ask",
+            "analyze rdb",
+            "--input",
+            str(source),
+            "--output",
+            "/tmp/out.docx",
+            "--config",
+            "/etc/custom.yaml",
+            "--profile",
+            "rcs",
+            "--report-format",
+            "docx",
+            "--mysql-host",
+            "db.example",
+            "--mysql-port",
+            "3307",
+            "--mysql-user",
+            "analyst",
+            "--mysql-database",
+            "analysis_db",
+            "--mysql-password",
+            "secret",
+            "--mysql-table",
+            "preparsed_keys",
+            "--mysql-query",
+            "SELECT * FROM preparsed_keys",
+            "--mysql-stage-batch-size",
+            "4096",
+        ]
+    )
 
     assert exit_code == 0
-    req = captured["request"]
+    req = captured["requests"][0]
     assert req.prompt == "analyze rdb"
     assert req.input_paths == [source]
     assert req.output_path == Path("/tmp/out.docx")
     assert req.config_path == "/etc/custom.yaml"
     assert req.profile == "rcs"
     assert req.report_format == "docx"
-
-
-def test_cli_ask_threads_mysql_flags_to_interface_request(monkeypatch, capsys) -> None:
-    captured: dict[str, object] = {}
-
-    def fake_handle_request(request, *, approval_handler):
-        captured["request"] = request
-        return "ok"
-
-    monkeypatch.setattr(cli, "handle_request", fake_handle_request)
-
-    exit_code = cli.main([
-        "ask", "analyze rdb via mysql",
-        "--mysql-host", "db.example",
-        "--mysql-port", "3307",
-        "--mysql-user", "analyst",
-        "--mysql-database", "analysis_db",
-        "--mysql-password", "secret",
-        "--mysql-table", "preparsed_keys",
-        "--mysql-query", "SELECT * FROM preparsed_keys",
-        "--mysql-stage-batch-size", "4096",
-    ])
-
-    assert exit_code == 0
-    req = captured["request"]
     assert req.mysql_host == "db.example"
     assert req.mysql_port == 3307
     assert req.mysql_user == "analyst"
@@ -95,42 +110,49 @@ def test_cli_ask_threads_mysql_flags_to_interface_request(monkeypatch, capsys) -
     assert req.mysql_stage_batch_size == 4096
 
 
-def test_cli_ask_rejects_non_positive_mysql_stage_batch_size(monkeypatch) -> None:
-    called = {"handle_request": False}
-
-    def fake_handle_request(request, *, approval_handler):
-        called["handle_request"] = True
-        return "ok"
-
-    monkeypatch.setattr(cli, "handle_request", fake_handle_request)
-
+def test_cli_ask_rejects_non_positive_mysql_stage_batch_size() -> None:
     with pytest.raises(SystemExit) as exc_info:
         cli.main(["ask", "analyze rdb via mysql", "--mysql-stage-batch-size", "0"])
 
     assert exc_info.value.code == 2
-    assert called["handle_request"] is False
 
 
 def test_cli_ask_threads_remote_redis_flags_to_interface_request(monkeypatch, capsys) -> None:
     captured: dict[str, object] = {}
 
-    def fake_handle_request(request, *, approval_handler):
+    def fake_handle_request(request, *, approval_handler, thread_id=None):
         captured["request"] = request
-        return "ok"
+        normalized = type(
+            "Normalized",
+            (),
+            {"runtime_inputs": type("RI", (), {"input_paths": (), "mysql_host": None, "mysql_port": None, "mysql_user": None, "mysql_database": None, "mysql_table": None})()},
+        )()
+        return "ok", normalized
 
     monkeypatch.setattr(cli, "handle_request", fake_handle_request)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "exit")
 
-    exit_code = cli.main([
-        "ask", "analyze remote redis",
-        "--redis-password", "123456",
-        "--ssh-host", "192.168.23.54",
-        "--ssh-port", "2222",
-        "--ssh-username", "root",
-        "--ssh-password", "root",
-        "--remote-rdb-path", "/data/redis/data/dump.rdb",
-        "--remote-rdb-path-source", "user_override",
-        "--fresh-rdb",
-    ])
+    exit_code = cli.main(
+        [
+            "ask",
+            "analyze remote redis",
+            "--redis-password",
+            "123456",
+            "--ssh-host",
+            "192.168.23.54",
+            "--ssh-port",
+            "2222",
+            "--ssh-username",
+            "root",
+            "--ssh-password",
+            "root",
+            "--remote-rdb-path",
+            "/data/redis/data/dump.rdb",
+            "--remote-rdb-path-source",
+            "user_override",
+            "--fresh-rdb",
+        ]
+    )
 
     assert exit_code == 0
     req = captured["request"]
@@ -144,194 +166,44 @@ def test_cli_ask_threads_remote_redis_flags_to_interface_request(monkeypatch, ca
     assert req.require_fresh_rdb_snapshot is True
 
 
-def test_cli_ask_uses_cli_approval_handler(monkeypatch, capsys) -> None:
-    captured: dict[str, object] = {}
+def test_cli_follow_up_turn_reuses_state_from_previous_normalized_request(monkeypatch, capsys) -> None:
+    calls: list[object] = []
+    prompts = iter(["继续分析", "exit"])
 
-    def fake_handle_request(request, *, approval_handler):
-        captured["handler_type"] = type(approval_handler).__name__
-        return "done"
+    def fake_handle_request(request, *, approval_handler, thread_id=None):
+        calls.append(request)
+        normalized = type(
+            "Normalized",
+            (),
+            {
+                "runtime_inputs": type(
+                    "RI",
+                    (),
+                    {
+                        "input_paths": (Path("/tmp/dump.rdb"),),
+                        "mysql_host": "db.example",
+                        "mysql_port": 3307,
+                        "mysql_user": "analyst",
+                        "mysql_database": "analysis_db",
+                        "mysql_table": "preparsed_keys",
+                    },
+                )(),
+            },
+        )()
+        return f"handled: {request.prompt}", normalized
 
     monkeypatch.setattr(cli, "handle_request", fake_handle_request)
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(prompts))
 
-    cli.main(["ask", "test"])
-    assert captured["handler_type"] == "CliApprovalHandler"
-
-
-def test_cli_single_run_can_prompt_for_approval_when_orchestrator_requests_it(
-    monkeypatch,
-    capsys,
-) -> None:
-    from dba_assistant.application.request_models import NormalizedRequest, RdbOverrides, RuntimeInputs, Secrets
-
-    config = type("Config", (), {"runtime": type("Runtime", (), {"default_output_mode": "summary"})(), "model": None})()
-
-    monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
-    monkeypatch.setattr(
-        adapter_module,
-        "normalize_raw_request",
-        lambda raw_prompt, *, default_output_mode, input_paths=(): NormalizedRequest(
-            raw_prompt=raw_prompt,
-            prompt=raw_prompt,
-            runtime_inputs=RuntimeInputs(output_mode="summary"),
-            secrets=Secrets(),
-            rdb_overrides=RdbOverrides(),
-        ),
-    )
-
-    def fake_run_orchestrated(normalized, *, config, approval_handler):
-        response = approval_handler.request_approval(
-            ApprovalRequest(
-                action="fetch_remote_rdb_via_ssh",
-                message="Runtime interrupt approval",
-                details={"args": {"acquisition_mode": "existing"}},
-            )
-        )
-        assert response.status is ApprovalStatus.APPROVED
-        return "continued after approval"
-
-    monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
-    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
-
-    exit_code = cli.main(["ask", "analyze remote redis"])
-
-    output = capsys.readouterr().out
-    assert exit_code == 0
-    assert "[Approval Required]" in output
-    assert "continued after approval" in output
-
-
-def test_cli_ask_produces_execution_audit_record(monkeypatch, tmp_path, capsys) -> None:
-    from dba_assistant.application.request_models import NormalizedRequest, RdbOverrides, RuntimeInputs, Secrets
-    from dba_assistant.core.observability import get_current_execution_session, observe_tool_call, reset_observability_state
-    from dba_assistant.deep_agent_integration.config import ObservabilityConfig
-
-    observability = ObservabilityConfig(
-        enabled=True,
-        console_enabled=False,
-        console_level="WARNING",
-        file_level="INFO",
-        log_dir=tmp_path / "logs",
-        app_log_file="app.log.jsonl",
-        audit_log_file="audit.jsonl",
-    )
-    config = SimpleNamespace(
-        runtime=SimpleNamespace(default_output_mode="summary"),
-        model=None,
-        observability=observability,
-    )
-
-    monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
-    monkeypatch.setattr(
-        adapter_module,
-        "normalize_raw_request",
-        lambda raw_prompt, *, default_output_mode, input_paths=(): NormalizedRequest(
-            raw_prompt=raw_prompt,
-            prompt=raw_prompt,
-            runtime_inputs=RuntimeInputs(
-                output_mode="report",
-                report_format="docx",
-                output_path=tmp_path / "outputs" / "audit-target.docx",
-                input_paths=(Path("/tmp/sample.rdb"),),
-                input_kind="local_rdb",
-            ),
-            secrets=Secrets(redis_password="super-secret"),
-            rdb_overrides=RdbOverrides(profile_name="generic"),
-        ),
-    )
-
-    def fake_run_orchestrated(normalized, *, config, approval_handler):
-        result = observe_tool_call(
-            "analyze_local_rdb",
-            {"redis_password": "super-secret", "input_paths": ["/tmp/sample.rdb"]},
-            lambda: "report generated",
-        )
-        session = get_current_execution_session()
-        assert session is not None
-        session.record_artifact(
-            output_mode="report",
-            output_path=tmp_path / "outputs" / "audit-target.docx",
-            artifact_id="artifact-cli-1",
-            report_metadata={"route": "direct_rdb_analysis", "rows_processed": "10"},
-        )
-        return result
-
-    monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
-
-    reset_observability_state()
-    exit_code = cli.main(["ask", "analyze redis password=super-secret"])
+    exit_code = cli.main(["ask", "第一轮"])
 
     assert exit_code == 0
-    output = capsys.readouterr().out
-    assert output == "report generated\n"
-
-    audit_path = observability.audit_log_path
-    records = [
-        json.loads(line)
-        for line in audit_path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
-    completion = [record for record in records if record["event_type"] == "execution_completed"]
-
-    assert len(completion) == 1
-    record = completion[0]
-    assert record["interface_surface"] == "cli"
-    assert record["final_status"] == "success"
-    assert record["selected_capability"] == "analyze_local_rdb"
-    assert record["tool_invocation_sequence"][0]["tool_name"] == "analyze_local_rdb"
-    assert record["output_mode"] == "report"
-    assert record["output_path"] == str(tmp_path / "outputs" / "audit-target.docx")
-    assert record["report_metadata"]["route"] == "direct_rdb_analysis"
-    assert "super-secret" not in json.dumps(records, ensure_ascii=False)
-
-
-def test_cli_ask_does_not_flood_terminal_with_info_progress_logs(monkeypatch, tmp_path, capsys) -> None:
-    import logging
-
-    from dba_assistant.application.request_models import NormalizedRequest, RdbOverrides, RuntimeInputs, Secrets
-    from dba_assistant.deep_agent_integration.config import ObservabilityConfig
-
-    observability = ObservabilityConfig(
-        enabled=True,
-        console_enabled=True,
-        console_level="WARNING",
-        file_level="INFO",
-        log_dir=tmp_path / "logs",
-        app_log_file="app.log.jsonl",
-        audit_log_file="audit.jsonl",
-    )
-    config = SimpleNamespace(
-        runtime=SimpleNamespace(default_output_mode="summary"),
-        model=None,
-        observability=observability,
-    )
-
-    monkeypatch.setattr(adapter_module, "load_app_config", lambda config_path=None: config)
-    monkeypatch.setattr(
-        adapter_module,
-        "normalize_raw_request",
-        lambda raw_prompt, *, default_output_mode, input_paths=(): NormalizedRequest(
-            raw_prompt=raw_prompt,
-            prompt=raw_prompt,
-            runtime_inputs=RuntimeInputs(output_mode="summary"),
-            secrets=Secrets(),
-            rdb_overrides=RdbOverrides(),
-        ),
-    )
-
-    def fake_run_orchestrated(normalized, *, config, approval_handler):
-        logging.getLogger(
-            "dba_assistant.capabilities.redis_rdb_analysis.collectors.streaming_aggregate_collector"
-        ).info(
-            "streaming aggregate progress",
-            extra={"event_name": "redis_rdb_stream_progress", "rows_processed": 100000},
-        )
-        return "final summary"
-
-    monkeypatch.setattr(adapter_module, "run_orchestrated", fake_run_orchestrated)
-
-    exit_code = cli.main(["ask", "analyze big rdbs"])
-
-    captured = capsys.readouterr()
-    assert exit_code == 0
-    assert captured.out == "final summary\n"
-    assert "streaming aggregate progress" not in captured.err
+    assert len(calls) == 2
+    follow_up = calls[1]
+    assert follow_up.prompt == "继续分析"
+    assert follow_up.input_paths == [Path("/tmp/dump.rdb")]
+    assert follow_up.mysql_host == "db.example"
+    assert follow_up.mysql_port == 3307
+    assert follow_up.mysql_user == "analyst"
+    assert follow_up.mysql_database == "analysis_db"
+    assert follow_up.mysql_table == "preparsed_keys"

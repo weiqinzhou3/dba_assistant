@@ -31,6 +31,7 @@ def test_build_model_uses_chat_openai_for_openai_compatible_provider(monkeypatch
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "temperature": 0.2,
         "stream_usage": False,
+        "max_retries": 5,
     }
     assert isinstance(result, FakeChatOpenAI)
 

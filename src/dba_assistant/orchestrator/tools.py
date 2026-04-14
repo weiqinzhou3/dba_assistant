@@ -1,8 +1,7 @@
 """Unified tool registry for the orchestrator.
 
-All tools the Deep Agent can invoke are built here.  Tools are closures
-so that connection credentials and request context
-are captured at construction time — the LLM never sees raw secrets.
+All agent-facing tools are registered here. Tools accept explicit non-sensitive
+parameters from the LLM while secrets remain in secure runtime context.
 """
 from __future__ import annotations
 
@@ -22,16 +21,18 @@ from dba_assistant.adaptors.mysql_adaptor import (
     MySQLOperationError,
 )
 from dba_assistant.adaptors.redis_adaptor import (
-    DEFAULT_CONFIG_PATTERN,
-    DEFAULT_SLOWLOG_LENGTH,
     RedisAdaptor,
     RedisConnectionConfig,
 )
 from dba_assistant.adaptors.ssh_adaptor import SSHAdaptor, SSHConnectionConfig
 from dba_assistant.application.request_models import NormalizedRequest, RdbOverrides
 from dba_assistant.application.request_models import (
+    DEFAULT_LOOPBACK_HOST,
+    DEFAULT_MYSQL_PORT,
+    DEFAULT_MYSQL_USER,
     DEFAULT_MYSQL_DATABASE,
-    DEFAULT_MYSQL_STAGE_BATCH_SIZE,
+    DEFAULT_REDIS_DB,
+    DEFAULT_REDIS_PORT,
     LARGE_RDB_WARNING_BYTES,
     build_default_mysql_table_name,
 )
@@ -43,6 +44,11 @@ from dba_assistant.interface.types import ApprovalRequest, ApprovalStatus
 from dba_assistant.capabilities.redis_rdb_analysis.remote_input import (
     RemoteRedisDiscoveryError,
     discover_remote_rdb,
+)
+from dba_assistant.capabilities.redis_rdb_analysis.types import (
+    InputSourceKind,
+    RdbAnalysisRequest,
+    SampleInput,
 )
 from dba_assistant.tools.analyze_rdb import analyze_rdb_tool
 from dba_assistant.tools.mysql_tools import (
@@ -58,26 +64,67 @@ from dba_assistant.tools.mysql_tools import (
     stage_rdb_rows_to_mysql as _stage_rows,
     table_exists as _table_exists,
 )
+from dba_assistant.orchestrator.config_collection_tool import make_ask_user_for_config_tool
+from dba_assistant.orchestrator.redis_inspection_tools import make_redis_inspection_tools
+from dba_assistant.orchestrator.report_output import (
+    append_mysql_runtime_note as _append_mysql_runtime_note,
+    render_analysis_output as _render_analysis_output,
+)
+from dba_assistant.orchestrator.tool_helpers import (
+    human_readable_size as _human_readable_size,
+    named_tool as _named_tool,
+)
 
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Public builder
+# Runtime context and builder
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ToolRuntimeContext:
+    request: NormalizedRequest
+    approval_handler: HumanApprovalHandler | None = None
+    default_redis_connection: RedisConnectionConfig | None = None
+    default_mysql_connection: MySQLConnectionConfig | None = None
+    redis_socket_timeout: float = 5.0
+    mysql_connect_timeout_seconds: float = 5.0
+    mysql_read_timeout_seconds: float = 15.0
+    mysql_write_timeout_seconds: float = 30.0
 
 def build_all_tools(
     request: NormalizedRequest,
     *,
+    config: Any | None = None,
     connection: RedisConnectionConfig | None = None,
     mysql_connection: MySQLConnectionConfig | None = None,
     remote_rdb_state: dict[str, Any] | None = None,
     approval_handler: HumanApprovalHandler | None = None,
 ) -> list:
     """Build the complete tool list available to the unified agent."""
+    runtime_config = getattr(config, "runtime", None)
+    context = ToolRuntimeContext(
+        request=request,
+        approval_handler=approval_handler,
+        default_redis_connection=connection,
+        default_mysql_connection=mysql_connection,
+        redis_socket_timeout=float(
+            getattr(runtime_config, "redis_socket_timeout", 5.0)
+        ),
+        mysql_connect_timeout_seconds=float(
+            getattr(runtime_config, "mysql_connect_timeout_seconds", 5.0)
+        ),
+        mysql_read_timeout_seconds=float(
+            getattr(runtime_config, "mysql_read_timeout_seconds", 15.0)
+        ),
+        mysql_write_timeout_seconds=float(
+            getattr(runtime_config, "mysql_write_timeout_seconds", 30.0)
+        ),
+    )
     tools: list = []
-    mysql_adaptor = MySQLAdaptor() if mysql_connection is not None else None
 
     # Local RDB analysis & inspection
     tools.append(
@@ -85,76 +132,63 @@ def build_all_tools(
     )
     tools.append(
         _make_analyze_local_rdb_stream_tool(
-            request,
-            mysql_adaptor=mysql_adaptor,
-            mysql_connection=mysql_connection,
-            approval_handler=approval_handler,
+            context,
         )
     )
     tools.append(
         _make_analyze_staged_rdb_tool(
-            request,
-            mysql_adaptor=mysql_adaptor,
-            mysql_connection=mysql_connection,
-            approval_handler=approval_handler,
+            context,
         )
     )
     tools.append(
         _make_stage_local_rdb_to_mysql_tool(
-            request,
-            mysql_adaptor=mysql_adaptor,
-            mysql_connection=mysql_connection,
-            approval_handler=approval_handler,
+            context,
         )
     )
     tools.append(
         _make_analyze_preparsed_dataset_tool(
-            request,
-            mysql_adaptor=mysql_adaptor,
-            mysql_connection=mysql_connection,
-            approval_handler=approval_handler,
+            context,
         )
     )
 
-    # Redis inspection & remote-RDB tools (only when connection info is present)
-    if connection is not None:
-        adaptor = RedisAdaptor()
-        shared_remote_rdb_state = remote_rdb_state if remote_rdb_state is not None else {}
-        tools.extend(_make_redis_inspection_tools(adaptor, connection))
-        tools.append(
-            _make_discover_remote_rdb_tool(
-                adaptor,
-                connection,
-                remote_rdb_state=shared_remote_rdb_state,
-            )
+    adaptor = RedisAdaptor()
+    shared_remote_rdb_state = remote_rdb_state if remote_rdb_state is not None else {}
+    tools.extend(
+        make_redis_inspection_tools(
+            context,
+            adaptor,
+            resolve_connection=_resolve_request_with_redis_connection,
         )
-        tools.extend(
-            _make_remote_rdb_fetch_tools(
-                request,
-                adaptor,
-                connection,
-                remote_rdb_state=shared_remote_rdb_state,
-                mysql_adaptor=mysql_adaptor,
-                mysql_connection=mysql_connection,
-                approval_handler=approval_handler,
-            )
+    )
+    tools.append(
+        _make_discover_remote_rdb_tool(
+            context,
+            adaptor,
+            remote_rdb_state=shared_remote_rdb_state,
         )
+    )
+    tools.append(
+        _make_ensure_remote_rdb_snapshot_tool(
+            context,
+            adaptor,
+            remote_rdb_state=shared_remote_rdb_state,
+        )
+    )
+    tools.append(
+        _make_fetch_remote_rdb_via_ssh_tool(
+            context,
+        )
+    )
 
-    # MySQL tools (only when MySQL connection info is present)
-    if mysql_connection is not None:
-        assert mysql_adaptor is not None
-        tools.extend(
-            _make_mysql_tools(
-                request,
-                mysql_adaptor,
-                mysql_connection,
-                approval_handler=approval_handler,
-            )
+    tools.extend(
+        _make_mysql_tools(
+            context,
         )
+    )
 
     # Generic input collection tool
     if approval_handler is not None:
-        tools.append(_make_ask_user_for_config_tool(approval_handler))
+        tools.append(make_ask_user_for_config_tool(approval_handler))
 
     return [_instrument_tool(tool) for tool in tools]
 
@@ -198,37 +232,20 @@ def _make_inspect_local_rdb_tool():
     )
 
 
-def _human_readable_size(size: int) -> str:
-    for unit in ["B", "KB", "MB", "GB"]:
-        if size < 1024:
-            return f"{size:.2f} {unit}"
-        size /= 1024
-    return f"{size:.2f} TB"
-
-
 # ---------------------------------------------------------------------------
 # Local RDB analysis (Phase 3)
 # ---------------------------------------------------------------------------
 
 def _make_analyze_local_rdb_stream_tool(
-    request: NormalizedRequest,
-    *,
-    mysql_adaptor: MySQLAdaptor | None = None,
-    mysql_connection: MySQLConnectionConfig | None = None,
-    approval_handler: HumanApprovalHandler | None = None,
+    context: ToolRuntimeContext,
 ):
     """Combined analyze + report tool for local RDB files (streaming)."""
-
-    analysis_service = _make_phase3_analysis_service(
-        request=request,
-        mysql_adaptor=mysql_adaptor,
-        mysql_connection=mysql_connection,
-        approval_handler=approval_handler,
-    )
+    request = context.request
 
     def analyze_local_rdb_stream(
         input_paths: str,
         profile_name: str = "generic",
+        report_language: str = "",
         output_mode: str = "",
         report_format: str = "",
         output_path: str = "",
@@ -261,10 +278,9 @@ def _make_analyze_local_rdb_stream_tool(
                 "input_paths": paths,
                 "input_kind": "local_rdb",
                 "profile_name": profile_name,
-                "report_language": request.runtime_inputs.report_language,
+                "report_language": report_language or request.runtime_inputs.report_language,
                 "path_mode": "direct_rdb_analysis",  # Locked to streaming
                 "profile_overrides": overrides,
-                "service": analysis_service,
             }
             analysis = analyze_rdb_tool(
                 **analyze_kwargs,
@@ -317,9 +333,10 @@ def _make_analyze_local_rdb_stream_tool(
         "analyze_local_rdb_stream",
         (
             "Analyze local Redis RDB dump files using direct streaming and generate a report. "
-            "Best for small to medium files (< 512MB). "
+            "Best for small to medium files (<= 1GB). "
             "Parameters: input_paths (comma-separated file paths), "
             "profile_name ('generic' or 'rcs'), "
+            "report_language (optional BCP47 code like 'zh-CN' or 'en-US'), "
             "output_mode ('summary' or 'report'), "
             "report_format ('summary' or 'docx'), "
             "output_path (file path, required for docx), "
@@ -329,25 +346,20 @@ def _make_analyze_local_rdb_stream_tool(
 
 
 def _make_analyze_staged_rdb_tool(
-    request: NormalizedRequest,
-    *,
-    mysql_adaptor: MySQLAdaptor | None = None,
-    mysql_connection: MySQLConnectionConfig | None = None,
-    approval_handler: HumanApprovalHandler | None = None,
+    context: ToolRuntimeContext,
 ):
     """Analyze RDB data already staged in MySQL."""
-
-    analysis_service = _make_phase3_analysis_service(
-        request=request,
-        mysql_adaptor=mysql_adaptor,
-        mysql_connection=mysql_connection,
-        approval_handler=approval_handler,
-    )
+    request = context.request
 
     def analyze_staged_rdb(
         mysql_table: str,
+        mysql_host: str = "",
+        mysql_port: int | None = None,
+        mysql_user: str = "",
+        mysql_database: str = "",
         mysql_run_id: str = "manual",
         profile_name: str = "generic",
+        report_language: str = "",
         output_mode: str = "",
         report_format: str = "",
         output_path: str = "",
@@ -355,6 +367,23 @@ def _make_analyze_staged_rdb_tool(
     ) -> str:
         if not mysql_table:
             return "Error: mysql_table is required for staged analysis."
+        resolved_request = _resolve_request_with_mysql_context(
+            context,
+            mysql_host=mysql_host,
+            mysql_port=mysql_port,
+            mysql_user=mysql_user,
+            mysql_database=mysql_database,
+            mysql_table=mysql_table,
+        )
+        analysis_service = _build_phase3_analysis_service_for_request(
+            context,
+            resolved_request,
+        )
+        if analysis_service is None:
+            return (
+                "Error: MySQL connection is not configured. "
+                "Provide mysql_host/mysql_user or gather them with ask_user_for_config first."
+            )
 
         overrides: dict[str, object] = {}
         if focus_prefixes:
@@ -370,11 +399,12 @@ def _make_analyze_staged_rdb_tool(
                 "input_paths": ["mysql:staged"],
                 "input_kind": "local_rdb",  # Indicates origin
                 "profile_name": profile_name,
-                "report_language": request.runtime_inputs.report_language,
+                "report_language": report_language or resolved_request.runtime_inputs.report_language,
                 "path_mode": "database_backed_analysis",  # Locked to MySQL backed
                 "profile_overrides": overrides,
-                "mysql_host": request.runtime_inputs.mysql_host,
-                "mysql_database": request.runtime_inputs.mysql_database,
+                "mysql_host": resolved_request.runtime_inputs.mysql_host,
+                "mysql_port": resolved_request.runtime_inputs.mysql_port,
+                "mysql_database": resolved_request.runtime_inputs.mysql_database,
                 "mysql_table": mysql_table,
                 "service": analysis_service,
             }
@@ -384,10 +414,10 @@ def _make_analyze_staged_rdb_tool(
 
         return _render_analysis_output(
             analysis,
-            runtime_inputs=request.runtime_inputs,
-            output_mode=output_mode or request.runtime_inputs.output_mode or "summary",
-            report_format=report_format or request.runtime_inputs.report_format or "summary",
-            output_path=Path(output_path) if output_path else request.runtime_inputs.output_path,
+            runtime_inputs=resolved_request.runtime_inputs,
+            output_mode=output_mode or resolved_request.runtime_inputs.output_mode or "summary",
+            report_format=report_format or resolved_request.runtime_inputs.report_format or "summary",
+            output_path=Path(output_path) if output_path else resolved_request.runtime_inputs.output_path,
         )
 
     return _named_tool(
@@ -396,32 +426,46 @@ def _make_analyze_staged_rdb_tool(
         (
             "Analyze Redis RDB data that has been previously staged in a MySQL table. "
             "Use this AFTER stage_rdb_rows_to_mysql. "
-            "Parameters: mysql_table (the staging table name), mysql_run_id, "
+            "Parameters: mysql_table (the staging table name), mysql_host, mysql_port, "
+            "mysql_user, mysql_database, mysql_run_id, report_language, "
             "profile_name, output_mode, report_format, output_path, focus_prefixes."
         ),
     )
 
 
 def _make_stage_local_rdb_to_mysql_tool(
-    request: NormalizedRequest,
-    *,
-    mysql_adaptor: MySQLAdaptor | None = None,
-    mysql_connection: MySQLConnectionConfig | None = None,
-    approval_handler: HumanApprovalHandler | None = None,
+    context: ToolRuntimeContext,
 ):
     """Stage local RDB files into MySQL for heavy-duty analysis."""
+    request = context.request
 
     def stage_local_rdb_to_mysql(
         input_paths: str,
         mysql_table: str = "",
+        mysql_host: str = "",
+        mysql_port: int | None = None,
+        mysql_user: str = "",
+        mysql_database: str = "",
+        mysql_stage_batch_size: int | None = None,
     ) -> str:
-        if mysql_adaptor is None or mysql_connection is None:
+        mysql_adaptor = MySQLAdaptor()
+        resolved_request = _resolve_request_with_mysql_context(
+            context,
+            mysql_host=mysql_host,
+            mysql_port=mysql_port,
+            mysql_user=mysql_user,
+            mysql_database=mysql_database,
+            mysql_table=mysql_table or None,
+            mysql_stage_batch_size=mysql_stage_batch_size,
+        )
+        mysql_connection = _build_mysql_connection_from_request(
+            context,
+            resolved_request,
+        )
+        if mysql_connection is None:
             return (
                 "Error: MySQL connection is not configured. "
-                "To use MySQL-backed staging for large files, the user must provide "
-                "MySQL connection details via CLI flags (e.g., --mysql-host, --mysql-user) "
-                "or the configuration file. Please inform the user to re-run the command "
-                "with the necessary MySQL flags."
+                "Provide mysql_host/mysql_user or gather them with ask_user_for_config first."
             )
 
         paths = [Path(p.strip()).expanduser() for p in input_paths.split(",") if p.strip()]
@@ -430,24 +474,25 @@ def _make_stage_local_rdb_to_mysql_tool(
 
         effective_table = mysql_table or build_default_mysql_table_name()
         run_id = f"rdb_stage_{int(time.time())}"
+        resolved_request = replace(
+            resolved_request,
+            runtime_inputs=replace(
+                resolved_request.runtime_inputs,
+                mysql_table=effective_table,
+            ),
+        )
 
         try:
-            # 1. Plan and seek approval
+            # Runtime interrupt_on gates this tool before execution. The plan is
+            # still needed to set up the approved MySQL write session.
             plan = _plan_mysql_staging_session(
-                request,
+                resolved_request,
                 mysql_adaptor,
                 mysql_connection,
                 table_name=effective_table,
             )
-            _request_mysql_staging_approval(
-                request,
-                approval_handler=approval_handler,
-                plan=plan,
-                row_count=1000000,  # Estimated for large files
-                batch_size=_effective_mysql_stage_batch_size(request),
-            )
 
-            # 2. Perform the actual heavy-duty staging via the capability service
+            # Perform the actual heavy-duty staging via the capability service.
             from dba_assistant.capabilities.redis_rdb_analysis.service import analyze_rdb as _analyze_rdb
             
             # This triggers the Path A collector internally
@@ -456,22 +501,23 @@ def _make_stage_local_rdb_to_mysql_tool(
                     prompt=request.prompt,
                     inputs=[SampleInput(source=p, kind=InputSourceKind.LOCAL_RDB) for p in paths],
                     profile_name="generic",
-                    report_language=request.runtime_inputs.report_language,
+                    report_language=resolved_request.runtime_inputs.report_language,
                     path_mode="database_backed_analysis",
-                    mysql_host=request.runtime_inputs.mysql_host,
-                    mysql_port=request.runtime_inputs.mysql_port,
-                    mysql_database=request.runtime_inputs.mysql_database,
+                    mysql_host=resolved_request.runtime_inputs.mysql_host,
+                    mysql_port=resolved_request.runtime_inputs.mysql_port,
+                    mysql_database=resolved_request.runtime_inputs.mysql_database,
                     mysql_table=effective_table,
+                    mysql_stage_batch_size=resolved_request.runtime_inputs.mysql_stage_batch_size,
                 ),
                 profile=None,
                 remote_discovery=lambda *_args, **_kwargs: {},
                 stage_rdb_rows_to_mysql=lambda table_name, rows, **kwargs: _stage_mysql_rows_direct(
-                    request,
+                    resolved_request,
                     mysql_adaptor,
                     mysql_connection,
-                    approval_handler=None, # Already approved above
+                    approval_handler=None,  # Already approved by runtime interrupt_on.
                     prepared_sessions={},
-                    approved_write_sessions={(effective_table, run_id)},
+                    approved_write_sessions={_mysql_session_key(mysql_connection, effective_table, run_id)},
                     table_name=table_name,
                     rows=rows,
                     source_file=kwargs.get("source_file", "manual"),
@@ -500,10 +546,11 @@ def _make_stage_local_rdb_to_mysql_tool(
         "stage_local_rdb_to_mysql",
         (
             "Stage local RDB files into MySQL for database-backed analysis. "
-            "Use this for LARGE files (> 512MB). "
-            "REQUIRES HUMAN APPROVAL. "
+            "Use this for LARGE files (> 1GB). "
+            "REQUIRES HUMAN APPROVAL through runtime interrupt_on. "
             "After calling this, call analyze_staged_rdb to generate the report. "
-            "Parameters: input_paths (comma-separated file paths), mysql_table (optional)."
+            "Parameters: input_paths (comma-separated file paths), mysql_table, mysql_host, "
+            "mysql_port, mysql_user, mysql_database, mysql_stage_batch_size."
         ),
     )
 
@@ -530,26 +577,22 @@ def _instrument_tool(tool):
 
 
 def _make_analyze_preparsed_dataset_tool(
-    request: NormalizedRequest,
-    *,
-    mysql_adaptor: MySQLAdaptor | None = None,
-    mysql_connection: MySQLConnectionConfig | None = None,
-    approval_handler: HumanApprovalHandler | None = None,
+    context: ToolRuntimeContext,
 ):
     """Analyze preparsed datasets from local files or MySQL-backed sources."""
-
-    analysis_service = _make_phase3_analysis_service(
-        request=request,
-        mysql_adaptor=mysql_adaptor,
-        mysql_connection=mysql_connection,
-        approval_handler=approval_handler,
-    )
+    request = context.request
 
     def analyze_preparsed_dataset(
         input_paths: str = "",
         mysql_table: str = "",
         mysql_query: str = "",
+        mysql_host: str = "",
+        mysql_port: int | None = None,
+        mysql_user: str = "",
+        mysql_database: str = "",
+        mysql_stage_batch_size: int | None = None,
         profile_name: str = "generic",
+        report_language: str = "",
         output_mode: str = "",
         report_format: str = "",
         output_path: str = "",
@@ -567,15 +610,33 @@ def _make_analyze_preparsed_dataset_tool(
         if request.rdb_overrides.top_n:
             overrides["top_n"] = dict(request.rdb_overrides.top_n)
 
-        effective_mysql_table = mysql_table or request.runtime_inputs.mysql_table
-        effective_mysql_query = mysql_query or request.runtime_inputs.mysql_query
+        resolved_request = _resolve_request_with_mysql_context(
+            context,
+            mysql_host=mysql_host,
+            mysql_port=mysql_port,
+            mysql_user=mysql_user,
+            mysql_database=mysql_database,
+            mysql_table=mysql_table or None,
+            mysql_query=mysql_query or None,
+            mysql_stage_batch_size=mysql_stage_batch_size,
+        )
+        effective_mysql_table = mysql_table or resolved_request.runtime_inputs.mysql_table
+        effective_mysql_query = mysql_query or resolved_request.runtime_inputs.mysql_query
+        analysis_service = _build_phase3_analysis_service_for_request(
+            context,
+            resolved_request,
+        )
 
-        if effective_mysql_table or effective_mysql_query or request.runtime_inputs.input_kind == "preparsed_mysql":
+        if (
+            effective_mysql_table
+            or effective_mysql_query
+            or resolved_request.runtime_inputs.input_kind == "preparsed_mysql"
+        ):
             sources = [effective_mysql_table or effective_mysql_query or "mysql:dataset"]
             input_kind = "preparsed_mysql"
         else:
             sources = [Path(p.strip()) for p in input_paths.split(",") if p.strip()]
-            input_kind = request.runtime_inputs.input_kind or "precomputed"
+            input_kind = resolved_request.runtime_inputs.input_kind or "precomputed"
             if not sources:
                 return "Error: no preparsed dataset source provided."
 
@@ -585,19 +646,19 @@ def _make_analyze_preparsed_dataset_tool(
                 "input_paths": sources,
                 "input_kind": input_kind,
                 "profile_name": profile_name,
-                "report_language": request.runtime_inputs.report_language,
-                "path_mode": request.runtime_inputs.path_mode or request.rdb_overrides.route_name or "auto",
+                "report_language": report_language or resolved_request.runtime_inputs.report_language,
+                "path_mode": resolved_request.runtime_inputs.path_mode or request.rdb_overrides.route_name or "auto",
                 "profile_overrides": overrides,
-                "mysql_host": request.runtime_inputs.mysql_host,
+                "mysql_host": resolved_request.runtime_inputs.mysql_host,
                 "mysql_table": effective_mysql_table,
                 "mysql_query": effective_mysql_query,
-                "mysql_stage_batch_size": request.runtime_inputs.mysql_stage_batch_size,
+                "mysql_stage_batch_size": resolved_request.runtime_inputs.mysql_stage_batch_size,
                 "service": analysis_service,
             }
             if _callable_accepts_keyword(analyze_rdb_tool, "mysql_port"):
-                analyze_kwargs["mysql_port"] = request.runtime_inputs.mysql_port
-            if request.runtime_inputs.mysql_database:
-                analyze_kwargs["mysql_database"] = request.runtime_inputs.mysql_database
+                analyze_kwargs["mysql_port"] = resolved_request.runtime_inputs.mysql_port
+            if resolved_request.runtime_inputs.mysql_database:
+                analyze_kwargs["mysql_database"] = resolved_request.runtime_inputs.mysql_database
             analysis = analyze_rdb_tool(
                 **analyze_kwargs,
             )
@@ -608,10 +669,10 @@ def _make_analyze_preparsed_dataset_tool(
 
         return _render_analysis_output(
             analysis,
-            runtime_inputs=request.runtime_inputs,
-            output_mode=output_mode or request.runtime_inputs.output_mode or "summary",
-            report_format=report_format or request.runtime_inputs.report_format or "summary",
-            output_path=Path(output_path) if output_path else request.runtime_inputs.output_path,
+            runtime_inputs=resolved_request.runtime_inputs,
+            output_mode=output_mode or resolved_request.runtime_inputs.output_mode or "summary",
+            report_format=report_format or resolved_request.runtime_inputs.report_format or "summary",
+            output_path=Path(output_path) if output_path else resolved_request.runtime_inputs.output_path,
         )
 
     return _named_tool(
@@ -621,7 +682,8 @@ def _make_analyze_preparsed_dataset_tool(
             "Analyze a preparsed dataset and generate a report. "
             "Supports local JSON datasets or MySQL-backed preparsed datasets. "
             "Parameters: input_paths (comma-separated local dataset paths), mysql_table, mysql_query, "
-            "profile_name, output_mode, report_format, output_path, focus_prefixes."
+            "mysql_host, mysql_port, mysql_user, mysql_database, mysql_stage_batch_size, "
+            "profile_name, report_language, output_mode, report_format, output_path, focus_prefixes."
         ),
     )
 
@@ -631,19 +693,31 @@ def _make_analyze_preparsed_dataset_tool(
 # ---------------------------------------------------------------------------
 
 def _make_discover_remote_rdb_tool(
+    context: ToolRuntimeContext,
     adaptor: RedisAdaptor,
-    connection: RedisConnectionConfig,
     *,
     remote_rdb_state: dict[str, Any] | None = None,
 ):
     """Read-only remote RDB discovery — no approval required."""
 
-    def discover_remote_rdb_tool() -> str:
+    def discover_remote_rdb_tool(
+        redis_host: str = "",
+        redis_port: int | None = None,
+        redis_db: int | None = None,
+        remote_rdb_path: str = "",
+    ) -> str:
+        resolved_request, connection = _resolve_request_with_redis_connection(
+            context,
+            redis_host=redis_host,
+            redis_port=redis_port,
+            redis_db=redis_db,
+        )
         try:
-            discovery = discover_remote_rdb_snapshot(
+            discovery = _discover_remote_rdb_snapshot_compatible(
                 adaptor,
                 connection,
                 remote_rdb_state=remote_rdb_state,
+                remote_rdb_path=remote_rdb_path or resolved_request.runtime_inputs.remote_rdb_path or "",
             )
         except RemoteRedisDiscoveryError as exc:
             return json.dumps(
@@ -668,6 +742,9 @@ def _make_discover_remote_rdb_tool(
         return json.dumps(
             {
                 "status": "succeeded",
+                "redis_host": connection.host,
+                "redis_port": connection.port,
+                "redis_db": connection.db,
                 "redis_dir": discovery.get("redis_dir"),
                 "dbfilename": discovery.get("dbfilename"),
                 "rdb_path": discovery.get("rdb_path"),
@@ -691,152 +768,126 @@ def _make_discover_remote_rdb_tool(
             "Discover the remote Redis RDB file location and persistence status. "
             "Read-only operation — does not fetch or modify anything. "
             "Returns JSON with rdb_path, lastsave, and approval_required flag. "
+            "Parameters: redis_host, redis_port, redis_db, remote_rdb_path. "
+            "If a latest snapshot is required, call ensure_remote_rdb_snapshot next. "
             "After successful discovery, do NOT ask the user for approval in plain text. "
-            "Immediately call fetch_remote_rdb_via_ssh; runtime interrupt_on will collect approval. "
             "CLI and orchestrator runtime handle approval, not the model's free-form reply."
         ),
     )
 
 
-def _make_remote_rdb_fetch_tools(
-    request: NormalizedRequest,
+def _make_ensure_remote_rdb_snapshot_tool(
+    context: ToolRuntimeContext,
     adaptor: RedisAdaptor,
-    connection: RedisConnectionConfig,
     *,
     remote_rdb_state: dict[str, Any] | None = None,
-    mysql_adaptor: MySQLAdaptor | None = None,
-    mysql_connection: MySQLConnectionConfig | None = None,
-    approval_handler: HumanApprovalHandler | None = None,
-):
-    """Remote RDB fetch + analysis tools protected by Deep Agent interrupt_on."""
-
-    analysis_service = _make_phase3_analysis_service(
-        request=request,
-        mysql_adaptor=mysql_adaptor,
-        mysql_connection=mysql_connection,
-        approval_handler=approval_handler,
-    )
-
-    def _fetch_remote_and_continue(
-        profile_name: str = "generic",
-        output_mode: str = "",
-        report_format: str = "",
-        output_path: str = "",
-        acquisition_mode: str = "",
+) -> Any:
+    def ensure_remote_rdb_snapshot_tool(
+        redis_host: str = "",
+        redis_port: int | None = None,
+        redis_db: int | None = None,
+        remote_rdb_path: str = "",
     ) -> str:
+        _, connection = _resolve_request_with_redis_connection(
+            context,
+            redis_host=redis_host,
+            redis_port=redis_port,
+            redis_db=redis_db,
+        )
         try:
-            discovery = discover_remote_rdb_snapshot(
+            discovery = _discover_remote_rdb_snapshot_compatible(
                 adaptor,
                 connection,
                 remote_rdb_state=remote_rdb_state,
+                force_refresh=True,
+                remote_rdb_path=remote_rdb_path,
             )
         except RemoteRedisDiscoveryError as exc:
             return f"Remote RDB discovery failed: {exc}"
         except Exception as exc:  # noqa: BLE001
             return f"Remote RDB discovery failed: {exc}"
 
-        acquisition_plan = resolve_remote_rdb_acquisition_plan(
-            request,
-            discovery,
-            acquisition_mode=acquisition_mode,
-        )
-        if acquisition_plan["acquisition_mode"] == "fresh_snapshot":
-            try:
-                discovery = ensure_remote_rdb_snapshot(
-                    adaptor,
-                    connection,
-                    discovery=discovery,
-                    remote_rdb_state=remote_rdb_state,
-                )
-            except Exception as exc:  # noqa: BLE001
-                return f"Latest remote RDB snapshot failed: {exc}"
+        try:
+            refreshed = ensure_remote_rdb_snapshot_state(
+                adaptor,
+                connection,
+                discovery=discovery,
+                remote_rdb_state=remote_rdb_state,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return f"Latest remote RDB snapshot failed: {exc}"
 
-        fetched_path = _fetch_remote_rdb_via_ssh(
-            request=request,
-            connection=connection,
-            discovery=discovery,
+        path_plan = resolve_remote_rdb_fetch_plan(
+            refreshed,
+            remote_rdb_path=remote_rdb_path,
         )
-        if isinstance(fetched_path, str):
-            return fetched_path
-
-        return _render_remote_rdb_analysis(
-            request=request,
-            local_path=fetched_path,
-            connection=connection,
-            profile_name=profile_name,
-            output_mode=output_mode or request.runtime_inputs.output_mode or "summary",
-            report_format=report_format or request.runtime_inputs.report_format or "summary",
-            output_path=output_path,
-            analysis_service=analysis_service,
+        return json.dumps(
+            {
+                "status": "succeeded",
+                "redis_host": connection.host,
+                "redis_port": connection.port,
+                "redis_db": connection.db,
+                "redis_dir": refreshed.get("redis_dir"),
+                "dbfilename": refreshed.get("dbfilename"),
+                "rdb_path": path_plan["remote_rdb_path"],
+                "rdb_path_source": path_plan["remote_rdb_path_source"],
+                "lastsave": refreshed.get("lastsave"),
+                "bgsave_in_progress": refreshed.get("bgsave_in_progress"),
+                "approval_required": True,
+                "next_step": "Call fetch_remote_rdb_via_ssh with rdb_path, ssh_host, and ssh_username.",
+            },
+            default=str,
         )
 
+    return _named_tool(
+        ensure_remote_rdb_snapshot_tool,
+        "ensure_remote_rdb_snapshot",
+        (
+            "Trigger a fresh Redis RDB snapshot via BGSAVE and wait until it completes. "
+            "REQUIRES HUMAN APPROVAL because it modifies remote Redis persistence state. "
+            "Parameters: redis_host, redis_port, redis_db, remote_rdb_path."
+        ),
+    )
+
+
+def _make_fetch_remote_rdb_via_ssh_tool(
+    context: ToolRuntimeContext,
+) -> Any:
     def fetch_remote_rdb_via_ssh(
-        profile_name: str = "generic",
-        output_mode: str = "",
-        report_format: str = "",
-        output_path: str = "",
-        acquisition_mode: str = "",
+        remote_rdb_path: str,
+        ssh_host: str = "",
+        ssh_port: int | None = None,
+        ssh_username: str = "",
+        local_directory: str = "",
     ) -> str:
-        return _fetch_remote_and_continue(
-            profile_name=profile_name,
-            output_mode=output_mode,
-            report_format=report_format,
-            output_path=output_path,
-            acquisition_mode=acquisition_mode,
+        if not remote_rdb_path.strip():
+            return "Error: remote_rdb_path is required before SSH fetch."
+        resolved_request = _resolve_request_with_ssh_context(
+            context,
+            ssh_host=ssh_host,
+            ssh_port=ssh_port,
+            ssh_username=ssh_username,
         )
+        fetched_path = _fetch_remote_rdb_via_ssh(
+            request=resolved_request,
+            remote_rdb_path=remote_rdb_path,
+            local_directory=local_directory,
+        )
+        return str(fetched_path)
 
-    canonical_tool = _named_tool(
+    return _named_tool(
         fetch_remote_rdb_via_ssh,
         "fetch_remote_rdb_via_ssh",
         (
-            "Fetch a remote Redis RDB over SSH, store it in a local temporary artifact, "
-            "then continue into the unified Phase 3 analysis chain. "
+            "Fetch a remote Redis RDB over SSH and store it in a local temporary artifact. "
             "REQUIRES HUMAN APPROVAL before proceeding. "
-            "Use after discover_remote_rdb. "
+            "Use after discover_remote_rdb and ensure_remote_rdb_snapshot when a fresh snapshot is needed. "
             "Call this directly when remote RDB retrieval is needed; do not ask for plain-text approval first. "
             "Approval is collected by runtime interrupt_on, not by conversational follow-up. "
-            "If remote_rdb_path is not already overridden by the user, this tool must auto-discover "
-            "Redis dir and dbfilename by querying Redis directly instead of asking the user for dir. "
-            "Parameters: profile_name, output_mode, report_format, output_path, "
-            "acquisition_mode ('existing' or 'fresh_snapshot'). "
+            "Parameters: remote_rdb_path, ssh_host, ssh_port, ssh_username, local_directory. "
             "SSH credentials come from shared request context only."
         ),
     )
-    return [canonical_tool]
-
-
-# ---------------------------------------------------------------------------
-# Redis inspection tools (Phase 2)
-# ---------------------------------------------------------------------------
-
-def _make_redis_inspection_tools(
-    adaptor: RedisAdaptor,
-    connection: RedisConnectionConfig,
-) -> list:
-    """Build the five read-only Redis inspection tools."""
-
-    def redis_ping() -> dict[str, object]:
-        return adaptor.ping(connection)
-
-    def redis_info(section: str | None = None) -> dict[str, object]:
-        return adaptor.info(connection, section=section)
-
-    def redis_config_get() -> dict[str, object]:
-        return adaptor.config_get(connection, pattern=DEFAULT_CONFIG_PATTERN)
-
-    def redis_slowlog_get() -> dict[str, object]:
-        return adaptor.slowlog_get(connection, length=DEFAULT_SLOWLOG_LENGTH)
-
-    def redis_client_list() -> dict[str, object]:
-        return adaptor.client_list(connection)
-
-    return [
-        _named_tool(redis_ping, "redis_ping", "Ping Redis and return availability status."),
-        _named_tool(redis_info, "redis_info", "Return read-only Redis INFO data. Optional parameter: section (e.g. 'memory', 'persistence', 'server')."),
-        _named_tool(redis_config_get, "redis_config_get", "Return bounded Redis CONFIG GET probe (maxmemory, dir, dbfilename)."),
-        _named_tool(redis_slowlog_get, "redis_slowlog_get", "Return bounded Redis SLOWLOG GET entries."),
-        _named_tool(redis_client_list, "redis_client_list", "Return Redis client-list count."),
-    ]
 
 
 # ---------------------------------------------------------------------------
@@ -854,23 +905,60 @@ class MySQLStagingTargetPlan:
     will_create_table: bool
 
 def _make_mysql_tools(
-    request: NormalizedRequest,
-    adaptor: MySQLAdaptor,
-    config: MySQLConnectionConfig,
-    *,
-    approval_handler: HumanApprovalHandler | None = None,
+    context: ToolRuntimeContext,
 ) -> list:
     """Build the MySQL capability tools."""
-    prepared_sessions: dict[tuple[str, str], MySQLStagingSession] = {}
-    approved_write_sessions: set[tuple[str, str]] = set()
+    prepared_sessions: dict[tuple[str, int, str, str, str], MySQLStagingSession] = {}
+    approved_write_sessions: set[tuple[str, int, str, str, str]] = set()
+    adaptor = MySQLAdaptor()
 
-    def mysql_read_query(sql: str) -> str:
+    def mysql_read_query(
+        sql: str,
+        mysql_host: str = "",
+        mysql_port: int | None = None,
+        mysql_user: str = "",
+        mysql_database: str = "",
+    ) -> str:
+        resolved_request = _resolve_request_with_mysql_context(
+            context,
+            mysql_host=mysql_host,
+            mysql_port=mysql_port,
+            mysql_user=mysql_user,
+            mysql_database=mysql_database,
+        )
+        config = _build_mysql_connection_from_request(context, resolved_request)
+        if config is None:
+            return (
+                "Error: MySQL connection is not configured. "
+                "Provide mysql_host/mysql_user or gather them with ask_user_for_config first."
+            )
         try:
             return _mysql_read(adaptor, config, sql)
         except MySQLOperationError as exc:
             return _format_mysql_error(exc)
 
-    def load_preparsed_dataset_from_mysql(table_name: str, limit: str = "100000") -> str:
+    def load_preparsed_dataset_from_mysql(
+        table_name: str,
+        limit: str = "100000",
+        mysql_host: str = "",
+        mysql_port: int | None = None,
+        mysql_user: str = "",
+        mysql_database: str = "",
+    ) -> str:
+        resolved_request = _resolve_request_with_mysql_context(
+            context,
+            mysql_host=mysql_host,
+            mysql_port=mysql_port,
+            mysql_user=mysql_user,
+            mysql_database=mysql_database,
+            mysql_table=table_name,
+        )
+        config = _build_mysql_connection_from_request(context, resolved_request)
+        if config is None:
+            return (
+                "Error: MySQL connection is not configured. "
+                "Provide mysql_host/mysql_user or gather them with ask_user_for_config first."
+            )
         try:
             return _load_dataset(adaptor, config, table_name, limit=limit)
         except MySQLOperationError as exc:
@@ -883,24 +971,42 @@ def _make_mysql_tools(
         run_id: str = "manual",
         batch_number: int | None = None,
         cumulative_rows: int | None = None,
+        mysql_host: str = "",
+        mysql_port: int | None = None,
+        mysql_user: str = "",
+        mysql_database: str = "",
     ) -> str:
+        resolved_request = _resolve_request_with_mysql_context(
+            context,
+            mysql_host=mysql_host,
+            mysql_port=mysql_port,
+            mysql_user=mysql_user,
+            mysql_database=mysql_database,
+            mysql_table=table_name or None,
+        )
+        config = _build_mysql_connection_from_request(context, resolved_request)
+        if config is None:
+            return (
+                "Error: MySQL connection is not configured. "
+                "Provide mysql_host/mysql_user or gather them with ask_user_for_config first."
+            )
         rows = json.loads(rows_json)
         effective_table = table_name or build_default_mysql_table_name()
-        effective_batch_size = _effective_mysql_stage_batch_size(request)
-        session_key = (effective_table, run_id)
+        effective_batch_size = _effective_mysql_stage_batch_size(resolved_request)
+        session_key = _mysql_session_key(config, effective_table, run_id)
         session = prepared_sessions.get(session_key)
         try:
             if session is None:
                 plan = _plan_mysql_staging_session(
-                    request,
+                    resolved_request,
                     adaptor,
                     config,
                     table_name=effective_table,
                 )
                 if session_key not in approved_write_sessions:
                     _request_mysql_staging_approval(
-                        request,
-                        approval_handler=approval_handler,
+                        resolved_request,
+                        approval_handler=context.approval_handler,
                         plan=plan,
                         row_count=len(rows),
                         batch_size=effective_batch_size,
@@ -930,8 +1036,8 @@ def _make_mysql_tools(
                 "staged": count,
                 "table": session.table_name,
                 "database": session.database_name,
-                "mysql_host": request.runtime_inputs.effective_mysql_host(),
-                "mysql_port": request.runtime_inputs.mysql_port,
+                "mysql_host": config.host,
+                "mysql_port": config.port,
                 "run_id": session.run_id,
                 "source_file": source_file or "manual",
                 "created_database": session.created_database,
@@ -948,13 +1054,13 @@ def _make_mysql_tools(
             mysql_read_query,
             "mysql_read_query",
             "Execute a bounded read-only SQL query against MySQL and return the result as JSON. "
-            "Parameter: sql (the SQL query string).",
+            "Parameters: sql, mysql_host, mysql_port, mysql_user, mysql_database.",
         ),
         _named_tool(
             load_preparsed_dataset_from_mysql,
             "load_preparsed_dataset_from_mysql",
             "Load a preparsed dataset from a MySQL table and return it as JSON. "
-            "Parameters: table_name (the table to read), limit (max rows, default 100000).",
+            "Parameters: table_name, limit, mysql_host, mysql_port, mysql_user, mysql_database.",
         ),
         _named_tool(
             stage_rdb_rows_to_mysql,
@@ -962,9 +1068,220 @@ def _make_mysql_tools(
             "Stage parsed RDB rows into a MySQL table for database-backed aggregation. "
             "REQUIRES HUMAN APPROVAL — this is a write operation. "
             "Call this directly when staging is required; approval is collected by the shared human approval handler. "
-            "Parameters: table_name (staging table name), rows_json (JSON array of row objects).",
+            "Parameters: table_name, rows_json, mysql_host, mysql_port, mysql_user, mysql_database.",
         ),
     ]
+
+
+def _resolve_request_with_redis_connection(
+    context: ToolRuntimeContext,
+    *,
+    redis_host: str = "",
+    redis_port: int | None = None,
+    redis_db: int | None = None,
+) -> tuple[NormalizedRequest, RedisConnectionConfig]:
+    request = context.request
+    default_connection = context.default_redis_connection
+    host = (
+        redis_host.strip()
+        or request.runtime_inputs.redis_host
+        or (default_connection.host if default_connection is not None else "")
+        or DEFAULT_LOOPBACK_HOST
+    )
+    port = int(
+        redis_port
+        if redis_port is not None
+        else request.runtime_inputs.redis_port
+        if request.runtime_inputs.redis_port is not None
+        else default_connection.port
+        if default_connection is not None
+        else DEFAULT_REDIS_PORT
+    )
+    db = int(
+        redis_db
+        if redis_db is not None
+        else request.runtime_inputs.redis_db
+        if request.runtime_inputs.redis_db is not None
+        else default_connection.db
+        if default_connection is not None
+        else DEFAULT_REDIS_DB
+    )
+    resolved_request = replace(
+        request,
+        runtime_inputs=replace(
+            request.runtime_inputs,
+            redis_host=host,
+            redis_port=port,
+            redis_db=db,
+        ),
+    )
+    connection = RedisConnectionConfig(
+        host=host,
+        port=port,
+        db=db,
+        password=request.secrets.redis_password
+        or (default_connection.password if default_connection is not None else None),
+        socket_timeout=(
+            default_connection.socket_timeout
+            if default_connection is not None and default_connection.socket_timeout is not None
+            else context.redis_socket_timeout
+        ),
+    )
+    return resolved_request, connection
+
+
+def _resolve_request_with_mysql_context(
+    context: ToolRuntimeContext,
+    *,
+    mysql_host: str = "",
+    mysql_port: int | None = None,
+    mysql_user: str = "",
+    mysql_database: str = "",
+    mysql_table: str | None = None,
+    mysql_query: str | None = None,
+    mysql_stage_batch_size: int | None = None,
+) -> NormalizedRequest:
+    request = context.request
+    default_connection = context.default_mysql_connection
+    resolved_port = int(
+        mysql_port
+        if mysql_port is not None
+        else request.runtime_inputs.mysql_port
+        if request.runtime_inputs.mysql_port is not None
+        else default_connection.port
+        if default_connection is not None
+        else DEFAULT_MYSQL_PORT
+    )
+    runtime_updates: dict[str, object] = {
+        "mysql_host": mysql_host.strip()
+        or request.runtime_inputs.mysql_host
+        or (default_connection.host if default_connection is not None else None)
+        or DEFAULT_LOOPBACK_HOST,
+        "mysql_port": resolved_port,
+        "mysql_user": mysql_user.strip()
+        or request.runtime_inputs.mysql_user
+        or (default_connection.user if default_connection is not None else None)
+        or DEFAULT_MYSQL_USER,
+        "mysql_database": mysql_database.strip()
+        or request.runtime_inputs.mysql_database
+        or (default_connection.database if default_connection is not None else None)
+        or DEFAULT_MYSQL_DATABASE,
+    }
+    if mysql_table is not None:
+        runtime_updates["mysql_table"] = mysql_table or None
+    if mysql_query is not None:
+        runtime_updates["mysql_query"] = mysql_query or None
+    if mysql_stage_batch_size is not None:
+        runtime_updates["mysql_stage_batch_size"] = mysql_stage_batch_size
+    return replace(
+        request,
+        runtime_inputs=replace(
+            request.runtime_inputs,
+            **runtime_updates,
+        ),
+    )
+
+
+def _build_mysql_connection_from_request(
+    context: ToolRuntimeContext,
+    request: NormalizedRequest,
+) -> MySQLConnectionConfig | None:
+    default_connection = context.default_mysql_connection
+    runtime = request.runtime_inputs
+    host = runtime.mysql_host or (default_connection.host if default_connection is not None else None)
+    if not host:
+        return None
+    return MySQLConnectionConfig(
+        host=host,
+        port=runtime.mysql_port or (default_connection.port if default_connection is not None else DEFAULT_MYSQL_PORT),
+        user=runtime.mysql_user or (default_connection.user if default_connection is not None else DEFAULT_MYSQL_USER),
+        password=request.secrets.mysql_password or (default_connection.password if default_connection is not None else ""),
+        database=runtime.mysql_database or (default_connection.database if default_connection is not None else DEFAULT_MYSQL_DATABASE),
+        connect_timeout_seconds=context.mysql_connect_timeout_seconds,
+        read_timeout_seconds=context.mysql_read_timeout_seconds,
+        write_timeout_seconds=context.mysql_write_timeout_seconds,
+    )
+
+
+def _resolve_request_with_ssh_context(
+    context: ToolRuntimeContext,
+    *,
+    ssh_host: str = "",
+    ssh_port: int | None = None,
+    ssh_username: str = "",
+    fallback_host: str = "",
+) -> NormalizedRequest:
+    request = context.request
+    host = (
+        ssh_host.strip()
+        or request.runtime_inputs.ssh_host
+        or fallback_host.strip()
+        or request.runtime_inputs.redis_host
+        or (context.default_redis_connection.host if context.default_redis_connection is not None else "")
+    )
+    username = ssh_username.strip() or request.runtime_inputs.ssh_username or ""
+    if not host:
+        raise ValueError("ssh_host is required. Ask the user for SSH host if it is missing.")
+    if not username:
+        raise ValueError("ssh_username is required. Ask the user for SSH username if it is missing.")
+    resolved_port = int(ssh_port if ssh_port is not None else request.runtime_inputs.ssh_port or 22)
+    return replace(
+        request,
+        runtime_inputs=replace(
+            request.runtime_inputs,
+            ssh_host=host,
+            ssh_port=resolved_port,
+            ssh_username=username,
+        ),
+    )
+
+
+def _build_ssh_connection_from_request(request: NormalizedRequest) -> SSHConnectionConfig:
+    if not request.runtime_inputs.ssh_host:
+        raise ValueError("ssh_host is required before SSH fetch.")
+    if not request.runtime_inputs.ssh_username:
+        raise ValueError("ssh_username is required before SSH fetch.")
+    if not request.secrets.ssh_password:
+        raise ValueError("ssh_password is missing. Ask the user for it with secure input.")
+    return SSHConnectionConfig(
+        host=request.runtime_inputs.ssh_host,
+        port=int(request.runtime_inputs.ssh_port or 22),
+        username=request.runtime_inputs.ssh_username,
+        password=request.secrets.ssh_password,
+    )
+
+
+def _build_phase3_analysis_service_for_request(
+    context: ToolRuntimeContext,
+    request: NormalizedRequest,
+):
+    mysql_connection = _build_mysql_connection_from_request(context, request)
+    if mysql_connection is None:
+        return None
+    return _make_phase3_analysis_service(
+        request=request,
+        mysql_adaptor=MySQLAdaptor(),
+        mysql_connection=mysql_connection,
+        approval_handler=context.approval_handler,
+    )
+
+
+def _mysql_session_key(
+    connection: MySQLConnectionConfig,
+    table_name: str,
+    run_id: str,
+) -> tuple[str, int, str, str, str]:
+    return (
+        connection.host,
+        connection.port,
+        connection.database or DEFAULT_MYSQL_DATABASE,
+        table_name,
+        run_id,
+    )
+
+
+def _redis_cache_key(connection: RedisConnectionConfig) -> tuple[str, int, int]:
+    return (connection.host, connection.port, connection.db)
 
 
 def _make_phase3_analysis_service(
@@ -977,8 +1294,8 @@ def _make_phase3_analysis_service(
     if mysql_adaptor is None or mysql_connection is None:
         return None
     normalized_request = request
-    prepared_sessions: dict[tuple[str, str], MySQLStagingSession] = {}
-    approved_write_sessions: set[tuple[str, str]] = set()
+    prepared_sessions: dict[tuple[str, int, str, str, str], MySQLStagingSession] = {}
+    approved_write_sessions: set[tuple[str, int, str, str, str]] = set()
 
     def run_analysis(analysis_request):
         from dba_assistant.capabilities.redis_rdb_analysis.service import analyze_rdb as _analyze_rdb
@@ -1004,7 +1321,11 @@ def _make_phase3_analysis_service(
             ),
             analyze_staged_rdb_rows=lambda staging, *, profile, sample_rows: _analyze_staged(
                 mysql_adaptor,
-                prepared_sessions[(staging.table_name, staging.run_id)],
+                prepared_sessions[_mysql_session_key(
+                    mysql_connection,
+                    staging.table_name,
+                    staging.run_id,
+                )],
                 profile=profile,
                 sample_rows=sample_rows,
             ),
@@ -1019,21 +1340,20 @@ def _make_phase3_analysis_service(
 def _fetch_remote_rdb_via_ssh(
     *,
     request: NormalizedRequest,
-    connection: RedisConnectionConfig,
-    discovery: dict[str, object],
+    remote_rdb_path: str,
+    local_directory: str = "",
 ) -> Path | str:
-    resolution = resolve_remote_rdb_fetch_plan(request, discovery)
-    target_path = resolution["remote_rdb_path"]
+    target_path = remote_rdb_path.strip()
     if not target_path:
-        return "Remote RDB discovery did not return a usable rdb_path."
+        return "Remote RDB path is required before SSH fetch."
 
-    ssh_config = SSHConnectionConfig(
-        host=request.runtime_inputs.ssh_host or connection.host,
-        port=int(request.runtime_inputs.ssh_port or 22),
-        username=request.runtime_inputs.ssh_username or None,
-        password=request.secrets.ssh_password or None,
+    ssh_config = _build_ssh_connection_from_request(request)
+    local_dir = (
+        Path(local_directory).expanduser()
+        if local_directory.strip()
+        else Path(tempfile.mkdtemp(prefix="dba-assistant-remote-rdb-"))
     )
-    local_dir = Path(tempfile.mkdtemp(prefix="dba-assistant-remote-rdb-"))
+    local_dir.mkdir(parents=True, exist_ok=True)
     local_path = local_dir / Path(target_path).name
 
     try:
@@ -1048,30 +1368,61 @@ def discover_remote_rdb_snapshot(
     *,
     remote_rdb_state: dict[str, Any] | None = None,
     force_refresh: bool = False,
+    remote_rdb_path: str = "",
 ) -> dict[str, object]:
+    cache_key = _redis_cache_key(connection)
     if remote_rdb_state is not None and not force_refresh:
-        cached = remote_rdb_state.get("discovery")
+        cached = remote_rdb_state.get(cache_key)
         if isinstance(cached, dict):
             return cached
 
     discovery = discover_remote_rdb(adaptor, connection)
+    path_plan = resolve_remote_rdb_fetch_plan(discovery, remote_rdb_path=remote_rdb_path)
+    discovery = {
+        **discovery,
+        "rdb_path": path_plan["remote_rdb_path"],
+        "rdb_path_source": path_plan["remote_rdb_path_source"],
+    }
     if remote_rdb_state is not None:
-        remote_rdb_state["discovery"] = discovery
+        remote_rdb_state[cache_key] = discovery
     return discovery
 
 
+def _discover_remote_rdb_snapshot_compatible(
+    adaptor: RedisAdaptor,
+    connection: RedisConnectionConfig,
+    *,
+    remote_rdb_state: dict[str, Any] | None = None,
+    force_refresh: bool = False,
+    remote_rdb_path: str = "",
+) -> dict[str, object]:
+    try:
+        return discover_remote_rdb_snapshot(
+            adaptor,
+            connection,
+            remote_rdb_state=remote_rdb_state,
+            force_refresh=force_refresh,
+            remote_rdb_path=remote_rdb_path,
+        )
+    except TypeError as exc:
+        if "remote_rdb_path" not in str(exc) and "force_refresh" not in str(exc):
+            raise
+        return discover_remote_rdb_snapshot(
+            adaptor,
+            connection,
+            remote_rdb_state=remote_rdb_state,
+        )
+
+
 def resolve_remote_rdb_fetch_plan(
-    request: NormalizedRequest,
     discovery: dict[str, object] | None,
     *,
     remote_rdb_path: str = "",
 ) -> dict[str, str]:
-    user_override_path = ""
-    if request.runtime_inputs.remote_rdb_path_source == "user_override":
-        user_override_path = str(request.runtime_inputs.remote_rdb_path or "").strip()
-    if user_override_path:
+    override_path = str(remote_rdb_path or "").strip()
+    if override_path:
         return {
-            "remote_rdb_path": user_override_path,
+            "remote_rdb_path": override_path,
             "remote_rdb_path_source": "user_override",
         }
 
@@ -1083,35 +1434,22 @@ def resolve_remote_rdb_fetch_plan(
             "remote_rdb_path_source": discovered_source or "discovered",
         }
 
-    fallback_path = ""
-    fallback_source = ""
-    if request.runtime_inputs.remote_rdb_path:
-        fallback_path = str(request.runtime_inputs.remote_rdb_path).strip()
-        fallback_source = str(
-            request.runtime_inputs.remote_rdb_path_source or "fallback_default"
-        ).strip()
-    elif remote_rdb_path:
-        fallback_path = str(remote_rdb_path).strip()
-        fallback_source = "fallback_default"
-
     return {
-        "remote_rdb_path": fallback_path,
-        "remote_rdb_path_source": fallback_source or "fallback_default",
+        "remote_rdb_path": "",
+        "remote_rdb_path_source": "unresolved",
     }
 
 
 def resolve_remote_rdb_acquisition_plan(
-    request: NormalizedRequest,
     discovery: dict[str, object] | None,
     *,
-    acquisition_mode: str = "",
+    acquisition_mode: str = "existing",
+    remote_rdb_path: str = "",
 ) -> dict[str, str]:
-    mode = (acquisition_mode or "").strip() or (
-        "fresh_snapshot" if request.runtime_inputs.require_fresh_rdb_snapshot else "existing"
-    )
+    mode = (acquisition_mode or "").strip() or "existing"
     if mode not in {"existing", "fresh_snapshot"}:
         mode = "existing"
-    path_plan = resolve_remote_rdb_fetch_plan(request, discovery)
+    path_plan = resolve_remote_rdb_fetch_plan(discovery, remote_rdb_path=remote_rdb_path)
     return {
         "acquisition_mode": mode,
         "bgsave_required": "yes" if mode == "fresh_snapshot" else "no",
@@ -1121,7 +1459,7 @@ def resolve_remote_rdb_acquisition_plan(
     }
 
 
-def ensure_remote_rdb_snapshot(
+def ensure_remote_rdb_snapshot_state(
     adaptor: RedisAdaptor,
     connection: RedisConnectionConfig,
     *,
@@ -1148,7 +1486,7 @@ def ensure_remote_rdb_snapshot(
         "bgsave_in_progress": persistence.get("bgsave_in_progress"),
     }
     if remote_rdb_state is not None:
-        remote_rdb_state["discovery"] = refreshed
+        remote_rdb_state[_redis_cache_key(connection)] = refreshed
     return refreshed
 
 
@@ -1271,46 +1609,6 @@ def _render_remote_rdb_analysis(
     artifact = _generate(analysis, config)
     if artifact.content is not None:
         return _append_mysql_runtime_note(artifact.content, analysis=analysis)
-    if artifact.output_path is not None:
-        return str(artifact.output_path)
-    return "Analysis complete but no output generated."
-
-
-def _render_analysis_output(
-    analysis,
-    *,
-    runtime_inputs,
-    output_mode: str,
-    report_format: str,
-    output_path: Path | None,
-) -> str:
-    from dba_assistant.core.reporter.generate_analysis_report import (
-        generate_analysis_report as _generate,
-    )
-
-    effective_runtime_inputs = ensure_report_output_path(
-        replace(
-            runtime_inputs,
-            output_mode=output_mode,
-            report_format=report_format,
-            output_path=output_path,
-        ),
-        report_format,
-    )
-    fmt = ReportFormat.SUMMARY if report_format == "summary" else ReportFormat.DOCX
-    if fmt is ReportFormat.DOCX and effective_runtime_inputs.output_path is None:
-        return "Error: DOCX output requires an output path."
-
-    config = ReportOutputConfig(
-        mode=OutputMode.SUMMARY if output_mode == "summary" else OutputMode.REPORT,
-        format=fmt,
-        output_path=effective_runtime_inputs.output_path,
-        template_name="rdb-analysis",
-        language=getattr(analysis, "language", "zh-CN"),
-    )
-    artifact = _generate(analysis, config)
-    if artifact.content is not None:
-        return artifact.content
     if artifact.output_path is not None:
         return str(artifact.output_path)
     return "Analysis complete but no output generated."
@@ -1516,8 +1814,8 @@ def _stage_mysql_rows_direct(
     config: MySQLConnectionConfig,
     *,
     approval_handler: HumanApprovalHandler | None,
-    prepared_sessions: dict[tuple[str, str], MySQLStagingSession],
-    approved_write_sessions: set[tuple[str, str]],
+    prepared_sessions: dict[tuple[str, int, str, str, str], MySQLStagingSession],
+    approved_write_sessions: set[tuple[str, int, str, str, str]],
     table_name: str,
     rows: list[dict[str, object]],
     source_file: str,
@@ -1527,7 +1825,7 @@ def _stage_mysql_rows_direct(
 ) -> dict[str, object]:
     effective_table = table_name or request.runtime_inputs.mysql_table or build_default_mysql_table_name()
     effective_batch_size = _effective_mysql_stage_batch_size(request)
-    session_key = (effective_table, run_id)
+    session_key = _mysql_session_key(config, effective_table, run_id)
     session = prepared_sessions.get(session_key)
     if session is None:
         plan = _plan_mysql_staging_session(
@@ -1642,62 +1940,9 @@ def _callable_accepts_keyword(func: Any, keyword: str) -> bool:
     return keyword in signature.parameters
 
 
-def _make_ask_user_for_config_tool(approval_handler: HumanApprovalHandler):
-    """Tool to ask the user for missing information interactively."""
-
-    def ask_user_for_config(question: str, secure: bool = False) -> str:
-        return approval_handler.collect_input(question, secure=secure)
-
-    return _named_tool(
-        ask_user_for_config,
-        "ask_user_for_config",
-        (
-            "Ask the user a question to collect missing configuration or parameters. "
-            "Use this if you need information like MySQL host, user, or password "
-            "that was not provided in the original request. "
-            "Parameters: question (text to show to the user), secure (True for passwords)."
-        ),
-    )
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _named_tool(func: Any, name: str, description: str) -> Any:
-    func.__name__ = name
-    func.__doc__ = description
-    return func
-
-
-def _append_mysql_runtime_note(content: str, *, analysis) -> str:
-    metadata = getattr(analysis, "metadata", None)
-    if not isinstance(metadata, dict):
-        return content
-    if metadata.get("route") != "database_backed_analysis":
-        return content
-    database_name = str(metadata.get("mysql_database") or "").strip() or DEFAULT_MYSQL_DATABASE
-    table_name = str(metadata.get("mysql_table") or "").strip() or "unknown"
-    staged_rows = str(metadata.get("mysql_staged_rows") or "0")
-    batch_size = str(metadata.get("mysql_stage_batch_size") or DEFAULT_MYSQL_STAGE_BATCH_SIZE)
-    cleanup_mode = str(metadata.get("mysql_cleanup_mode") or "retain")
-    progress = str(metadata.get("mysql_progress") or "").strip()
-    lines = [
-        "[MySQL-backed staging]",
-        f"database={database_name}",
-        f"table={table_name}",
-        f"staged_rows={staged_rows}",
-        f"batch_size={batch_size}",
-        "shared_table_mode=yes",
-        "full_table_reload=disabled",
-        f"cleanup_mode={cleanup_mode}",
-    ]
-    if progress:
-        lines.append(f"progress={progress}")
-    note = "\n".join(lines)
-    if note in content:
-        return content
-    return f"{content}\n\n{note}"
 
 
 def _effective_mysql_stage_batch_size(request: NormalizedRequest) -> int:

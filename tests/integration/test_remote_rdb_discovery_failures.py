@@ -52,18 +52,6 @@ def test_run_orchestrated_surfaces_real_discovery_failure_through_approval_and_f
     monkeypatch.setattr(agent_module, "get_memory_sources", lambda: [])
     monkeypatch.setattr(agent_module, "get_skill_sources", lambda: [])
     monkeypatch.setattr(
-        agent_module,
-        "discover_remote_rdb_snapshot",
-        lambda adaptor, connection, remote_rdb_state=None: (_ for _ in ()).throw(
-            RemoteRedisDiscoveryError(
-                kind="permission_denied",
-                stage="config_get(dir)",
-                message="permission_denied: CONFIG GET dir not permitted by ACL",
-                redis_password_supplied=True,
-            )
-        ),
-    )
-    monkeypatch.setattr(
         "dba_assistant.orchestrator.tools.discover_remote_rdb_snapshot",
         lambda adaptor, connection, remote_rdb_state=None: (_ for _ in ()).throw(
             RemoteRedisDiscoveryError(
@@ -76,8 +64,8 @@ def test_run_orchestrated_surfaces_real_discovery_failure_through_approval_and_f
     )
 
     def fake_create_deep_agent(**kwargs):
-        fetch_tool = next(tool for tool in kwargs["tools"] if tool.__name__ == "fetch_remote_rdb_via_ssh")
-        description = kwargs["interrupt_on"]["fetch_remote_rdb_via_ssh"]["description"]
+        ensure_tool = next(tool for tool in kwargs["tools"] if tool.__name__ == "ensure_remote_rdb_snapshot")
+        description = kwargs["interrupt_on"]["ensure_remote_rdb_snapshot"]["description"]
 
         class FakeAgent:
             def __init__(self) -> None:
@@ -87,7 +75,7 @@ def test_run_orchestrated_surfaces_real_discovery_failure_through_approval_and_f
                 self.calls += 1
                 if self.calls == 1:
                     approval["text"] = description(
-                        {"args": {"acquisition_mode": "fresh_snapshot"}},
+                        {"args": {"redis_host": "192.168.23.54", "redis_port": 6379, "redis_db": 0}},
                         None,
                         None,
                     )
@@ -97,14 +85,14 @@ def test_run_orchestrated_surfaces_real_discovery_failure_through_approval_and_f
                                 {
                                     "action_requests": [
                                         {
-                                            "name": "fetch_remote_rdb_via_ssh",
-                                            "args": {"acquisition_mode": "fresh_snapshot"},
+                                            "name": "ensure_remote_rdb_snapshot",
+                                            "args": {"redis_host": "192.168.23.54", "redis_port": 6379, "redis_db": 0},
                                             "description": approval["text"],
                                         }
                                     ],
                                     "review_configs": [
                                         {
-                                            "action_name": "fetch_remote_rdb_via_ssh",
+                                            "action_name": "ensure_remote_rdb_snapshot",
                                             "allowed_decisions": ["approve", "reject"],
                                         }
                                     ],
@@ -116,7 +104,7 @@ def test_run_orchestrated_surfaces_real_discovery_failure_through_approval_and_f
                     "messages": [
                         {
                             "role": "assistant",
-                            "content": fetch_tool(acquisition_mode="fresh_snapshot"),
+                            "content": ensure_tool(redis_host="192.168.23.54", redis_port=6379, redis_db=0),
                         }
                     ]
                 }
@@ -131,11 +119,8 @@ def test_run_orchestrated_surfaces_real_discovery_failure_through_approval_and_f
         approval_handler=AutoApproveHandler(approve=True),
     )
 
-    assert "permission_denied" in approval["text"]
-    assert "Discovery failure stage: config_get(dir)" in approval["text"]
-    assert "Redis password supplied: yes" in approval["text"]
-    assert "Redis dir: unresolved" not in approval["text"]
+    assert "Target Redis: 192.168.23.54:6379" in approval["text"]
+    assert "BGSAVE" in approval["text"]
+    assert "permission_denied" not in approval["text"]
     assert "permission_denied" in result
-    assert "config_get(dir)" in result
-    assert "redis_password_supplied: yes" in result
-    assert "provide dir/dbfilename" not in result.lower()
+    assert "remote rdb discovery failed" in result.lower()

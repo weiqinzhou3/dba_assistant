@@ -36,13 +36,13 @@ def test_build_all_tools_includes_mysql_tools_with_mysql_connection() -> None:
     assert "stage_rdb_rows_to_mysql" in names
 
 
-def test_build_all_tools_excludes_mysql_tools_without_connection() -> None:
+def test_build_all_tools_includes_mysql_tools_without_prebuilt_connection() -> None:
     request = _make_request()
     tools = build_all_tools(request)
     names = [t.__name__ for t in tools]
 
-    assert "mysql_read_query" not in names
-    assert "stage_rdb_rows_to_mysql" not in names
+    assert "mysql_read_query" in names
+    assert "stage_rdb_rows_to_mysql" in names
 
 
 def test_build_all_tools_includes_both_redis_and_mysql_tools() -> None:
@@ -54,7 +54,7 @@ def test_build_all_tools_includes_both_redis_and_mysql_tools() -> None:
     tools = build_all_tools(request, connection=redis_conn, mysql_connection=mysql_conn)
     names = [t.__name__ for t in tools]
 
-    assert "analyze_local_rdb" in names
+    assert "analyze_local_rdb_stream" in names
     assert "redis_ping" in names
     assert "mysql_read_query" in names
     assert "stage_rdb_rows_to_mysql" in names

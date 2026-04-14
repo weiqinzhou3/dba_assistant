@@ -75,7 +75,8 @@ def test_streaming_aggregate_collector_emits_structured_performance_logs(
 
     assert performance_records
     assert any(record.get("event_name") == "redis_rdb_stream_progress" for record in performance_records)
-    assert any(record.get("event_name") == "redis_rdb_stream_phase" for record in performance_records)
+    assert any(record.get("rows_processed") == 1 for record in performance_records)
+    assert any(record.get("rows_processed") == 2 for record in performance_records)
     assert "streaming aggregate progress" not in console_output
 
     reset_observability_state()

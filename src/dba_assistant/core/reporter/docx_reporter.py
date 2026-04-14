@@ -8,7 +8,6 @@ from types import ModuleType
 
 from docx import Document
 
-from dba_assistant.capabilities.redis_rdb_analysis.reports.localization import normalize_report_language
 from dba_assistant.core.analyzer.types import AnalysisResult
 from dba_assistant.core.reporter.docx_styles import (
     add_body_paragraph,
@@ -21,6 +20,7 @@ from dba_assistant.core.reporter.docx_styles import (
     apply_document_theme,
     style_table,
 )
+from dba_assistant.core.reporter.localization import normalize_report_language
 from dba_assistant.core.reporter.report_model import AnalysisReport, TableBlock, TextBlock, coerce_analysis_report
 from dba_assistant.core.reporter.types import IReporter, ReportArtifact, ReportFormat, ReportOutputConfig
 

@@ -36,3 +36,11 @@ DBA Assistant is a Deep Agents SDK-based project. Functional delivery happens ph
 
 - The repository is Python-first.
 - TypeScript files under the reference layer do not define the production language choice.
+
+## Redis Connection Information
+
+- Redis server: 192.168.23.54:6379
+- SSH server: 192.168.23.54:22
+- SSH username: root
+- SSH password: root (provided via secure context)
+- Remote RDB acquisition mode: fresh_snapshot

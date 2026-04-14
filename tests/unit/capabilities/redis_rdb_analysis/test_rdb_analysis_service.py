@@ -438,7 +438,7 @@ def test_analyze_rdb_mysql_backed_prefix_detail_uses_canonical_dataset_without_v
     )
     calls: dict[str, object] = {}
     monkeypatch.setattr(
-        "dba_assistant.skills.redis_rdb_analysis.service._stream_rdb_rows",
+        "dba_assistant.capabilities.redis_rdb_analysis.service._stream_rdb_rows",
         lambda _path: _streamed_rows(rows),
     )
 
@@ -501,7 +501,7 @@ def test_analyze_rdb_mysql_backed_prefix_details_support_arbitrary_prefixes_with
         },
     )
     monkeypatch.setattr(
-        "dba_assistant.skills.redis_rdb_analysis.service._stream_rdb_rows",
+        "dba_assistant.capabilities.redis_rdb_analysis.service._stream_rdb_rows",
         lambda _path: _streamed_rows(rows),
     )
 
@@ -663,7 +663,7 @@ def test_analyze_rdb_database_backed_route_stages_rows_into_shared_mysql_session
     calls: dict[str, object] = {}
 
     monkeypatch.setattr(
-        "dba_assistant.skills.redis_rdb_analysis.service._stream_rdb_rows",
+        "dba_assistant.capabilities.redis_rdb_analysis.service._stream_rdb_rows",
         lambda _path: _streamed_rows(rows),
     )
 
@@ -722,7 +722,7 @@ def test_analyze_rdb_database_backed_route_round_trips_mysql_text_values_without
     )
 
     monkeypatch.setattr(
-        "dba_assistant.skills.redis_rdb_analysis.service._stream_rdb_rows",
+        "dba_assistant.capabilities.redis_rdb_analysis.service._stream_rdb_rows",
         lambda _path: _streamed_rows(rows),
     )
 
@@ -766,7 +766,7 @@ def test_analyze_rdb_database_backed_route_uses_mysql_side_aggregation_without_f
     calls: dict[str, object] = {}
 
     monkeypatch.setattr(
-        "dba_assistant.skills.redis_rdb_analysis.service._stream_rdb_rows",
+        "dba_assistant.capabilities.redis_rdb_analysis.service._stream_rdb_rows",
         lambda _path: _streamed_rows(rows),
     )
 
@@ -822,7 +822,7 @@ def test_analyze_rdb_database_backed_route_uses_one_shared_staging_table_for_mul
     staged_tables: list[str] = []
 
     monkeypatch.setattr(
-        "dba_assistant.skills.redis_rdb_analysis.service._stream_rdb_rows",
+        "dba_assistant.capabilities.redis_rdb_analysis.service._stream_rdb_rows",
         lambda path: _streamed_rows(rows_by_path[path]),
     )
 
@@ -875,7 +875,7 @@ def test_analyze_rdb_database_backed_route_prefers_stream_rows_result_over_parse
             return StreamedRowsResult(rows=iter(rows), strategy_name="fake-stream-strategy")
 
     monkeypatch.setattr(
-        "dba_assistant.skills.redis_rdb_analysis.service.build_default_rdb_parser_strategy",
+        "dba_assistant.capabilities.redis_rdb_analysis.service.build_default_rdb_parser_strategy",
         lambda: FakeStrategy(),
     )
 
@@ -911,7 +911,7 @@ def test_analyze_rdb_large_local_file_auto_uses_streaming_large_summary_profile(
 ) -> None:
     large_rdb = tmp_path / "large.rdb"
     with large_rdb.open("wb") as handle:
-        handle.truncate(513 * 1024 * 1024)
+        handle.truncate(1025 * 1024 * 1024)
 
     rows = [
         {"key_name": "cache:1", "key_type": "string", "size_bytes": 300, "has_expiration": False, "ttl_seconds": None},
@@ -925,7 +925,7 @@ def test_analyze_rdb_large_local_file_auto_uses_streaming_large_summary_profile(
     )
 
     monkeypatch.setattr(
-        "dba_assistant.skills.redis_rdb_analysis.service._stream_rdb_rows",
+        "dba_assistant.capabilities.redis_rdb_analysis.service._stream_rdb_rows",
         lambda _path: _streamed_rows(rows),
     )
 
@@ -934,7 +934,7 @@ def test_analyze_rdb_large_local_file_auto_uses_streaming_large_summary_profile(
             raise AssertionError("large-file direct analysis should bypass PathCDirectParserCollector")
 
     monkeypatch.setattr(
-        "dba_assistant.skills.redis_rdb_analysis.service.PathCDirectParserCollector",
+        "dba_assistant.capabilities.redis_rdb_analysis.service.PathCDirectParserCollector",
         FailIfUsedCollector,
     )
 
@@ -959,6 +959,10 @@ def test_analyze_rdb_large_local_file_auto_uses_streaming_large_summary_profile(
         "prefix_top_summary",
         "top_big_keys",
     }
+
+
+def test_large_rdb_summary_threshold_is_one_gibibyte() -> None:
+    assert service_module.LARGE_RDB_AUTO_SUMMARY_THRESHOLD_BYTES == 1024 * 1024 * 1024
 
 
 def test_analyze_rdb_remote_discovery_requires_rdb_path() -> None:

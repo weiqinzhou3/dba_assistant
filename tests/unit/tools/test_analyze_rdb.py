@@ -4,13 +4,9 @@ from pathlib import Path
 import pytest
 
 import dba_assistant.tools as tools
-from dba_assistant.core.reporter.generate_analysis_report import (
-    generate_analysis_report as core_generate_analysis_report,
-)
 from dba_assistant.core.reporter.report_model import AnalysisReport, ReportSectionModel, TextBlock
 from dba_assistant.capabilities.redis_rdb_analysis.types import InputSourceKind
 from dba_assistant.tools.analyze_rdb import analyze_rdb_tool
-from dba_assistant.tools.generate_analysis_report import generate_analysis_report
 
 
 def test_analyze_rdb_tool_uses_generic_profile_by_default(tmp_path: Path) -> None:
@@ -48,8 +44,9 @@ def test_analyze_rdb_tool_requires_mysql_backend_for_database_backed_route(
 
     with pytest.raises(ValueError, match="database_backed_analysis requires MySQL staging"):
         analyze_rdb_tool(
-            prompt="analyze this rdb via mysql",
+            prompt="analyze this rdb",
             input_paths=[source],
+            path_mode="database_backed_analysis",
         )
 
 
@@ -75,5 +72,3 @@ def test_analyze_rdb_tool_passes_explicit_path_mode_to_request(tmp_path: Path) -
 
 def test_tools_package_exports_phase3_entry_points() -> None:
     assert tools.analyze_rdb_tool is analyze_rdb_tool
-    assert tools.generate_analysis_report is generate_analysis_report
-    assert generate_analysis_report is core_generate_analysis_report

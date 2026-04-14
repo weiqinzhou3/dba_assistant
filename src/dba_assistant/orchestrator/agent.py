@@ -5,6 +5,8 @@ tools and lets the LLM decide which capabilities to invoke.
 """
 from __future__ import annotations
 
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -12,7 +14,7 @@ from deepagents import create_deep_agent
 from langgraph.types import Command
 
 from dba_assistant.adaptors.mysql_adaptor import MySQLConnectionConfig
-from dba_assistant.adaptors.redis_adaptor import RedisAdaptor, RedisConnectionConfig
+from dba_assistant.adaptors.redis_adaptor import RedisConnectionConfig
 from dba_assistant.application.request_models import (
     DEFAULT_LOOPBACK_HOST,
     DEFAULT_MYSQL_DATABASE,
@@ -31,12 +33,8 @@ from dba_assistant.deep_agent_integration.runtime_support import (
 )
 from dba_assistant.interface.hitl import HumanApprovalHandler
 from dba_assistant.interface.types import ApprovalRequest, ApprovalStatus
-from dba_assistant.capabilities.redis_rdb_analysis.remote_input import RemoteRedisDiscoveryError
 from dba_assistant.orchestrator.tools import (
     build_all_tools,
-    resolve_remote_rdb_acquisition_plan,
-    discover_remote_rdb_snapshot,
-    resolve_remote_rdb_fetch_plan,
 )
 
 APPROVAL_REQUEST_PHRASES = (
@@ -45,26 +43,8 @@ APPROVAL_REQUEST_PHRASES = (
     "now i need your approval",
     "need your approval",
 )
-
-SYSTEM_PROMPT = """\
-You are DBA Assistant, a specialized database administration assistant focused on Redis diagnostics and analysis.
-
-### Standard Operating Procedure (SOP)
-1. **Inspect First**: Always call `inspect_local_rdb` first to check file size and existence, UNLESS the file metadata was already provided via `[Automated File Inspection]` or a previous turn.
-2. **Handle Large Files (> 512MB)**:
-   - **Step 1 (Intent)**: Tell the user the file is large and ask if they agree to use MySQL-backed staging for full analysis. **Wait for user confirmation.**
-   - **Step 2 (User Choice)**:
-     - If user says **Yes**: Follow Step 3 & 4 (collect config if missing, then stage).
-     - If user says **No** or "just analyze": Warn about potential memory/partial analysis risks, then **immediately call `analyze_local_rdb_stream`**.
-   - **Step 3 (Collection)**: If info is missing, use `ask_user_for_config` to collect host, user, and password from the user interactively.
-   - **Step 4 (Execution)**: Once info is ready, call `stage_local_rdb_to_mysql` (triggers HITL approval) then `analyze_staged_rdb`.
-3. **Handle Small Files (< 512MB)**: Call `analyze_local_rdb_stream` directly.
-
-### Rules & Constraints
-- **Respect User Overrides**: If the user insists on "direct analysis", "direct execution", or says "just do it" after being warned about MySQL, you MUST immediately call `analyze_local_rdb_stream`.
-- **Path Fidelity**: Use the EXACT file path established earlier in the conversation (e.g., from `[Automated File Inspection]`). Do not invent default file paths.
-- **Stateful Intelligence**: You are in a stateful conversation. Remember the user's previous refusals and file paths.
-"""
+FALLBACK_ON_REJECT_ACTIONS = frozenset({"stage_local_rdb_to_mysql"})
+SYSTEM_PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "unified_system_prompt.md"
 
 
 def build_unified_agent(
@@ -79,6 +59,7 @@ def build_unified_agent(
 
     tools = _build_all_tools_compatible(
         request,
+        config=config,
         connection=connection,
         mysql_connection=mysql_connection,
         remote_rdb_state=remote_rdb_state,
@@ -90,16 +71,17 @@ def build_unified_agent(
     checkpointer = build_runtime_checkpointer()
 
     interrupt_on: dict[str, Any] = {
+        "ensure_remote_rdb_snapshot": {
+            "allowed_decisions": ["approve", "reject"],
+            "description": _build_remote_snapshot_interrupt_description(request),
+        },
         "fetch_remote_rdb_via_ssh": {
             "allowed_decisions": ["approve", "reject"],
-            "description": _build_remote_rdb_interrupt_description(
-                request,
-                path_resolution_resolver=_make_remote_rdb_path_resolution_resolver(
-                    request,
-                    connection=connection,
-                    remote_rdb_state=remote_rdb_state,
-                ),
-            ),
+            "description": _build_remote_rdb_interrupt_description(request),
+        },
+        "stage_local_rdb_to_mysql": {
+            "allowed_decisions": ["approve", "reject"],
+            "description": _build_mysql_staging_interrupt_description(request),
         },
     }
     agent = create_deep_agent(
@@ -111,7 +93,7 @@ def build_unified_agent(
         skills=get_skill_sources(),
         memory=get_memory_sources(),
         interrupt_on=interrupt_on,
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=_load_system_prompt(),
     )
     try:
         setattr(agent, "_dba_remote_rdb_state", remote_rdb_state)
@@ -177,7 +159,8 @@ def run_orchestrated(
             config=run_config,
         )
 
-    return extract_agent_output(result)
+    final_output = extract_agent_output(result)
+    return _finalize_runtime_output(request, final_output)
 
 
 def _build_all_tools_compatible(
@@ -187,10 +170,12 @@ def _build_all_tools_compatible(
     try:
         return build_all_tools(request, **kwargs)
     except TypeError as exc:
-        if "approval_handler" not in str(exc):
+        message = str(exc)
+        if "approval_handler" not in message and "config" not in message:
             raise
         compatible_kwargs = dict(kwargs)
         compatible_kwargs.pop("approval_handler", None)
+        compatible_kwargs.pop("config", None)
         return build_all_tools(request, **compatible_kwargs)
 
 
@@ -216,6 +201,65 @@ def _should_force_runtime_approval(
     if not str(discovery.get("rdb_path") or "").strip():
         return False
     return bool(discovery.get("requires_confirmation"))
+
+
+@lru_cache(maxsize=1)
+def _load_system_prompt() -> str:
+    return SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
+
+
+def _finalize_runtime_output(request: NormalizedRequest, agent_output: str) -> str:
+    session = get_current_execution_session()
+    if session is None:
+        return agent_output
+    if not _docx_contract_required(request, session):
+        return agent_output
+
+    artifact_path = _resolve_docx_artifact_path(session)
+    if artifact_path is not None:
+        return artifact_path
+
+    session.mark_status(
+        "failure",
+        detail="DOCX artifact contract violated: no generated .docx artifact was recorded.",
+    )
+    return (
+        "DOCX artifact contract violated: the agent selected DOCX output, "
+        "but no generated .docx artifact was produced."
+    )
+
+
+def _docx_contract_required(request: NormalizedRequest, session: Any) -> bool:
+    runtime = request.runtime_inputs
+    if (runtime.report_format or "").lower() == "docx":
+        return True
+    if runtime.output_path is not None and runtime.output_path.suffix.lower() == ".docx":
+        return True
+    return any(_tool_call_requested_docx(entry) for entry in session.tool_invocation_sequence)
+
+
+def _tool_call_requested_docx(entry: dict[str, Any]) -> bool:
+    args = entry.get("tool_args_summary")
+    if not isinstance(args, dict):
+        return False
+    report_format = str(args.get("report_format", "")).strip().lower()
+    if report_format == "docx":
+        return True
+    output_path = str(args.get("output_path", "")).strip().lower()
+    if output_path.endswith(".docx"):
+        return True
+    return False
+
+
+def _resolve_docx_artifact_path(session: Any) -> str | None:
+    for artifact in reversed(session.artifacts):
+        output_path = artifact.output_path
+        if not isinstance(output_path, str) or not output_path.lower().endswith(".docx"):
+            continue
+        path = Path(output_path)
+        if path.exists() and path.is_file():
+            return str(path)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -357,95 +401,50 @@ def _handle_interrupts(
                 message=str(action.get("description", "Tool execution requires approval.")),
                 details={
                     "args": action.get("args", {}),
+                    "denial_semantics": (
+                        "fallback"
+                        if str(action.get("name", "tool_execution")) in FALLBACK_ON_REJECT_ACTIONS
+                        else "abort"
+                    ),
                 },
             )
             response = approval_handler.request_approval(request)
             if response.status is ApprovalStatus.APPROVED:
                 decisions.append({"type": "approve"})
+            elif request.action in FALLBACK_ON_REJECT_ACTIONS:
+                decisions.append({"type": "reject"})
             else:
                 return None
     return {"decisions": decisions}
 
 
-def _make_remote_rdb_path_resolution_resolver(
-    request: NormalizedRequest,
-    *,
-    connection: RedisConnectionConfig | None,
-    remote_rdb_state: dict[str, Any],
-):
-    if connection is None:
-        return lambda tool_args: resolve_remote_rdb_acquisition_plan(
-            request,
-            None,
-            acquisition_mode=str(tool_args.get("acquisition_mode", "")),
+def _build_remote_snapshot_interrupt_description(request: NormalizedRequest):
+    def describe_remote_snapshot_interrupt(
+        tool_call: dict[str, Any],
+        state: Any,
+        runtime: Any,
+    ) -> str:
+        args = tool_call.get("args", {})
+        redis_host = str(args.get("redis_host") or request.runtime_inputs.redis_host or "unknown")
+        redis_port = str(args.get("redis_port") or request.runtime_inputs.redis_port or 6379)
+        redis_db = str(args.get("redis_db") or request.runtime_inputs.redis_db or 0)
+        remote_rdb_path = str(args.get("remote_rdb_path") or request.runtime_inputs.remote_rdb_path or "auto-discover")
+        return "\n".join(
+            [
+                "Remote Redis snapshot generation requires human approval.",
+                "",
+                f"Target Redis: {redis_host}:{redis_port}",
+                f"Redis DB: {redis_db}",
+                f"Remote RDB path hint: {remote_rdb_path}",
+                "The agent wants to trigger BGSAVE and wait for the new RDB snapshot.",
+                "Approve only if remote snapshot generation is allowed for this target.",
+            ]
         )
 
-    adaptor = RedisAdaptor()
-
-    def resolve_from_discovery(tool_args: dict[str, Any]) -> dict[str, str]:
-        try:
-            discovery = discover_remote_rdb_snapshot(
-                adaptor,
-                connection,
-                remote_rdb_state=remote_rdb_state,
-            )
-        except RemoteRedisDiscoveryError as exc:
-            resolution = resolve_remote_rdb_acquisition_plan(
-                request,
-                None,
-                acquisition_mode=str(tool_args.get("acquisition_mode", "")),
-            )
-            resolution["discovery_status"] = "failed"
-            resolution["discovery_error_stage"] = exc.stage
-            resolution["discovery_error_kind"] = exc.kind
-            resolution["discovery_error_message"] = exc.message
-            resolution["redis_password_supplied"] = "yes" if exc.redis_password_supplied else "no"
-            resolution["bgsave_required"] = "blocked"
-            if not resolution.get("remote_rdb_path"):
-                resolution["remote_rdb_path_source"] = "unresolved"
-            return resolution
-        except Exception as exc:  # noqa: BLE001
-            resolution = resolve_remote_rdb_acquisition_plan(
-                request,
-                None,
-                acquisition_mode=str(tool_args.get("acquisition_mode", "")),
-            )
-            resolution["discovery_status"] = "failed"
-            resolution["discovery_error_stage"] = "discover_remote_rdb"
-            resolution["discovery_error_kind"] = "unknown_error"
-            resolution["discovery_error_message"] = str(exc)
-            resolution["redis_password_supplied"] = "yes" if request.secrets.redis_password else "no"
-            resolution["bgsave_required"] = "blocked"
-            if not resolution.get("remote_rdb_path"):
-                resolution["remote_rdb_path_source"] = "unresolved"
-            return resolution
-        return {
-            **resolve_remote_rdb_acquisition_plan(
-                request,
-                discovery,
-                acquisition_mode=str(tool_args.get("acquisition_mode", "")),
-            ),
-            "discovery_status": "succeeded",
-        }
-
-    return resolve_from_discovery
+    return describe_remote_snapshot_interrupt
 
 
-def _build_remote_rdb_interrupt_description(
-    request: NormalizedRequest,
-    *,
-    path_resolution_resolver=None,
-):
-    target = (
-        f"{request.runtime_inputs.redis_host}:{request.runtime_inputs.redis_port}"
-        if request.runtime_inputs.redis_host
-        else "unknown target"
-    )
-    ssh_target = (
-        f"{request.runtime_inputs.ssh_host}:{request.runtime_inputs.ssh_port or 22}"
-        if request.runtime_inputs.ssh_host
-        else "same as Redis host"
-    )
+def _build_remote_rdb_interrupt_description(request: NormalizedRequest):
 
     def describe_remote_rdb_fetch_interrupt(
         tool_call: dict[str, Any],
@@ -453,102 +452,49 @@ def _build_remote_rdb_interrupt_description(
         runtime: Any,
     ) -> str:
         args = tool_call.get("args", {})
-        resolution = (
-            path_resolution_resolver(args)
-            if path_resolution_resolver is not None
-            else resolve_remote_rdb_acquisition_plan(
-                request,
-                None,
-                acquisition_mode=str(args.get("acquisition_mode", "")),
-            )
-        )
-        profile_name = args.get("profile_name", request.rdb_overrides.profile_name or "generic")
-        output_mode = args.get("output_mode", request.runtime_inputs.output_mode or "summary")
-        report_format = args.get("report_format", request.runtime_inputs.report_format or output_mode)
-        output_path = args.get("output_path") or request.runtime_inputs.output_path or "stdout"
-        redis_dir = resolution.get("redis_dir") or "unresolved"
-        dbfilename = resolution.get("dbfilename") or "unresolved"
-        remote_rdb_path = resolution.get("remote_rdb_path") or "unresolved"
-        remote_rdb_path_source = resolution.get("remote_rdb_path_source") or "fallback_default"
-        acquisition_mode = resolution.get("acquisition_mode") or "existing"
-        bgsave_required = resolution.get("bgsave_required") or "no"
-        discovery_status = resolution.get("discovery_status") or (
-            "succeeded" if remote_rdb_path_source == "discovered" else "not_run"
-        )
-        discovery_error_stage = resolution.get("discovery_error_stage") or ""
-        discovery_error_kind = resolution.get("discovery_error_kind") or ""
-        discovery_error_message = resolution.get("discovery_error_message") or ""
-        redis_password_supplied = resolution.get("redis_password_supplied") or (
-            "yes" if request.secrets.redis_password else "no"
-        )
-        ssh_username = request.runtime_inputs.ssh_username or "unspecified"
-        lines = [
-            "Remote RDB acquisition requires human approval.",
-            "",
-            f"Target Redis: {target}",
-            f"SSH target: {ssh_target}",
-            f"SSH username: {ssh_username}",
-            f"Discovery status: {discovery_status}",
-        ]
-        if discovery_status == "failed":
-            lines.extend(
-                [
-                    f"Discovery failure stage: {discovery_error_stage or 'unknown'}",
-                    f"Discovery failure kind: {discovery_error_kind or 'unknown_error'}",
-                    f"Discovery failure message: {discovery_error_message or 'No error details available.'}",
-                    f"Redis password supplied: {redis_password_supplied}",
-                    f"Remote RDB path: {remote_rdb_path}",
-                    f"remote_rdb_path_source: {remote_rdb_path_source}",
-                    f"Acquisition mode: {acquisition_mode}",
-                    f"BGSAVE required: {bgsave_required}",
-                ]
-            )
-        else:
-            lines.extend(
-                [
-                    f"Redis dir: {redis_dir}",
-                    f"Redis dbfilename: {dbfilename}",
-                    f"Remote RDB path: {remote_rdb_path}",
-                    f"remote_rdb_path_source: {remote_rdb_path_source}",
-                    f"Acquisition mode: {acquisition_mode}",
-                    f"BGSAVE required: {bgsave_required}",
-                ]
-            )
-        lines.extend(
+        ssh_host = str(args.get("ssh_host") or request.runtime_inputs.ssh_host or "unknown")
+        ssh_port = str(args.get("ssh_port") or request.runtime_inputs.ssh_port or 22)
+        ssh_username = str(args.get("ssh_username") or request.runtime_inputs.ssh_username or "unspecified")
+        remote_rdb_path = str(args.get("remote_rdb_path") or request.runtime_inputs.remote_rdb_path or "unresolved")
+        local_directory = str(args.get("local_directory") or "temporary workspace")
+        return "\n".join(
             [
+                "Remote RDB acquisition requires human approval.",
+                "",
+                f"SSH target: {ssh_host}:{ssh_port}",
+                f"SSH username: {ssh_username}",
+                f"Remote RDB path: {remote_rdb_path}",
+                f"Local destination: {local_directory}",
                 "The agent wants to fetch and analyze a remote Redis RDB.",
-                f"Profile: {profile_name}",
-                f"Output mode: {output_mode}",
-                f"Report format: {report_format}",
-                f"Output path: {output_path}",
                 "Approve only if remote RDB retrieval is allowed for this target.",
             ]
         )
-        return "\n".join(lines)
 
     return describe_remote_rdb_fetch_interrupt
 
 
 def _build_mysql_staging_interrupt_description(request: NormalizedRequest):
-    mysql_target = (
-        f"{request.runtime_inputs.mysql_host}:{request.runtime_inputs.mysql_port}"
-        if request.runtime_inputs.mysql_host
-        else "unknown MySQL target"
-    )
-
     def describe_mysql_staging_interrupt(
         tool_call: dict[str, Any],
         state: Any,
         runtime: Any,
     ) -> str:
         args = tool_call.get("args", {})
-        table_name = args.get("table_name", "unknown")
+        mysql_host = str(args.get("mysql_host") or request.runtime_inputs.mysql_host or "unknown")
+        mysql_port = str(args.get("mysql_port") or request.runtime_inputs.mysql_port or 3306)
+        mysql_database = str(
+            args.get("mysql_database") or request.runtime_inputs.mysql_database or DEFAULT_MYSQL_DATABASE
+        )
+        table_name = str(args.get("mysql_table") or request.runtime_inputs.mysql_table or "auto-generated")
+        input_paths = str(args.get("input_paths") or "unspecified")
         return (
             "MySQL staging write requires human approval.\n\n"
-            f"Target MySQL: {mysql_target}\n"
+            f"Input RDB paths: {input_paths}\n"
+            f"Target MySQL: {mysql_host}:{mysql_port}/{mysql_database}\n"
             f"Staging table: {table_name}\n"
             "The agent wants to write parsed RDB rows into MySQL.\n"
-            "Approve only if MySQL write access is allowed for this target."
+            "Approve only if MySQL write access is allowed for this target.\n"
+            "Reject means: do not write to MySQL; continue with direct streaming analysis instead."
         )
 
     return describe_mysql_staging_interrupt
@@ -563,7 +509,6 @@ def _mysql_context_requested(request: NormalizedRequest) -> bool:
             runtime.mysql_database,
             runtime.mysql_table,
             runtime.mysql_query,
-            request.secrets.mysql_password,
             runtime.input_kind == "preparsed_mysql",
             runtime.path_mode == "database_backed_analysis",
         )
@@ -572,7 +517,7 @@ def _mysql_context_requested(request: NormalizedRequest) -> bool:
 
 def _redis_context_requested(request: NormalizedRequest) -> bool:
     runtime = request.runtime_inputs
-    if runtime.redis_host or request.secrets.redis_password:
+    if runtime.redis_host:
         return True
     if runtime.input_kind == "remote_redis":
         return True
@@ -580,4 +525,4 @@ def _redis_context_requested(request: NormalizedRequest) -> bool:
         return True
     if runtime.input_paths:
         return False
-    return "redis" in request.prompt.lower()
+    return False

@@ -8,7 +8,7 @@ Its responsibilities are limited to:
 
 - loading static application configuration
 - building provider-compatible LangChain chat models
-- registering model-visible tools
-- constructing the minimal Phase 2 agent
+- exposing repository policy and skill sources to the runtime
+- constructing runtime support primitives such as backend and checkpointer
 - explicitly loading repository policy from `AGENTS.md`
-- invoking the deep agent for normalized requests
+- staying free of business routing and phase-specific helper entry points

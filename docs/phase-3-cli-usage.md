@@ -41,22 +41,22 @@ The retained flags exist for deterministic local execution, debugging, and futur
 | Flag | Meaning | Notes |
 |------|---------|-------|
 | `--config` | Load an explicit repository config file. | Overrides the default repository config path. |
-| `--input` | Provide one or more local input paths. | Repeatable override when prompt extraction is not precise enough or exact reproduction is needed. |
-| `--input-kind` | Force the input source category. | Use only as an explicit override; the parser now infers `local_rdb`, `preparsed_mysql`, and `remote_redis` from prompt text when possible. |
+| `--input` | Provide one or more local input paths. | Repeatable explicit surface input when exact reproduction is needed. |
+| `--input-kind` | Force the input source category. | Use only as an explicit override. |
 | `--path-mode` | Force the canonical route name. | Canonical values are `database_backed_analysis`, `preparsed_dataset_analysis`, and `direct_rdb_analysis`. |
 | `--profile` | Force the analysis profile. | Typical values are `generic` and `rcs`. |
 | `--report-format` | Force the rendered output format. | Current public values are `summary` and `docx`. |
 | `--output` | Force the output destination. | Required for effective `docx` output. |
-| `--mysql-host` / `--mysql-port` / `--mysql-user` / `--mysql-password` / `--mysql-database` | Provide MySQL connection context. | Secondary overrides over prompt-derived shared contract fields. |
-| `--mysql-table` / `--mysql-query` | Point to a MySQL-backed preparsed dataset. | Secondary overrides when the prompt does not already describe the MySQL source precisely enough. |
+| `--mysql-host` / `--mysql-port` / `--mysql-user` / `--mysql-password` / `--mysql-database` | Provide MySQL connection context. | Explicit structured surface fields that override any runtime defaults. |
+| `--mysql-table` / `--mysql-query` | Point to a MySQL-backed preparsed dataset. | Explicit structured surface fields. |
 
 ## Precedence
 
 The precedence rule is fixed:
 
-1. parse the prompt first
-2. derive the normalized request
-3. apply explicit CLI overrides second
+1. normalize and scrub the prompt for secrets
+2. preserve explicit interface fields
+3. apply explicit CLI overrides
 4. let the unified Deep Agent operate on the final normalized request
 
 That means prompt is the default control surface, but explicit CLI flags still win when both are present.
@@ -66,18 +66,15 @@ That means prompt is the default control surface, but explicit CLI flags still w
 The CLI hands the request to the interface adapter, which normalizes it into one shared application request:
 
 - cleaned prompt text
-- prompt-derived local input paths
-- prompt-derived Redis host / port / db
-- prompt-derived MySQL connection fields, dataset table, or query
-- extracted secrets such as Redis or MySQL password
-- prompt-derived `input_kind`, `profile`, `top_n`, prefix overrides, and canonical route hints
-- output intent such as `summary` or `docx`
+- explicit local input paths when present
+- extracted secrets such as Redis, SSH, or MySQL password
+- bounded interface overrides such as `--profile`, `--report-format`, and `--path-mode`
 
 From that point on, the CLI is out of the business-routing path.
 
 The unified Deep Agent then decides whether to use:
 
-- `skills` under `src/dba_assistant/skills/`
+- `skills` under repository-root `skills/`
 - local RDB analysis tools
 - live Redis inspection tools
 - remote RDB discovery and approval-gated acquisition tools
@@ -105,7 +102,7 @@ dba-assistant ask "分析 /data/a.rdb 和 /data/b.rdb，重点看 TTL、过期�
 
 Expected shape:
 
-- the prompt parser extracts both local file paths into `input_paths`
+- the interface adapter extracts both local file paths into `input_paths`
 - the shared contract still carries a structured tuple of paths
 - explicit `--input` remains available only if the caller needs an override or exact replay
 
@@ -117,11 +114,10 @@ dba-assistant ask "按 rcs profile 分析 ./dump.rdb，输出 docx，到 /tmp/rc
 
 Expected shape:
 
-- prompt selects `rcs`
-- prompt requests `docx`
-- prompt provides the output path
-- prompt provides the local file path
-- the unified Deep Agent selects the local-RDB analysis flow and the generic report renderer
+- the prompt states the desired profile and asks for a document in natural language
+- the interface adapter extracts the explicit `.docx` output path and local `.rdb` path
+- the unified Deep Agent decides whether to pass `profile_name='rcs'` and `report_format='docx'` into the selected tools
+- if DOCX is selected, runtime must return a real `.docx` artifact path instead of terminal-only text
 
 ## MySQL Preparsed Dataset Example
 
@@ -133,7 +129,7 @@ Expected shape:
 
 - prompt supplies the MySQL host, credentials, database, and table
 - the interface adapter writes those values into the shared request contract
-- the normalized request infers `input_kind=preparsed_mysql`
+- the normalized request infers `input_kind=preparsed_mysql` from those explicit fields
 - the unified agent or analysis layer can enter `preparsed_dataset_analysis` without CLI-specific branching
 
 ## Remote Redis Example
@@ -146,7 +142,7 @@ Expected shape:
 
 - prompt provides the Redis target
 - the unified Deep Agent can choose live Redis inspection tools first
-- if it decides to fetch the remote `RDB`, the high-risk tool is protected by Deep Agents `interrupt_on`
+- if it decides to fetch a remote `RDB` or stage a large local `RDB` into MySQL, the high-risk tool is protected by Deep Agents `interrupt_on`
 - the CLI then asks for approval before the tool call is resumed
 
 The important boundary is this:
@@ -157,8 +153,9 @@ The important boundary is this:
 
 ## Current Practical Limits
 
-- Prompt extraction is intentionally narrow and structured: local `.rdb` paths, Redis targets, MySQL connection context, dataset table/query, profile, route hints, and output intent
-- Explicit flags remain the fallback for exact reproducibility, debugging, or when a caller wants to override prompt-derived values
+- Prompt extraction is intentionally narrow: secrets are scrubbed before model execution, while non-sensitive connection targets and paths should flow through explicit interface fields or LLM-selected tool arguments
+- Free-form profile choice, route choice, and analysis policy are left to the LLM unless the caller supplies explicit flags
+- Explicit flags remain the fallback for exact reproducibility, debugging, or when a caller wants to override derived or default runtime values
 - Remote RDB acquisition now stays inside the unified agent flow, but SSH credential policy is still intentionally narrow
 
 ## Debugging Principle

@@ -82,4 +82,7 @@ def test_mysql_adaptor_executes_query_and_returns_dict_rows() -> None:
         "password": "secret",
         "database": "rdb_analysis",
         "cursorclass": MySQLAdaptor.dict_cursor_class(),
+        "connect_timeout": 5.0,
+        "read_timeout": 15.0,
+        "write_timeout": 30.0,
     }

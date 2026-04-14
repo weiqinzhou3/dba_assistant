@@ -100,7 +100,8 @@ class AuditedApprovalHandler:
                 rejection_reason=sanitized_reason,
             )
             if response.status is ApprovalStatus.DENIED:
-                session.mark_status("denied", detail=sanitized_reason or sanitized_request.action)
+                if sanitized_request.details.get("denial_semantics") != "fallback":
+                    session.mark_status("denied", detail=sanitized_reason or sanitized_request.action)
 
         return ApprovalResponse(
             status=response.status,

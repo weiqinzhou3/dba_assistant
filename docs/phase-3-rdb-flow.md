@@ -43,17 +43,19 @@ The normalized request carries:
 |------|---------|
 | `raw_prompt` | Original prompt text |
 | `prompt` | Normalized prompt after secret stripping and cleanup |
-| `runtime_inputs` | Structured runtime values such as `redis_host`, `redis_port`, `input_paths`, `input_kind`, `mysql_host`, `mysql_database`, `mysql_table`, `mysql_query`, `output_mode`, `report_format`, and `output_path` |
-| `secrets` | Extracted secrets such as Redis or MySQL password |
-| `rdb_overrides` | Prompt-derived Phase 3 hints such as `profile_name`, `focus_prefixes`, `top_n`, and route hints |
+| `runtime_inputs` | Explicit surface values such as CLI `input_paths`, explicit overrides, and config-backed runtime defaults |
+| `secrets` | Extracted secrets such as Redis / SSH / MySQL passwords |
+| `rdb_overrides` | Bounded interface overrides such as explicit `profile_name` |
 
 This object exists so that:
 
 - CLI can stay thin
-- prompt parsing can remain the main source of structured context
+- secrets can be extracted once at the shared boundary
 - API / WebUI can reuse the same boundary
 - explicit interface overrides can stay secondary without breaking the shared contract
 - the Deep Agent receives consistent context regardless of caller surface
+
+Non-sensitive parameters such as Redis host, SSH username, MySQL database, remote RDB path, and output path are now expected to flow through tool arguments or explicit interface fields, not prompt parsing.
 
 ## 3. Unified Agent Assembly
 
@@ -69,7 +71,7 @@ That means the runtime is no longer “CLI routes to Phase 2 or Phase 3.” The 
 
 - one Deep Agent
 - one shared interface adapter
-- one tool registry
+- one repository tool set
 - one repository skill source
 
 ## 4. Phase 3 Route Semantics
@@ -93,7 +95,7 @@ Compatibility aliases still normalize correctly:
 
 They are consumed inside the RDB-analysis domain, mainly through:
 
-- prompt-derived route hints
+- explicit route overrides when present
 - input type
 - downstream Phase 3 request construction
 
@@ -105,29 +107,39 @@ Remote Redis is now part of the unified Deep Agent flow.
 
 The runtime sequence is:
 
-1. prompt includes a Redis target such as `redis.example:6379`
-2. the unified agent may call read-only discovery tools first
-3. if it chooses the remote-RDB acquisition tool, that tool call is guarded by Deep Agents `interrupt_on`
-4. the CLI asks for approval
-5. if approved, the tool call resumes
-6. if denied, the orchestrator returns a denial result and the high-risk action is not performed
+1. the prompt includes a Redis target such as `redis.example:6379`
+2. the unified agent calls `discover_remote_rdb(redis_host=..., redis_port=..., redis_db=...)`
+3. if the user wants the latest snapshot, the agent calls `ensure_remote_rdb_snapshot(...)` and runtime gates that call with approval
+4. the agent calls `fetch_remote_rdb_via_ssh(remote_rdb_path=..., ssh_host=..., ssh_port=..., ssh_username=...)` and runtime gates that call with approval
+5. after fetch succeeds, the agent calls `inspect_local_rdb` on the downloaded local artifact
+6. the agent chooses direct analysis or MySQL-backed staging based on inspection and user intent; if MySQL staging is rejected, the agent continues with direct streaming analysis
 
 The important correction is:
 
-- remote-RDB prompts are not rejected at the CLI or application-service layer anymore
-- approval is attached to the high-risk tool call itself
+- remote-RDB prompts are not rejected at the CLI or application layer anymore
+- approval is attached to the high-risk tool call itself; rejecting MySQL staging rejects that route, not the entire analysis request
 - this keeps the control point inside the Deep Agent execution path
 
 ## 6. Current Tool Roles
 
 At the unified-agent level, the relevant Phase 3 tools are:
 
-- `analyze_local_rdb`
-  - local `.rdb` analysis plus report rendering
+- `inspect_local_rdb`
+  - local `.rdb` file existence and size inspection before strategy selection
+- `analyze_local_rdb_stream`
+  - direct local `.rdb` analysis plus report rendering for streaming-friendly files
+- `stage_local_rdb_to_mysql`
+  - approval-gated local `.rdb` staging into MySQL for files larger than 1GB
+- `analyze_staged_rdb`
+  - analysis and report generation from previously staged MySQL data
+- `analyze_preparsed_dataset`
+  - analysis from preparsed local or MySQL-backed datasets
 - `discover_remote_rdb`
   - read-only remote Redis persistence discovery
+- `ensure_remote_rdb_snapshot`
+  - approval-gated fresh remote snapshot generation via Redis `BGSAVE`
 - `fetch_remote_rdb_via_ssh`
-  - approval-gated remote RDB acquisition, SSH fetch, then continued analysis
+  - approval-gated remote RDB acquisition over SSH only; analysis continues in later tool calls
 
 And the Phase 2 live inspection tools remain available alongside them:
 
@@ -173,30 +185,30 @@ Request:
 
 the actual flow is:
 
-1. prompt parser extracts `rcs`, `docx`, `/tmp/rcs.docx`, and both local `.rdb` paths
-2. the normalized request writes those values into `runtime_inputs.input_paths`, `runtime_inputs.output_mode`, and `rdb_overrides.profile_name`
-3. interface adapter merges prompt intent and any explicit CLI overrides
-4. unified Deep Agent receives one final user message with the normalized context
-5. the agent selects the local-RDB analysis tool
-6. Phase 3 analysis resolves its internal route and profile
-7. generic report generation renders the final artifact
-8. `/tmp/rcs.docx` is written as the final result
+1. the shared boundary strips secrets and preserves explicit interface inputs such as CLI `--input`
+2. interface adapter merges any explicit CLI overrides
+3. the unified Deep Agent receives one final user message with the free-form prompt plus explicit surface context
+4. the agent selects the appropriate local-RDB analysis path and passes `profile_name='rcs'`, `output_mode='report'`, `report_format='docx'`, and `output_path='/tmp/rcs.docx'` as tool arguments
+5. generic report generation renders the final artifact
+6. runtime only accepts the run as successful if a real `.docx` artifact path exists
+7. `/tmp/rcs.docx` is returned as the final result
 
 That is the current architectural contract for Phase 3.
 
-## 9. Prompt-First Source Extraction
+## 9. Prompt-First Secret Extraction
 
-Prompt parsing is now expected to extract the most common source descriptions directly into the shared contract:
+Prompt parsing is now expected to extract only scoped secrets directly into the shared contract:
 
-- local `.rdb` paths, including multiple file paths in one prompt
-- remote Redis targets such as `redis.example:6379`
-- MySQL connection fields such as host, port, user, password, database, table, and quoted query text
-- prompt-derived `input_kind` such as `local_rdb`, `remote_redis`, or `preparsed_mysql`
+- Redis password
+- SSH password
+- MySQL password
 
 Retained CLI flags remain useful, but only as:
 
 - explicit overrides
 - debugging fallbacks
 - deterministic reproduction of a previous run
+
+Profile choice, route choice, connection targets, output paths, and analysis strategy remain LLM responsibilities unless the caller supplies explicit structured fields.
 
 That keeps the user-facing entry prompt-first while preserving the structured request boundary required for future API and WebUI callers.

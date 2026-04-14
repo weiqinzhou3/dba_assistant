@@ -1,5 +1,7 @@
 # DBA Assistant AI Agent 化改造方案
 
+> Status: 历史改造方案文档。用于保留改造过程中的问题判断与设计思路，不代表当前生产运行时的精确实现状态。当前状态请优先参考 `AGENTS.md`、`docs/dba_assistant_master_plan_en.md`、`docs/dba_assistant_architecture_constraints_addendum_v1.md`、`docs/dba_assistant_architecture_investigation_report_v2.md` 以及 `src/dba_assistant/` 中的实际代码。
+
 ## 1. 文档目的
 
 本文用于明确当前 `dba_assistant` 项目的改造方向，目标不是继续把项目包装成 “看起来像 AI Agent 的 Python 黑盒”，而是将其收敛为一个真正的 **AI Agent 工具**：

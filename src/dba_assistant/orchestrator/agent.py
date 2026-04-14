@@ -351,6 +351,13 @@ def _build_user_message(request: NormalizedRequest) -> str:
         context_lines.append(f"MySQL table: {request.runtime_inputs.mysql_table}")
     if request.runtime_inputs.mysql_query:
         context_lines.append(f"MySQL query: {request.runtime_inputs.mysql_query}")
+    if request.runtime_inputs.log_time_window_days is not None:
+        context_lines.append(f"Log time window: last {request.runtime_inputs.log_time_window_days} days")
+    if request.runtime_inputs.log_start_time or request.runtime_inputs.log_end_time:
+        context_lines.append(
+            "Log time range: "
+            f"{request.runtime_inputs.log_start_time or '-'} to {request.runtime_inputs.log_end_time or '-'}"
+        )
 
     if request.rdb_overrides.profile_name:
         context_lines.append(f"Profile: {request.rdb_overrides.profile_name}")

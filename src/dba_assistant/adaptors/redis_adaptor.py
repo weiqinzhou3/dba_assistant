@@ -87,6 +87,22 @@ class RedisAdaptor:
             formatter=lambda data: {"count": len(data)},
         )
 
+    def cluster_info(self, connection: RedisConnectionConfig) -> dict[str, Any]:
+        return self._run_structured_probe(
+            connection,
+            metadata={},
+            callback=lambda client: client.execute_command("CLUSTER", "INFO"),
+            formatter=lambda data: {"data": self._parse_cluster_info(data)},
+        )
+
+    def cluster_nodes(self, connection: RedisConnectionConfig) -> dict[str, Any]:
+        return self._run_structured_probe(
+            connection,
+            metadata={},
+            callback=lambda client: client.execute_command("CLUSTER", "NODES"),
+            formatter=lambda data: self._parse_cluster_nodes(data),
+        )
+
     def bgsave(self, connection: RedisConnectionConfig) -> dict[str, Any]:
         return self._run_structured_probe(
             connection,
@@ -215,14 +231,61 @@ class RedisAdaptor:
 
         return summary
 
+    def _parse_cluster_info(self, payload: Any) -> dict[str, str]:
+        if isinstance(payload, dict):
+            return {str(key): str(value) for key, value in payload.items()}
+        data: dict[str, str] = {}
+        for line in str(payload).splitlines():
+            if ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            data[key.strip()] = value.strip()
+        return data
+
+    def _parse_cluster_nodes(self, payload: Any) -> dict[str, Any]:
+        if isinstance(payload, list):
+            nodes = [dict(item) for item in payload if isinstance(item, dict)]
+            return {"count": len(nodes), "nodes": nodes}
+        nodes = []
+        for line in str(payload).splitlines():
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            node_id, address, flags = parts[0], parts[1], parts[2]
+            ip, port = self._parse_cluster_node_address(address)
+            flag_set = {flag.strip().lower() for flag in flags.split(",") if flag.strip()}
+            role = "master" if "master" in flag_set else "replica" if "slave" in flag_set else "unknown"
+            node: dict[str, Any] = {
+                "node_id": node_id,
+                "ip": ip,
+                "port": port,
+                "role": role,
+                "flags": sorted(flag_set),
+            }
+            master_id = parts[3] if len(parts) > 3 else "-"
+            if master_id != "-":
+                node["master_id"] = master_id
+            nodes.append(node)
+        return {"count": len(nodes), "nodes": nodes}
+
+    def _parse_cluster_node_address(self, address: str) -> tuple[str, int | None]:
+        host_port = address.split("@", 1)[0]
+        if ":" not in host_port:
+            return host_port, None
+        host, port = host_port.rsplit(":", 1)
+        try:
+            return host, int(port)
+        except ValueError:
+            return host, None
+
     def _validate_config_pattern(self, pattern: str) -> None:
         if pattern not in ALLOWED_CONFIG_PATTERNS:
             raise ValueError(
-                f"Phase 2 config pattern must be one of {sorted(ALLOWED_CONFIG_PATTERNS)}."
+                f"Redis inspection config pattern must be one of {sorted(ALLOWED_CONFIG_PATTERNS)}."
             )
 
     def _validate_slowlog_length(self, length: int) -> None:
         if not 1 <= length <= MAX_SLOWLOG_LENGTH:
             raise ValueError(
-                f"Phase 2 slowlog length must be between 1 and {MAX_SLOWLOG_LENGTH}."
+                f"Redis inspection slowlog length must be between 1 and {MAX_SLOWLOG_LENGTH}."
             )

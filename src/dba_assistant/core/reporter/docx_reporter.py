@@ -111,21 +111,29 @@ class DocxReporter(IReporter[AnalysisResult | AnalysisReport]):
     ) -> int:
         major_index = start_major_index
         minor_index = 0
+        sub_index = 0
         for section in sections:
             if section.level <= 1:
                 major_index += 1
                 minor_index = 0
+                sub_index = 0
                 self._render_major_heading(document, major_index, section.title, language=language)
             else:
                 minor_index += 1
-                self._render_minor_heading(document, minor_index, section.title)
+                sub_index = 0
+                self._render_minor_heading(document, major_index, minor_index, section.title)
             for block in section.blocks:
                 if isinstance(block, TextBlock):
                     add_body_paragraph(document, block.text)
                     continue
                 if not isinstance(block, TableBlock):
                     raise TypeError(f"Unsupported block type: {type(block)!r}")
-                add_table_title(document, block.title)
+                if section.level >= 2 and block.title:
+                    sub_index += 1
+                    numbered_title = f"{major_index}.{minor_index}.{sub_index} {block.title}"
+                else:
+                    numbered_title = block.title
+                add_table_title(document, numbered_title)
                 docx_table = document.add_table(rows=1, cols=len(block.columns))
                 for index, column in enumerate(block.columns):
                     docx_table.rows[0].cells[index].text = column
@@ -140,8 +148,8 @@ class DocxReporter(IReporter[AnalysisResult | AnalysisReport]):
         prefix = _major_heading_prefix(index, language=language)
         add_heading(document, f"{prefix}{title}", level=1)
 
-    def _render_minor_heading(self, document: Document, index: int, title: str) -> None:
-        add_heading(document, f"{index}. {title}", level=2)
+    def _render_minor_heading(self, document: Document, major: int, minor: int, title: str) -> None:
+        add_heading(document, f"{major}.{minor} {title}", level=2)
 
     def _prepare_summary_and_sections(self, report: AnalysisReport) -> tuple[str | None, list]:
         summary_text = report.summary

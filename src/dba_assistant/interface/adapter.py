@@ -6,7 +6,6 @@ Handles request normalization, HITL delegation, and artifact formatting.
 from __future__ import annotations
 
 from dataclasses import replace
-from pathlib import Path
 from typing import Any
 
 from dba_assistant.application.prompt_parser import normalize_raw_request
@@ -15,8 +14,7 @@ from dba_assistant.application.request_models import (
     NormalizedRequest,
 )
 from dba_assistant.core.observability import bootstrap_observability, start_execution_session
-from dba_assistant.core.observability.sanitizer import sanitize_mapping, summarize_prompt
-from dba_assistant.core.reporter.output_path_policy import ensure_report_output_path
+from dba_assistant.core.observability.sanitizer import summarize_prompt
 from dba_assistant.deep_agent_integration.config import ObservabilityConfig, load_app_config
 from dba_assistant.interface.hitl import AuditedApprovalHandler, HumanApprovalHandler
 from dba_assistant.interface.types import InterfaceRequest
@@ -40,31 +38,8 @@ def handle_request(
     )
     normalized = _apply_overrides(normalized, request)
     normalized = _apply_runtime_defaults(normalized, config)
-    normalized = replace(
-        normalized,
-        runtime_inputs=ensure_report_output_path(
-            normalized.runtime_inputs,
-            normalized.runtime_inputs.report_format,
-        ),
-    )
     raw_request_summary = _summarize_interface_request(request)
     audited_handler = AuditedApprovalHandler(approval_handler)
-
-    # Fast-Track: Inject pre-inspected file metadata
-    if normalized.runtime_inputs.input_paths:
-        metadata_lines = []
-        for path in normalized.runtime_inputs.input_paths:
-            p = Path(path).expanduser()
-            if p.exists() and p.is_file():
-                size = p.stat().st_size
-                metadata_lines.append(f"- {path}: {size / (1024*1024*1024):.2f} GB (exists)")
-            else:
-                metadata_lines.append(f"- {path}: missing or invalid")
-        
-        if metadata_lines:
-            pre_inspection_context = "\n[Automated File Inspection]\n" + "\n".join(metadata_lines)
-            pre_inspection_context += "\n**CRITICAL**: Stick to these files. Do NOT search for or analyze other files unless explicitly asked."
-            normalized = replace(normalized, prompt=normalized.prompt + pre_inspection_context)
 
     with start_execution_session(
         interface_surface=request.surface,
@@ -139,6 +114,12 @@ def _apply_overrides(
         runtime_updates["mysql_query"] = request.mysql_query
     if request.mysql_stage_batch_size is not None:
         runtime_updates["mysql_stage_batch_size"] = request.mysql_stage_batch_size
+    if request.log_time_window_days is not None:
+        runtime_updates["log_time_window_days"] = request.log_time_window_days
+    if request.log_start_time is not None:
+        runtime_updates["log_start_time"] = request.log_start_time
+    if request.log_end_time is not None:
+        runtime_updates["log_end_time"] = request.log_end_time
     if runtime_updates:
         runtime_inputs = replace(runtime_inputs, **runtime_updates)
 

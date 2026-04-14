@@ -40,4 +40,6 @@ def test_inspection_template_spec_exposes_summary_heading() -> None:
     )
 
     assert module.TEMPLATE["template_name"] == "inspection"
-    assert module.TEMPLATE["summary_heading"] == "Executive Summary"
+    assert module.TEMPLATE["include_disclaimer"] is True
+    assert module.TEMPLATE_TEXT["zh-CN"]["cover_title"] == "Redis 巡检报告"
+    assert module.TEMPLATE_TEXT["en-US"]["summary_heading"] == "Executive Summary"

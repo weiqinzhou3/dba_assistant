@@ -14,6 +14,7 @@ DEFAULT_MYSQL_DATABASE = "dba_assistant_staging"
 DEFAULT_MYSQL_TABLE_PREFIX = "rdb_stage_auto"
 DEFAULT_MYSQL_STAGE_BATCH_SIZE = 2000
 LARGE_RDB_WARNING_BYTES = 1_000_000_000
+DEFAULT_INSPECTION_LOG_TIME_WINDOW_DAYS = 30
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,9 @@ class RuntimeInputs:
     mysql_table: str | None = None
     mysql_query: str | None = None
     mysql_stage_batch_size: int | None = None
+    log_time_window_days: int | None = None
+    log_start_time: str | None = None
+    log_end_time: str | None = None
 
     def effective_redis_host(self) -> str:
         return self.redis_host or DEFAULT_LOOPBACK_HOST

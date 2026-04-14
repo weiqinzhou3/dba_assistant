@@ -18,6 +18,7 @@ def render_analysis_output(
     output_mode: str,
     report_format: str,
     output_path: Path | None,
+    template_name: str = "rdb-analysis",
 ) -> str:
     from dba_assistant.core.reporter.generate_analysis_report import (
         generate_analysis_report as _generate,
@@ -31,6 +32,7 @@ def render_analysis_output(
             output_path=output_path,
         ),
         report_format,
+        report_slug=template_name,
     )
     fmt = ReportFormat.SUMMARY if report_format == "summary" else ReportFormat.DOCX
     if fmt is ReportFormat.DOCX and effective_runtime_inputs.output_path is None:
@@ -40,7 +42,7 @@ def render_analysis_output(
         mode=OutputMode.SUMMARY if output_mode == "summary" else OutputMode.REPORT,
         format=fmt,
         output_path=effective_runtime_inputs.output_path,
-        template_name="rdb-analysis",
+        template_name=template_name,
         language=getattr(analysis, "language", "zh-CN"),
     )
     artifact = _generate(analysis, config)

@@ -21,6 +21,7 @@ def generate_analysis_report(
     report_started = perf_counter()
 
     _log_mysql_report_render_phase(report, stage="start")
+    _record_inspection_report_render_phase(report, stage="start")
 
     try:
         if config.format is ReportFormat.SUMMARY:
@@ -42,6 +43,12 @@ def generate_analysis_report(
                 elapsed_seconds=round(perf_counter() - report_started, 6),
                 rows_returned=len(report.sections),
             )
+            _record_inspection_report_render_phase(
+                report,
+                stage="end",
+                elapsed_seconds=round(perf_counter() - report_started, 6),
+                section_count=len(report.sections),
+            )
             return artifact
 
         if config.format is ReportFormat.DOCX:
@@ -61,11 +68,23 @@ def generate_analysis_report(
                 elapsed_seconds=round(perf_counter() - report_started, 6),
                 rows_returned=len(report.sections),
             )
+            _record_inspection_report_render_phase(
+                report,
+                stage="end",
+                elapsed_seconds=round(perf_counter() - report_started, 6),
+                section_count=len(report.sections),
+            )
             return artifact
 
         raise NotImplementedError(f"Unsupported report format: {config.format}")
     except Exception as exc:  # noqa: BLE001
         _log_mysql_report_render_phase(
+            report,
+            stage="error",
+            elapsed_seconds=round(perf_counter() - report_started, 6),
+            error=str(exc),
+        )
+        _record_inspection_report_render_phase(
             report,
             stage="error",
             elapsed_seconds=round(perf_counter() - report_started, 6),
@@ -102,3 +121,31 @@ def _log_mysql_report_render_phase(
         },
     )
     return None
+
+
+def _record_inspection_report_render_phase(
+    report: AnalysisReport,
+    *,
+    stage: str,
+    elapsed_seconds: float | None = None,
+    section_count: int | None = None,
+    error: str | None = None,
+) -> None:
+    metadata = getattr(report, "metadata", {}) or {}
+    route = str(metadata.get("route") or "")
+    if "inspection" not in route:
+        return
+    from dba_assistant.core.observability.context import get_current_execution_session
+
+    session = get_current_execution_session()
+    if session is None:
+        return
+    phase = "report_render_start" if stage == "start" else "report_render_end"
+    session.record_event(
+        "redis_inspection_phase",
+        phase=phase,
+        route=route,
+        elapsed_seconds=elapsed_seconds,
+        section_count=section_count,
+        error=error,
+    )

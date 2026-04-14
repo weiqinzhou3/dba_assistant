@@ -1,3 +1,11 @@
+"""Prompt sanitization helpers.
+
+This module is not an LLM parser. It must not decide business semantics such as
+task type, report intent, route selection, log windows, or staging strategy.
+Keep it limited to secret extraction, prompt scrubbing, and highly deterministic
+token cleanup used by explicit runtime contracts.
+"""
+
 from __future__ import annotations
 
 import re

@@ -84,6 +84,32 @@ def make_redis_inspection_tools(
         )
         return adaptor.client_list(connection)
 
+    def redis_cluster_info(
+        redis_host: str = "",
+        redis_port: int | None = None,
+        redis_db: int | None = None,
+    ) -> dict[str, object]:
+        _, connection = resolve_connection(
+            context,
+            redis_host=redis_host,
+            redis_port=redis_port,
+            redis_db=redis_db,
+        )
+        return adaptor.cluster_info(connection)
+
+    def redis_cluster_nodes(
+        redis_host: str = "",
+        redis_port: int | None = None,
+        redis_db: int | None = None,
+    ) -> dict[str, object]:
+        _, connection = resolve_connection(
+            context,
+            redis_host=redis_host,
+            redis_port=redis_port,
+            redis_db=redis_db,
+        )
+        return adaptor.cluster_nodes(connection)
+
     return [
         named_tool(
             redis_ping,
@@ -109,5 +135,15 @@ def make_redis_inspection_tools(
             redis_client_list,
             "redis_client_list",
             "Return Redis client-list count. Parameters: redis_host, redis_port, redis_db.",
+        ),
+        named_tool(
+            redis_cluster_info,
+            "redis_cluster_info",
+            "Return Redis CLUSTER INFO through a read-only probe. Parameters: redis_host, redis_port, redis_db.",
+        ),
+        named_tool(
+            redis_cluster_nodes,
+            "redis_cluster_nodes",
+            "Return Redis CLUSTER NODES through a read-only probe. Parameters: redis_host, redis_port, redis_db.",
         ),
     ]

@@ -189,12 +189,12 @@ def test_docx_reporter_numbers_headings_and_resets_minor_numbers_per_major_secti
 
     assert texts.count("一、执行摘要") == 1
     assert "二、样本与总体概况" in texts
-    assert "1. 样本概览" in texts
-    assert "2. 总体概览" in texts
+    assert "2.1 样本概览" in texts
+    assert "2.2 总体概览" in texts
     assert "三、数据分布分析" in texts
-    assert "1. 键类型分布概览" in texts
+    assert "3.1 键类型分布概览" in texts
     assert style_by_text["二、样本与总体概况"] == "DBA Heading 1"
-    assert style_by_text["1. 样本概览"] == "DBA Heading 2"
+    assert style_by_text["2.1 样本概览"] == "DBA Heading 2"
 
 
 def test_docx_reporter_renders_one_word_table_per_table_block_without_repeat_header(
@@ -289,6 +289,116 @@ def test_docx_reporter_preserves_focus_only_report_scope_without_full_sections(
     assert "重点前缀详情分析" in text
     assert "前缀 tag:* 详情" in text
     assert "样本与总体概况" not in text
+
+
+def test_docx_reporter_numbers_sub_tables_with_three_level_prefix(tmp_path: Path) -> None:
+    """Round 1.2 #1: Table titles within level-2 sections get {major}.{minor}.{sub} numbering."""
+    output_path = tmp_path / "sub-numbered.docx"
+    report = AnalysisReport(
+        title="Redis 巡检报告",
+        sections=[
+            ReportSectionModel(id="redis_db", title="Redis 数据库检查", level=1),
+            ReportSectionModel(
+                id="redis_db__cluster-a",
+                title="cluster-a",
+                level=2,
+                blocks=[
+                    TextBlock(text="检查详情"),
+                    TableBlock(title="架构与角色摘要", columns=["节点", "角色"], rows=[["n1", "master"]]),
+                    TableBlock(title="版本与一致性检查", columns=["版本", "节点数"], rows=[["7.0", "1"]]),
+                ],
+            ),
+            ReportSectionModel(
+                id="redis_db__cluster-b",
+                title="cluster-b",
+                level=2,
+                blocks=[
+                    TextBlock(text="检查详情"),
+                    TableBlock(title="架构与角色摘要", columns=["节点", "角色"], rows=[["n2", "master"]]),
+                ],
+            ),
+        ],
+        language="zh-CN",
+    )
+
+    DocxReporter().render(
+        report,
+        ReportOutputConfig(
+            output_path=output_path,
+            mode=OutputMode.REPORT,
+            format=ReportFormat.DOCX,
+            template_name="rdb-analysis",
+            language="zh-CN",
+        ),
+    )
+
+    document = Document(output_path)
+    texts = [p.text for p in document.paragraphs if p.text.strip()]
+
+    # Major section: 一、Redis 数据库检查
+    assert any("一、Redis 数据库检查" in t for t in texts)
+    # Minor heading: 1.1 cluster-a
+    assert "1.1 cluster-a" in texts
+    # Sub table titles within cluster-a: 1.1.1, 1.1.2
+    assert any("1.1.1 架构与角色摘要" in t for t in texts)
+    assert any("1.1.2 版本与一致性检查" in t for t in texts)
+    # Minor heading: 1.2 cluster-b
+    assert "1.2 cluster-b" in texts
+    # Sub table title within cluster-b resets: 1.2.1
+    assert any("1.2.1 架构与角色摘要" in t for t in texts)
+
+
+def test_docx_reporter_anomaly_highlighting_applies_red_to_keywords(tmp_path: Path) -> None:
+    """Round 1.2 #5: Anomaly keywords should get red+bold formatting in table cells."""
+    output_path = tmp_path / "highlighted.docx"
+    report = AnalysisReport(
+        title="Redis 巡检报告",
+        sections=[
+            ReportSectionModel(
+                id="risk",
+                title="风险总结",
+                level=1,
+                blocks=[
+                    TableBlock(
+                        title="风险清单",
+                        columns=["问题", "等级", "说明"],
+                        rows=[
+                            ["OOM command not allowed", "critical", "内存不足导致异常"],
+                            ["Normal operation", "info", "一切正常"],
+                        ],
+                    ),
+                ],
+            ),
+        ],
+        language="zh-CN",
+    )
+
+    DocxReporter().render(
+        report,
+        ReportOutputConfig(
+            output_path=output_path,
+            mode=OutputMode.REPORT,
+            format=ReportFormat.DOCX,
+            template_name="rdb-analysis",
+            language="zh-CN",
+        ),
+    )
+
+    _, document_xml = _read_docx_xml(output_path)
+    # Verify red color (FF0000) appears in the document for anomaly keywords
+    assert "FF0000" in document_xml, "Anomaly keywords should be highlighted in red"
+
+
+def test_default_output_path_for_inspection_defaults_to_tmp(monkeypatch) -> None:
+    """Round 1.2 #7: Inspection report default output should be in /tmp."""
+    from dba_assistant.core.reporter.output_path_policy import default_report_output_path
+    monkeypatch.setattr(
+        "dba_assistant.core.reporter.output_path_policy._timestamp_slug",
+        lambda: "20260414_120000",
+    )
+    path = default_report_output_path("docx", report_slug="inspection")
+    assert str(path).startswith("/tmp/")
+    assert "dba_assistant_redis_inspection" in str(path)
 
 
 def _read_docx_xml(output_path: Path) -> tuple[str, str]:

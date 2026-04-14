@@ -92,6 +92,8 @@ def style_table(table, *, language: str, table_style_module: ModuleType) -> None
         is_header = row_index == 0
         for cell in row.cells:
             cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+            if not is_header:
+                apply_anomaly_highlighting(cell, font_spec=theme["table_body"].font)
             for paragraph in cell.paragraphs:
                 paragraph.paragraph_format.space_before = Pt(0)
                 paragraph.paragraph_format.space_after = Pt(0)
@@ -215,3 +217,75 @@ def _apply_cell_shading(cell, fill: str) -> None:
         shd = OxmlElement("w:shd")
         tc_pr.append(shd)
     shd.set(qn("w:fill"), fill)
+
+
+# ---------------------------------------------------------------------------
+# Anomaly highlighting
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+_ANOMALY_KEYWORDS = _re.compile(
+    r"(?i)\b("
+    r"critical|high"
+    r"|异常|error|fail(?:ed)?|warning|告警|风险|超时"
+    r"|connection refused|timed out|OOM|fork failed"
+    r")\b"
+)
+
+_RED_HEX = "FF0000"
+
+
+def apply_anomaly_highlighting(cell, *, font_spec: FontSpec | None = None) -> None:
+    """Re-render *cell* text with anomaly keywords in red+bold."""
+    for paragraph in cell.paragraphs:
+        full_text = paragraph.text
+        if not _ANOMALY_KEYWORDS.search(full_text):
+            continue
+        # Clear existing runs
+        for run in list(paragraph.runs):
+            run._element.getparent().remove(run._element)
+        # Rebuild with highlighted keywords
+        _add_highlighted_runs(paragraph, full_text, font_spec)
+
+
+def _add_highlighted_runs(paragraph, text: str, font_spec: FontSpec | None) -> None:
+    last_end = 0
+    for match in _ANOMALY_KEYWORDS.finditer(text):
+        # Normal text before the match
+        if match.start() > last_end:
+            run = paragraph.add_run(text[last_end:match.start()])
+            if font_spec:
+                _apply_run_font(run, font_spec)
+        # Highlighted keyword
+        run = paragraph.add_run(match.group(0))
+        run.bold = True
+        run.font.color.rgb = _parse_rgb(_RED_HEX)
+        if font_spec:
+            _apply_run_font_preserve_color(run, font_spec)
+        last_end = match.end()
+    # Remaining normal text
+    if last_end < len(text):
+        run = paragraph.add_run(text[last_end:])
+        if font_spec:
+            _apply_run_font(run, font_spec)
+
+
+def _apply_run_font_preserve_color(run, spec: FontSpec) -> None:
+    """Apply font spec but preserve the red color already set."""
+    from docx.shared import RGBColor
+    font = run.font
+    font.name = spec.latin
+    font.size = Pt(spec.size_pt)
+    run.bold = True  # Always bold for anomaly keywords
+    r_pr = run._element.get_or_add_rPr()
+    r_fonts = r_pr.rFonts
+    r_fonts.set(qn("w:ascii"), spec.latin)
+    r_fonts.set(qn("w:hAnsi"), spec.latin)
+    r_fonts.set(qn("w:eastAsia"), spec.east_asia)
+    r_fonts.set(qn("w:cs"), spec.latin)
+
+
+def _parse_rgb(hex_str: str):
+    from docx.shared import RGBColor
+    return RGBColor(int(hex_str[:2], 16), int(hex_str[2:4], 16), int(hex_str[4:6], 16))

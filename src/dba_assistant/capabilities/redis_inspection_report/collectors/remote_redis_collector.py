@@ -24,11 +24,11 @@ class RedisInspectionRemoteInput:
     def __post_init__(self) -> None:
         if self.config_pattern not in ALLOWED_CONFIG_PATTERNS:
             raise ValueError(
-                f"config_pattern must be one of {sorted(ALLOWED_CONFIG_PATTERNS)} for Phase 2."
+                f"config_pattern must be one of {sorted(ALLOWED_CONFIG_PATTERNS)} for Redis inspection."
             )
         if not 1 <= self.slowlog_length <= MAX_SLOWLOG_LENGTH:
             raise ValueError(
-                f"slowlog_length must be between 1 and {MAX_SLOWLOG_LENGTH} for Phase 2."
+                f"slowlog_length must be between 1 and {MAX_SLOWLOG_LENGTH} for Redis inspection."
             )
 
 
@@ -45,4 +45,6 @@ class RedisInspectionRemoteCollector(RemoteCollector[RedisInspectionRemoteInput,
             "config": self.adaptor.config_get(connection, pattern=collector_input.config_pattern),
             "slowlog": self.adaptor.slowlog_get(connection, length=collector_input.slowlog_length),
             "clients": self.adaptor.client_list(connection),
+            "cluster_info": self.adaptor.cluster_info(connection),
+            "cluster_nodes": self.adaptor.cluster_nodes(connection),
         }

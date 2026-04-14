@@ -13,6 +13,25 @@ class InspectionFinding:
     impact: str
     recommendation: str
     category: str
+    merge_key: str | None = None
+    affected_nodes: tuple[str, ...] = ()
+    source: str = "deterministic_rule"
+
+
+@dataclass(frozen=True)
+class ReviewedLogIssue:
+    cluster_id: str
+    cluster_name: str
+    issue_name: str
+    is_anomalous: bool
+    severity: str
+    why: str
+    affected_nodes: tuple[str, ...] = ()
+    supporting_samples: tuple[str, ...] = ()
+    recommendation: str = ""
+    merge_key: str = ""
+    category: str = "log"
+    confidence: str = "medium"
 
 
 @dataclass(frozen=True)
@@ -53,6 +72,7 @@ class InspectionDataset:
     source_mode: str
     input_sources: tuple[str, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
+    reviewed_log_issues: tuple[ReviewedLogIssue, ...] = ()
 
 
 __all__ = [
@@ -61,4 +81,5 @@ __all__ = [
     "InspectionFinding",
     "InspectionNode",
     "InspectionSystem",
+    "ReviewedLogIssue",
 ]

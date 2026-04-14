@@ -9,6 +9,7 @@ from dba_assistant.capabilities.redis_inspection_report.types import (
     InspectionDataset,
     InspectionFinding,
     InspectionNode,
+    ReviewedLogIssue,
 )
 from dba_assistant.core.reporter.report_model import (
     AnalysisReport,
@@ -83,6 +84,7 @@ def _build_report_sections(
 
 def _collect_findings(dataset: InspectionDataset) -> list[InspectionFinding]:
     findings: list[InspectionFinding] = []
+    findings.extend(_reviewed_log_issue_findings(dataset))
     for cluster in _iter_clusters(dataset):
         if cluster.metadata.get("unresolved_grouping") == "true":
             findings.append(
@@ -266,18 +268,66 @@ def _node_findings(cluster: InspectionCluster, node: InspectionNode) -> list[Ins
             )
         )
 
-    log_events = _log_events(node)
-    if log_events:
-        evidence = _log_event_evidence(node)
+    return findings
+
+
+def _reviewed_log_issue_findings(dataset: InspectionDataset) -> list[InspectionFinding]:
+    grouped: dict[tuple[str, str], list[ReviewedLogIssue]] = {}
+    for issue in dataset.reviewed_log_issues:
+        if not issue.is_anomalous:
+            continue
+        cluster_key = issue.cluster_id or issue.cluster_name or "unknown-cluster"
+        merge_key = issue.merge_key or "|".join(
+            [
+                issue.cluster_name,
+                issue.issue_name,
+                issue.severity,
+                issue.why,
+                issue.recommendation,
+            ]
+        )
+        grouped.setdefault((cluster_key, merge_key), []).append(issue)
+
+    findings: list[InspectionFinding] = []
+    for (_cluster_key, merge_key), issues in grouped.items():
+        primary = min(issues, key=lambda item: SEVERITY_ORDER.get(item.severity, 99))
+        affected_nodes = tuple(
+            sorted(
+                {
+                    node
+                    for issue in issues
+                    for node in issue.affected_nodes
+                    if str(node).strip()
+                }
+            )
+        )
+        samples = _unique_strings(
+            sample
+            for issue in issues
+            for sample in issue.supporting_samples
+        )
+        reasons = _unique_strings(issue.why for issue in issues if issue.why)
+        recommendations = _unique_strings(issue.recommendation for issue in issues if issue.recommendation)
+        confidences = _unique_strings(issue.confidence for issue in issues if issue.confidence)
+        evidence_parts = []
+        if reasons:
+            evidence_parts.append("review=" + " / ".join(reasons))
+        if samples:
+            evidence_parts.append("samples=" + " | ".join(samples[:5]))
+        if confidences:
+            evidence_parts.append("confidence=" + ", ".join(confidences))
         findings.append(
             InspectionFinding(
-                risk_name="Redis 错误日志存在异常事件",
-                severity="high" if any(_is_high_log_event(_string_value(event.get("message"))) for event in log_events) else "medium",
-                target=target,
-                evidence=evidence,
-                impact="错误日志中的异常事件可能对应服务重启、持久化失败、复制中断或内存风险；报告按节点聚合，避免海量日志逐条淹没巡检结论。",
-                recommendation="按样本事件和原始日志时间线关联业务告警、Redis 状态与主机资源，优先处理重复出现的 error/OOM/fail 事件。",
-                category="log",
+                risk_name=primary.issue_name,
+                severity=primary.severity,
+                target=", ".join(affected_nodes) or primary.cluster_name or primary.cluster_id,
+                evidence="; ".join(evidence_parts) or "-",
+                impact=primary.why or "日志候选经 LLM semantic review 判定为需要关注的异常。",
+                recommendation=" / ".join(recommendations) or primary.recommendation or "结合原始日志时间线和运行状态复核。",
+                category=primary.category or "log",
+                merge_key=merge_key,
+                affected_nodes=affected_nodes,
+                source="llm_log_review",
             )
         )
     return findings
@@ -397,16 +447,66 @@ def _problem_overview_rows(
         significant = [f for f in cluster_findings if f.severity in {"critical", "high", "medium"}]
         if not significant:
             continue
-        for finding in significant:
+        for finding in _merge_cluster_findings(significant):
             rows.append([
                 cluster.name,
                 finding.risk_name,
-                finding.target,
+                ", ".join(finding.affected_nodes) if finding.affected_nodes else finding.target,
                 finding.severity,
                 _shorten(finding.impact, limit=60),
                 _shorten(finding.recommendation, limit=60),
             ])
     return rows
+
+
+def _merge_cluster_findings(findings: list[InspectionFinding]) -> list[InspectionFinding]:
+    grouped: dict[str, list[InspectionFinding]] = {}
+    for finding in findings:
+        key = finding.merge_key or "|".join(
+            [
+                finding.risk_name,
+                finding.severity,
+                finding.impact,
+                finding.recommendation,
+            ]
+        )
+        grouped.setdefault(key, []).append(finding)
+
+    merged: list[InspectionFinding] = []
+    for _key, items in grouped.items():
+        primary = min(items, key=lambda item: SEVERITY_ORDER.get(item.severity, 99))
+        affected_nodes = tuple(
+            sorted(
+                {
+                    node
+                    for item in items
+                    for node in (item.affected_nodes or (item.target,))
+                    if str(node).strip()
+                }
+            )
+        )
+        merged.append(
+            InspectionFinding(
+                risk_name=primary.risk_name,
+                severity=primary.severity,
+                target=", ".join(affected_nodes) or primary.target,
+                evidence=primary.evidence,
+                impact=primary.impact,
+                recommendation=primary.recommendation,
+                category=primary.category,
+                merge_key=primary.merge_key,
+                affected_nodes=affected_nodes,
+                source=primary.source,
+            )
+        )
+    return sorted(
+        merged,
+        key=lambda item: (
+            SEVERITY_ORDER.get(item.severity, 99),
+            item.risk_name,
+            item.target,
+        ),
+    )
 
 
 def _summary_section(findings: list[InspectionFinding], severity_counts: Counter) -> ReportSectionModel:
@@ -429,7 +529,7 @@ def _summary_section(findings: list[InspectionFinding], severity_counts: Counter
 
 
 def _method_section(dataset: InspectionDataset) -> ReportSectionModel:
-    method = "离线证据包解析、节点归并、规则分析、共享报告渲染" if dataset.source_mode == "offline" else "在线只读 Redis 探测、统一数据建模、规则分析、共享报告渲染"
+    method = "离线证据包解析、节点归并、确定性证据归约、LLM 日志语义审阅、共享报告渲染" if dataset.source_mode == "offline" else "在线只读 Redis 探测、统一数据建模、确定性规则分析、共享报告渲染"
     return ReportSectionModel(
         id="inspection_method",
         title="巡检目标及方法",
@@ -549,7 +649,7 @@ def _redis_overview_section(findings: list[InspectionFinding]) -> ReportSectionM
         id="redis_database",
         title="Redis 数据库检查",
         blocks=[
-            TextBlock(text=f"Redis 数据库检查覆盖架构、角色、版本、内存、持久化、key 空间、复制、Cluster 状态、慢日志和 Redis 日志异常；相关风险项 {sum(1 for item in findings if item.category in {'redis', 'log'})} 个。"),
+            TextBlock(text=f"Redis 数据库检查覆盖架构、角色、版本、内存、持久化、key 空间、复制、Cluster 状态、慢日志和经审阅的日志问题；相关风险项 {sum(1 for item in findings if item.category in {'redis', 'log'})} 个。"),
         ],
     )
 
@@ -600,8 +700,8 @@ def _redis_cluster_sections(dataset: InspectionDataset) -> list[ReportSectionMod
                         rows=_slowlog_rows(cluster),
                     ),
                     TableBlock(
-                        title="Redis 日志异常摘要",
-                        columns=["节点", "事件数", "样本"],
+                        title="Redis 日志候选摘要",
+                        columns=["节点", "候选数", "样本"],
                         rows=_log_rows(cluster),
                     ),
                 ],
@@ -780,19 +880,19 @@ def _slowlog_rows(cluster: InspectionCluster) -> list[list[str]]:
 def _log_rows(cluster: InspectionCluster) -> list[list[str]]:
     rows = []
     for node in cluster.nodes:
-        events = _log_events(node)
-        if not events and not _log_event_count(node):
+        candidates = _log_candidates(node)
+        if not candidates and not _log_candidate_count(node):
             continue
         sample = " | ".join(
-            _shorten(_string_value(event.get("message")), limit=80)
-            for event in events[:2]
-            if _string_value(event.get("message"))
+            _shorten(_string_value(candidate.get("raw_message")), limit=80)
+            for candidate in candidates[:2]
+            if _string_value(candidate.get("raw_message"))
         ) or "-"
-        overflow_count = _log_event_overflow_count(node)
+        overflow_count = _log_candidate_overflow_count(node)
         if overflow_count:
             sample = f"{sample}；另有 {overflow_count} 条未展开"
-        rows.append([node.node_id, str(_log_event_count(node)), sample])
-    return rows or [["-", "0", "未发现明确异常日志事件"]]
+        rows.append([node.node_id, str(_log_candidate_count(node)), sample])
+    return rows or [["-", "0", "未提取到日志候选"]]
 
 
 def _findings_for_cluster(
@@ -800,7 +900,12 @@ def _findings_for_cluster(
     findings: list[InspectionFinding],
 ) -> list[InspectionFinding]:
     targets = {cluster.name, *(node.node_id for node in cluster.nodes)}
-    return [finding for finding in findings if finding.target in targets]
+    return [
+        finding
+        for finding in findings
+        if finding.target in targets
+        or any(node in targets for node in finding.affected_nodes)
+    ]
 
 
 def _highest_severity(findings: list[InspectionFinding]) -> str:
@@ -879,31 +984,33 @@ def _slowlog_count(node: InspectionNode) -> int:
     return int(parsed or 0)
 
 
-def _log_events(node: InspectionNode) -> list[dict[str, Any]]:
-    events = node.log_facts.get("error_events")
-    if isinstance(events, list):
-        return [event for event in events if isinstance(event, dict)]
+def _log_candidates(node: InspectionNode) -> list[dict[str, Any]]:
+    candidates = node.log_facts.get("log_candidates")
+    if isinstance(candidates, list):
+        return [candidate for candidate in candidates if isinstance(candidate, dict)]
     return []
 
 
-def _log_event_count(node: InspectionNode) -> int:
-    parsed = _to_float(node.log_facts.get("error_event_count"))
-    return int(parsed) if parsed is not None else len(_log_events(node))
+def _log_candidate_count(node: InspectionNode) -> int:
+    parsed = _to_float(node.log_facts.get("log_candidate_count"))
+    return int(parsed) if parsed is not None else len(_log_candidates(node))
 
 
-def _log_event_overflow_count(node: InspectionNode) -> int:
-    parsed = _to_float(node.log_facts.get("error_event_overflow_count"))
+def _log_candidate_overflow_count(node: InspectionNode) -> int:
+    parsed = _to_float(node.log_facts.get("log_candidate_overflow_count"))
     return int(parsed) if parsed is not None else 0
 
 
-def _log_event_evidence(node: InspectionNode) -> str:
-    events = _log_events(node)
-    sample_messages = [_string_value(event.get("message")) for event in events[:3]]
-    sample = " | ".join(message for message in sample_messages if message) or "-"
-    total = _log_event_count(node)
-    overflow = _log_event_overflow_count(node)
-    suffix = f"；另有 {overflow} 条未展开" if overflow else ""
-    return f"共 {total} 条异常日志事件；样本：{sample}{suffix}"
+def _unique_strings(values) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = _string_value(value).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
 
 
 def _persistence_status(node: InspectionNode) -> str:
@@ -950,11 +1057,6 @@ def _extract_kb(summary: str, key: str) -> int | None:
 
     match = re.search(rf"{key}:\s*([0-9]+)", summary)
     return int(match.group(1)) if match else None
-
-
-def _is_high_log_event(message: str) -> bool:
-    lowered = message.lower()
-    return any(token in lowered for token in ("error", "fail", "oom", "restart"))
 
 
 def _to_float(value: Any) -> float | None:

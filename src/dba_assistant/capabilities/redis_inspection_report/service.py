@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+import json
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +20,7 @@ from dba_assistant.capabilities.redis_inspection_report.types import (
     InspectionDataset,
     InspectionNode,
     InspectionSystem,
+    ReviewedLogIssue,
 )
 from dba_assistant.core.observability import get_current_execution_session
 from dba_assistant.core.reporter.report_model import AnalysisReport
@@ -30,6 +33,7 @@ def analyze_offline_inspection(
     log_time_window_days: int | None = None,
     log_start_time: str | None = None,
     log_end_time: str | None = None,
+    reviewed_log_issues: tuple[ReviewedLogIssue, ...] = (),
     collector: RedisInspectionOfflineCollector | None = None,
 ) -> AnalysisReport:
     dataset = (collector or RedisInspectionOfflineCollector()).collect(
@@ -40,7 +44,66 @@ def analyze_offline_inspection(
             log_end_time=log_end_time,
         )
     )
+    if reviewed_log_issues:
+        dataset = replace(dataset, reviewed_log_issues=reviewed_log_issues)
     return analyze_inspection(dataset, language=language, route="offline_inspection")
+
+
+def collect_offline_log_review_payload(
+    sources: tuple[Path, ...],
+    *,
+    log_time_window_days: int | None = None,
+    log_start_time: str | None = None,
+    log_end_time: str | None = None,
+    collector: RedisInspectionOfflineCollector | None = None,
+) -> dict[str, Any]:
+    dataset = (collector or RedisInspectionOfflineCollector()).collect(
+        RedisInspectionOfflineInput(
+            sources=sources,
+            log_time_window_days=log_time_window_days,
+            log_start_time=log_start_time,
+            log_end_time=log_end_time,
+        )
+    )
+    clusters: list[dict[str, Any]] = []
+    for system in dataset.systems:
+        for cluster in system.clusters:
+            candidates: list[dict[str, Any]] = []
+            for node in cluster.nodes:
+                raw_candidates = node.log_facts.get("log_candidates")
+                if not isinstance(raw_candidates, list):
+                    continue
+                candidates.extend(candidate for candidate in raw_candidates if isinstance(candidate, dict))
+            clusters.append(
+                {
+                    "system_id": system.system_id,
+                    "system_name": system.name,
+                    "cluster_id": cluster.cluster_id,
+                    "cluster_name": cluster.name,
+                    "candidate_count": sum(
+                        int(str(node.log_facts.get("log_candidate_count") or "0"))
+                        for node in cluster.nodes
+                    ),
+                    "log_candidates": candidates,
+                }
+            )
+    return {
+        "source_mode": dataset.source_mode,
+        "input_sources": list(dataset.input_sources),
+        "clusters": clusters,
+        "review_output_schema": {
+            "issue_name": "string",
+            "is_anomalous": "boolean",
+            "severity": "critical|high|medium|low|info",
+            "why": "string",
+            "affected_nodes": ["node_id"],
+            "supporting_samples": ["raw_message"],
+            "recommendation": "string",
+            "merge_key": "string",
+            "category": "log",
+            "confidence": "high|medium|low",
+        },
+    }
 
 
 def analyze_remote_inspection(
@@ -81,6 +144,49 @@ def analyze_inspection(
         metadata=metadata,
         language=report.language,
     )
+
+
+def parse_reviewed_log_issues(
+    payload: str | list[dict[str, Any]] | tuple[dict[str, Any], ...] | None,
+) -> tuple[ReviewedLogIssue, ...]:
+    if payload is None or payload == "":
+        return ()
+    raw: Any
+    if isinstance(payload, str):
+        raw = json.loads(payload)
+    else:
+        raw = payload
+    if isinstance(raw, dict):
+        raw_items = raw.get("issues") or raw.get("reviewed_log_issues") or []
+    else:
+        raw_items = raw
+    if not isinstance(raw_items, (list, tuple)):
+        raise ValueError("reviewed_log_issues_json must be a JSON list or object with an issues list.")
+
+    issues: list[ReviewedLogIssue] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        issue_name = str(item.get("issue_name") or "").strip()
+        if not issue_name:
+            continue
+        issues.append(
+            ReviewedLogIssue(
+                cluster_id=str(item.get("cluster_id") or "").strip(),
+                cluster_name=str(item.get("cluster_name") or "").strip(),
+                issue_name=issue_name,
+                is_anomalous=_bool_value(item.get("is_anomalous")),
+                severity=str(item.get("severity") or "medium").strip().lower(),
+                why=str(item.get("why") or "").strip(),
+                affected_nodes=_string_tuple(item.get("affected_nodes")),
+                supporting_samples=_string_tuple(item.get("supporting_samples")),
+                recommendation=str(item.get("recommendation") or "").strip(),
+                merge_key=str(item.get("merge_key") or "").strip(),
+                category=str(item.get("category") or "log").strip() or "log",
+                confidence=str(item.get("confidence") or "medium").strip().lower(),
+            )
+        )
+    return tuple(issues)
 
 
 def remote_snapshot_to_dataset(
@@ -176,9 +282,29 @@ def _normalize_role(role: str) -> str | None:
     return role or None
 
 
+def _string_tuple(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,) if value.strip() else ()
+    if isinstance(value, (list, tuple)):
+        return tuple(str(item).strip() for item in value if str(item).strip())
+    return (str(value).strip(),) if str(value).strip() else ()
+
+
+def _bool_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "yes", "1", "y"}
+    return bool(value)
+
+
 __all__ = [
     "analyze_inspection",
     "analyze_offline_inspection",
     "analyze_remote_inspection",
+    "collect_offline_log_review_payload",
+    "parse_reviewed_log_issues",
     "remote_snapshot_to_dataset",
 ]

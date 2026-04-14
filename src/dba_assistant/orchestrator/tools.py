@@ -27,6 +27,7 @@ from dba_assistant.adaptors.redis_adaptor import (
 from dba_assistant.adaptors.ssh_adaptor import SSHAdaptor, SSHConnectionConfig
 from dba_assistant.application.request_models import NormalizedRequest, RdbOverrides
 from dba_assistant.application.request_models import (
+    DEFAULT_INSPECTION_LOG_TIME_WINDOW_DAYS,
     DEFAULT_LOOPBACK_HOST,
     DEFAULT_MYSQL_PORT,
     DEFAULT_MYSQL_USER,
@@ -53,6 +54,8 @@ from dba_assistant.capabilities.redis_rdb_analysis.types import (
 from dba_assistant.capabilities.redis_inspection_report.service import (
     analyze_offline_inspection as _analyze_offline_inspection,
     analyze_remote_inspection as _analyze_remote_inspection,
+    collect_offline_log_review_payload as _collect_offline_log_review_payload,
+    parse_reviewed_log_issues as _parse_reviewed_log_issues,
 )
 from dba_assistant.tools.analyze_rdb import analyze_rdb_tool
 from dba_assistant.tools.mysql_tools import (
@@ -165,6 +168,11 @@ def build_all_tools(
         )
     )
     tools.append(
+        _make_redis_inspection_log_candidates_tool(
+            context,
+        )
+    )
+    tools.append(
         _make_redis_inspection_report_tool(
             context,
         )
@@ -263,6 +271,7 @@ def _make_redis_inspection_report_tool(
         log_time_window_days: int | None = None,
         log_start_time: str = "",
         log_end_time: str = "",
+        reviewed_log_issues_json: str = "",
     ) -> str:
         explicit_paths = [Path(p.strip()).expanduser() for p in input_paths.split(",") if p.strip()]
         request_paths = list(request.runtime_inputs.input_paths)
@@ -271,19 +280,29 @@ def _make_redis_inspection_report_tool(
 
         try:
             if paths:
+                effective_log_start_time = log_start_time or request.runtime_inputs.log_start_time
+                effective_log_end_time = log_end_time or request.runtime_inputs.log_end_time
+                effective_log_time_window_days = (
+                    log_time_window_days
+                    if log_time_window_days is not None
+                    else request.runtime_inputs.log_time_window_days
+                )
+                if (
+                    effective_log_time_window_days is None
+                    and not effective_log_start_time
+                    and not effective_log_end_time
+                ):
+                    effective_log_time_window_days = DEFAULT_INSPECTION_LOG_TIME_WINDOW_DAYS
                 for path in paths:
                     if not path.exists():
                         return f"Error: input path does not exist on host filesystem: {path}"
                 analysis = _analyze_offline_inspection(
                     tuple(paths),
                     language=language,
-                    log_time_window_days=(
-                        log_time_window_days
-                        if log_time_window_days is not None
-                        else request.runtime_inputs.log_time_window_days
-                    ),
-                    log_start_time=log_start_time or request.runtime_inputs.log_start_time,
-                    log_end_time=log_end_time or request.runtime_inputs.log_end_time,
+                    log_time_window_days=effective_log_time_window_days,
+                    log_start_time=effective_log_start_time,
+                    log_end_time=effective_log_end_time,
+                    reviewed_log_issues=_parse_reviewed_log_issues(reviewed_log_issues_json),
                 )
                 runtime_inputs = request.runtime_inputs
             else:
@@ -320,8 +339,64 @@ def _make_redis_inspection_report_tool(
             "input_paths to run a live read-only Redis inspection from redis_host/redis_port. "
             "Parameters: input_paths (comma-separated files/directories/tar.gz bundles), "
             "redis_host, redis_port, redis_db, report_language, output_mode, report_format, output_path, "
-            "log_time_window_days, log_start_time, log_end_time. Log time window parameters are optional "
-            "structured intent supplied by the LLM; the CLI does not parse or infer them."
+            "log_time_window_days, log_start_time, log_end_time, reviewed_log_issues_json. "
+            "For log analysis, pass reviewed_log_issues_json after LLM semantic review of candidates."
+        ),
+    )
+
+
+def _make_redis_inspection_log_candidates_tool(
+    context: ToolRuntimeContext,
+):
+    """Collect neutral Redis log candidates for LLM semantic review."""
+    request = context.request
+
+    def redis_inspection_log_candidates(
+        input_paths: str = "",
+        log_time_window_days: int | None = None,
+        log_start_time: str = "",
+        log_end_time: str = "",
+    ) -> str:
+        explicit_paths = [Path(p.strip()).expanduser() for p in input_paths.split(",") if p.strip()]
+        paths = explicit_paths or list(request.runtime_inputs.input_paths)
+        if not paths:
+            return "Error: input_paths are required for offline log candidate review."
+        effective_log_start_time = log_start_time or request.runtime_inputs.log_start_time
+        effective_log_end_time = log_end_time or request.runtime_inputs.log_end_time
+        effective_log_time_window_days = (
+            log_time_window_days
+            if log_time_window_days is not None
+            else request.runtime_inputs.log_time_window_days
+        )
+        if (
+            effective_log_time_window_days is None
+            and not effective_log_start_time
+            and not effective_log_end_time
+        ):
+            effective_log_time_window_days = DEFAULT_INSPECTION_LOG_TIME_WINDOW_DAYS
+        for path in paths:
+            if not path.exists():
+                return f"Error: input path does not exist on host filesystem: {path}"
+        try:
+            payload = _collect_offline_log_review_payload(
+                tuple(paths),
+                log_time_window_days=effective_log_time_window_days,
+                log_start_time=effective_log_start_time,
+                log_end_time=effective_log_end_time,
+            )
+        except ValueError as exc:
+            return f"Error: {exc}"
+        return json.dumps(payload, ensure_ascii=False, indent=2)
+
+    return _named_tool(
+        redis_inspection_log_candidates,
+        "redis_inspection_log_candidates",
+        (
+            "Collect neutral Redis log candidates for LLM semantic review. "
+            "This tool only performs deterministic evidence reduction: time filtering, "
+            "timestamp parsing, deduplication, sampling, and cluster/node bucketing. "
+            "It does not decide whether a candidate is anomalous. "
+            "After reviewing the JSON, call redis_inspection_report with reviewed_log_issues_json."
         ),
     )
 

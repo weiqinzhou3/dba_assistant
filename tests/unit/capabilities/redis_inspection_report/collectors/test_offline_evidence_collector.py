@@ -123,7 +123,9 @@ def test_offline_collector_normalizes_node_directories_into_cluster_dataset(tmp_
     assert first.hostname == "10.0.0.1"
     assert first.role == "master"
     assert first.redis_facts["redis_version"] == "6.2.12"
-    assert first.log_facts["error_events"][0]["message"] == "2026-04-14 # Error loading DB"
+    assert "error_events" not in first.log_facts
+    assert first.log_facts["log_candidates"][0]["raw_message"] == "2026-04-14 # Error loading DB"
+    assert first.log_facts["log_candidates"][0]["candidate_signal"] == "generic_attention_signal"
     assert cluster.nodes[1].host_facts["transparent_hugepage"] == "always [madvise] never"
 
 
@@ -219,7 +221,7 @@ def test_offline_collector_rejects_unsupported_file_inputs(tmp_path: Path) -> No
         raise AssertionError("unsupported file should be rejected")
 
 
-def test_offline_collector_keeps_log_events_bounded_with_overflow_metadata(tmp_path: Path) -> None:
+def test_offline_collector_keeps_log_candidates_bounded_with_overflow_metadata(tmp_path: Path) -> None:
     root = tmp_path / "evidence"
     node_dir = root / "redis-node"
     node_dir.mkdir(parents=True)
@@ -232,9 +234,13 @@ def test_offline_collector_keeps_log_events_bounded_with_overflow_metadata(tmp_p
     dataset = RedisInspectionOfflineCollector().collect(RedisInspectionOfflineInput(sources=(root,)))
 
     node = dataset.systems[0].clusters[0].nodes[0]
-    assert len(node.log_facts["error_events"]) == 20
-    assert node.log_facts["error_event_count"] == "25"
-    assert node.log_facts["error_event_overflow_count"] == "5"
+    assert "error_events" not in node.log_facts
+    assert len(node.log_facts["log_candidates"]) == 20
+    assert node.log_facts["log_candidate_count"] == "25"
+    assert node.log_facts["log_candidate_overflow_count"] == "5"
+    assert {candidate["candidate_signal"] for candidate in node.log_facts["log_candidates"]} == {
+        "generic_attention_signal"
+    }
 
 
 def test_offline_collector_accepts_tar_gz_evidence_bundle(tmp_path: Path) -> None:
@@ -285,7 +291,7 @@ def test_log_time_window_filters_old_events_by_default(tmp_path: Path) -> None:
     )
 
     node = dataset.systems[0].clusters[0].nodes[0]
-    assert int(node.log_facts["error_event_count"]) == 2, (
+    assert int(node.log_facts["log_candidate_count"]) == 2, (
         "Only events within the default 30-day window should be counted"
     )
 
@@ -313,11 +319,11 @@ def test_log_time_window_explicit_days(tmp_path: Path) -> None:
     )
 
     node = dataset.systems[0].clusters[0].nodes[0]
-    assert int(node.log_facts["error_event_count"]) == 1
+    assert int(node.log_facts["log_candidate_count"]) == 1
 
 
-def test_log_without_timestamp_not_filtered_out(tmp_path: Path) -> None:
-    """Log lines without parseable timestamps should pass through the filter."""
+def test_log_without_timestamp_is_dropped_when_time_filtering_is_active(tmp_path: Path) -> None:
+    """Unparseable timestamps must not bypass an active time window."""
     root = tmp_path / "evidence"
     node_dir = root / "redis-node"
     node_dir.mkdir(parents=True)
@@ -332,4 +338,91 @@ def test_log_without_timestamp_not_filtered_out(tmp_path: Path) -> None:
     )
 
     node = dataset.systems[0].clusters[0].nodes[0]
-    assert int(node.log_facts["error_event_count"]) == 1
+    assert node.log_facts == {}
+
+
+def test_log_time_window_parses_redis_day_month_year_timestamps(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"
+    node_dir = root / "redis-node"
+    node_dir.mkdir(parents=True)
+    (node_dir / "info.txt").write_text("redis_version:7.0.15\nrole:master\ntcp_port:6379\n", encoding="utf-8")
+    (node_dir / "redis.log").write_text(
+        "\n".join(
+            [
+                "26 May 2023 15:22:16.830 # ERROR included historical event",
+                "14 Apr 2026 08:00:00.000 # ERROR excluded outside range",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    dataset = RedisInspectionOfflineCollector().collect(
+        RedisInspectionOfflineInput(
+            sources=(root,),
+            log_start_time="2023-05-01 00:00:00",
+            log_end_time="2023-05-31 23:59:59",
+        )
+    )
+
+    node = dataset.systems[0].clusters[0].nodes[0]
+    assert int(node.log_facts["log_candidate_count"]) == 1
+    assert node.log_facts["log_candidates"][0]["raw_message"].startswith("26 May 2023")
+    assert node.log_facts["log_candidates"][0]["timestamp"] == "2023-05-26T15:22:16.830000"
+
+
+def test_log_time_window_parses_redis_day_month_without_year_against_window(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "evidence"
+    node_dir = root / "redis-node"
+    node_dir.mkdir(parents=True)
+    (node_dir / "info.txt").write_text("redis_version:7.0.15\nrole:master\ntcp_port:6379\n", encoding="utf-8")
+    (node_dir / "redis.log").write_text(
+        "\n".join(
+            [
+                "17 Dec 15:01:30.642 # WARNING included no-year historical event",
+                "18 Nov 15:01:30.642 # WARNING excluded outside range",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    dataset = RedisInspectionOfflineCollector().collect(
+        RedisInspectionOfflineInput(
+            sources=(root,),
+            log_start_time="2025-12-01 00:00:00",
+            log_end_time="2025-12-31 23:59:59",
+        )
+    )
+
+    node = dataset.systems[0].clusters[0].nodes[0]
+    assert int(node.log_facts["log_candidate_count"]) == 1
+    assert node.log_facts["log_candidates"][0]["raw_message"].startswith("17 Dec")
+    assert node.log_facts["log_candidates"][0]["timestamp"] == "2025-12-17T15:01:30.642000"
+
+
+def test_normal_persistence_logs_are_neutral_candidates_not_error_events(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"
+    node_dir = root / "redis-node"
+    node_dir.mkdir(parents=True)
+    (node_dir / "info.txt").write_text("redis_version:7.0.15\nrole:master\ntcp_port:6379\n", encoding="utf-8")
+    (node_dir / "redis.log").write_text(
+        "\n".join(
+            [
+                "2026-04-14 09:00:00 # Background append only file rewriting terminated with success",
+                "2026-04-14 09:01:00 # RDB: 8 MB of memory used by copy-on-write",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    dataset = RedisInspectionOfflineCollector().collect(RedisInspectionOfflineInput(sources=(root,)))
+
+    node = dataset.systems[0].clusters[0].nodes[0]
+    assert "error_events" not in node.log_facts
+    assert node.log_facts["log_candidate_count"] == "2"
+    assert [candidate["candidate_signal"] for candidate in node.log_facts["log_candidates"]] == [
+        "persistence_signal",
+        "persistence_signal",
+    ]
+    assert all("abnormal" not in candidate for candidate in node.log_facts["log_candidates"])

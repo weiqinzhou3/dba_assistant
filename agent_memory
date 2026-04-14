@@ -1,0 +1,71 @@
+/AGENTS.md
+# DBA Assistant Repository Policy
+
+## Purpose
+
+This repository is developed phase by phase from the DBA Assistant master plan.
+
+DBA Assistant is a Deep Agents SDK-based project. Functional delivery happens phase by phase from the master plan.
+
+## Non-Negotiable Rules
+
+- `AGENTS.md` is the repository policy source of truth.
+- DBA Assistant uses Deep Agents SDK as its runtime foundation.
+- Production code must live under `src/dba_assistant/`.
+- `src/claude-code-source-code/` and `src/docs/` are reference-only inputs for design and coding guidance.
+- Do not copy runtime implementation code from the reference layer into production modules.
+- Do not import production modules from the reference layer, and do not import the reference layer into production modules.
+- Follow the master plan when reference material and local preference diverge.
+- Phase work must stay scoped. Do not mix unfinished later-phase behavior into an earlier-phase delivery.
+
+## Repository Layout Rules
+
+- `docs/phases/` stores execution-oriented phase notes.
+- `templates/reports/` stores repository-owned report template work.
+- `references/report-samples/` stores historical report samples for comparison only.
+- `tests/` stores repository-native fixtures and verification assets.
+- Regarding repository layering, skill/tools/capabilities responsibility boundaries, shared infrastructure reuse rules, and prohibition of anti-patterns, please consistently follow docs/dba_assistant_architecture_constraints_addendum_v1.md; if implementation convenience conflicts with this document, the document shall prevail, unless docs/dba_assistant_master_plan_en.md explicitly overrides it.
+
+
+## Initialization Rules
+
+- `/init` creates structure, contracts, and documentation only.
+- `/init` must not claim runtime completeness.
+- Placeholder modules must clearly state `scaffold-only` status.
+
+## Language Direction
+
+- The repository is Python-first.
+- TypeScript files under the reference layer do not define the production language choice.
+
+## Redis Connection Information
+
+- Redis server: 192.168.23.54:6379
+- SSH server: 192.168.23.54:22
+- SSH username: root
+- SSH password: root (provided via secure context)
+- Remote RDB acquisition mode: fresh_snapshot
+
+## User Request Information
+- 用户要求基于离线巡检包 `/Users/zqw/Desktop/Project/dba_assistant/references/legacy-workflows/redis-inspection-report/redis_info.tar.gz` 生成正式的Redis巡检报告
+- 需要输出DOCX文件格式
+- 日志过滤时间窗口为7天
+- 巡检包路径已确认存在：`/references/legacy-workflows/redis-inspection-report/redis_info.tar.gz`
+- 需要遵循redis-inspection-report技能的工作流程
+
+## 用户请求信息
+- 用户要求基于离线巡检包 `/references/legacy-workflows/redis-inspection-report/redis_info.tar.gz` 生成正式的Redis巡检报告
+- 需要输出docx文件
+- 如果需要过滤日志，时间窗口为7天
+
+## 任务完成情况
+- 已成功基于离线巡检包 `references/legacy-workflows/redis-inspection-report/redis_info.tar.gz` 生成Redis巡检报告
+- 已生成DOCX格式的正式报告文件
+- 已设置7天日志时间窗口过滤
+- 报告文件路径：`/tmp/dba_assistant_redis_inspection_20260414_165752.docx`
+
+## 技能使用经验
+- 使用redis-inspection-report技能处理离线巡检包
+- 对于tar.gz格式的离线证据包，需要使用相对路径 `references/legacy-workflows/redis-inspection-report/redis_info.tar.gz`
+- 当用户要求DOCX输出时，工具会自动生成临时文件路径
+- 日志时间窗口通过 `log_time_window_days=7` 参数设置

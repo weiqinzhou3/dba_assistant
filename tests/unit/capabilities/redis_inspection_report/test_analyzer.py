@@ -8,6 +8,7 @@ from dba_assistant.capabilities.redis_inspection_report.types import (
     InspectionDataset,
     InspectionNode,
     InspectionSystem,
+    ReviewedLogIssue,
 )
 
 
@@ -45,11 +46,11 @@ def test_analyzer_builds_report_sections_and_findings_from_cluster_dataset() -> 
                                 },
                                 host_facts={"transparent_hugepage": "[always] madvise never", "swap": "SwapTotal: 1G / SwapFree: 0"},
                                 log_facts={
-                                    "error_events": [
-                                        {"level": "error", "message": "OOM command not allowed"},
-                                        {"level": "warning", "message": "replication backlog warning"},
+                                    "log_candidates": [
+                                        {"candidate_signal": "oom_signal", "raw_message": "OOM command not allowed"},
+                                        {"candidate_signal": "replication_signal", "raw_message": "replication backlog warning"},
                                     ],
-                                    "error_event_count": "2",
+                                    "log_candidate_count": "2",
                                 },
                             ),
                             InspectionNode(
@@ -69,6 +70,22 @@ def test_analyzer_builds_report_sections_and_findings_from_cluster_dataset() -> 
         ),
         source_mode="offline",
         input_sources=("/evidence",),
+        reviewed_log_issues=(
+            ReviewedLogIssue(
+                cluster_id="cluster-a",
+                cluster_name="cluster-a",
+                issue_name="Redis 日志显示 OOM 与复制异常",
+                is_anomalous=True,
+                severity="high",
+                why="OOM and replication warning were reviewed as related runtime anomalies.",
+                affected_nodes=("10.0.0.1:6379",),
+                supporting_samples=("OOM command not allowed", "replication backlog warning"),
+                recommendation="检查内存水位、复制链路和业务写入峰值。",
+                merge_key="cluster-a:oom-replication",
+                category="log",
+                confidence="high",
+            ),
+        ),
     )
 
     report = analyze_inspection_dataset(dataset, language="zh-CN")
@@ -121,7 +138,7 @@ def test_analyzer_builds_report_sections_and_findings_from_cluster_dataset() -> 
         "复制状态",
         "Key 空间摘要",
         "Slowlog 摘要",
-        "Redis 日志异常摘要",
+        "Redis 日志候选摘要",
     ]
     assert all(len(block.columns) <= 4 for block in redis_cluster_section.blocks if hasattr(block, "columns"))
     risk_cluster_section = next(section for section in report.sections if section.id == "risk_remediation__cluster-a")
@@ -138,8 +155,8 @@ def test_analyzer_builds_report_sections_and_findings_from_cluster_dataset() -> 
     assert any(row[0] == "Redis 持久化最近一次保存失败" for row in rows)
     assert any(row[0] == "Redis 复制链路异常" for row in rows)
     assert any(row[0] == "主机 Swap 已使用" for row in rows)
-    assert sum(1 for row in rows if row[0] == "Redis 错误日志存在异常事件") == 1
-    assert any(row[0] == "Redis 错误日志存在异常事件" and "共 2 条" in row[4] for row in rows)
+    assert sum(1 for row in rows if row[0] == "Redis 日志显示 OOM 与复制异常") == 1
+    assert any(row[0] == "Redis 日志显示 OOM 与复制异常" and "OOM" in row[4] for row in rows)
     assert any("OOM" in row[4] for row in rows)
 
 
@@ -149,6 +166,7 @@ def test_analyzer_builds_report_sections_and_findings_from_cluster_dataset() -> 
 
 def _make_simple_dataset(**overrides) -> InspectionDataset:
     """Minimal dataset helper for focused tests."""
+    reviewed_log_issues = overrides.pop("reviewed_log_issues", ())
     node_facts = overrides.pop("redis_facts", {"redis_version": "7.0.15", "used_memory": "100", "maxmemory": "1000"})
     node_kwargs = {
         "node_id": "10.0.0.1:6379",
@@ -177,6 +195,7 @@ def _make_simple_dataset(**overrides) -> InspectionDataset:
         ),
         source_mode="offline",
         input_sources=("/evidence",),
+        reviewed_log_issues=reviewed_log_issues,
     )
 
 
@@ -318,3 +337,134 @@ def test_redis_table_titles_have_no_hardcoded_number_prefix() -> None:
         for block in section.blocks:
             if hasattr(block, "title") and block.title:
                 assert not block.title[0].isdigit(), f"Table title should not start with number: {block.title}"
+
+
+def test_normal_log_candidates_do_not_create_findings_without_reviewed_anomaly() -> None:
+    dataset = _make_simple_dataset(
+        log_facts={
+            "log_candidates": [
+                {
+                    "candidate_signal": "persistence_signal",
+                    "raw_message": "Background append only file rewriting terminated with success",
+                },
+                {
+                    "candidate_signal": "persistence_signal",
+                    "raw_message": "RDB: 8 MB of memory used by copy-on-write",
+                },
+            ],
+            "log_candidate_count": "2",
+        },
+        reviewed_log_issues=(
+            ReviewedLogIssue(
+                cluster_id="cluster-a",
+                cluster_name="test-cluster",
+                issue_name="正常持久化后台任务",
+                is_anomalous=False,
+                severity="info",
+                why="AOF rewrite success and RDB copy-on-write metrics are normal persistence lifecycle events.",
+                affected_nodes=("10.0.0.1:6379",),
+                supporting_samples=(
+                    "Background append only file rewriting terminated with success",
+                    "RDB: 8 MB of memory used by copy-on-write",
+                ),
+                recommendation="无需整改，保留为背景证据。",
+                merge_key="normal-persistence",
+                category="log",
+                confidence="high",
+            ),
+        ),
+    )
+
+    report = analyze_inspection_dataset(dataset)
+
+    risk_rows = _risk_rows(report)
+    assert not any("正常持久化后台任务" in row[0] for row in risk_rows)
+    assert not any("Redis 错误日志存在异常事件" in row[0] for row in risk_rows)
+
+
+def test_reviewed_log_issue_drives_findings() -> None:
+    dataset = _make_simple_dataset(
+        log_facts={
+            "log_candidates": [
+                {"candidate_signal": "oom_signal", "raw_message": "OOM command not allowed"},
+                {"candidate_signal": "fork_signal", "raw_message": "Can't save in background: fork failed"},
+            ],
+            "log_candidate_count": "2",
+        },
+        reviewed_log_issues=(
+            ReviewedLogIssue(
+                cluster_id="cluster-a",
+                cluster_name="test-cluster",
+                issue_name="Redis 日志显示 OOM 与 fork 失败",
+                is_anomalous=True,
+                severity="high",
+                why="LLM review linked OOM and fork failure to memory pressure.",
+                affected_nodes=("10.0.0.1:6379",),
+                supporting_samples=("OOM command not allowed", "Can't save in background: fork failed"),
+                recommendation="优先检查内存水位、fork 内存和业务写入峰值。",
+                merge_key="memory-pressure-log",
+                category="log",
+                confidence="high",
+            ),
+        ),
+    )
+
+    report = analyze_inspection_dataset(dataset)
+
+    risk_rows = _risk_rows(report)
+    assert any(row[0] == "Redis 日志显示 OOM 与 fork 失败" and row[1] == "high" for row in risk_rows)
+    assert any("LLM review" in row[4] or "OOM" in row[4] for row in risk_rows)
+
+
+def test_problem_overview_merges_reviewed_log_issues_by_cluster_merge_key() -> None:
+    dataset = _make_simple_dataset(
+        reviewed_log_issues=(
+            ReviewedLogIssue(
+                cluster_id="cluster-a",
+                cluster_name="test-cluster",
+                issue_name="复制链路反复中断",
+                is_anomalous=True,
+                severity="high",
+                why="replication break samples were reviewed as the same incident pattern.",
+                affected_nodes=("10.0.0.1:6379",),
+                supporting_samples=("MASTER <-> REPLICA sync failed",),
+                recommendation="检查主从网络、认证和 backlog。",
+                merge_key="replication-break",
+                category="log",
+                confidence="high",
+            ),
+            ReviewedLogIssue(
+                cluster_id="cluster-a",
+                cluster_name="test-cluster",
+                issue_name="复制链路反复中断",
+                is_anomalous=True,
+                severity="high",
+                why="same issue on another node.",
+                affected_nodes=("10.0.0.2:6379",),
+                supporting_samples=("MASTER timeout during replication",),
+                recommendation="检查主从网络、认证和 backlog。",
+                merge_key="replication-break",
+                category="log",
+                confidence="medium",
+            ),
+        ),
+    )
+
+    report = analyze_inspection_dataset(dataset)
+    arch_section = next(s for s in report.sections if s.id == "architecture_overview")
+    problem_table = next(b for b in arch_section.blocks if getattr(b, "title", "") == "问题概览与整改优先级")
+
+    merged_rows = [row for row in problem_table.rows if row[1] == "复制链路反复中断"]
+    assert len(merged_rows) == 1
+    assert "10.0.0.1:6379" in merged_rows[0][2]
+    assert "10.0.0.2:6379" in merged_rows[0][2]
+
+
+def _risk_rows(report):
+    risk_cluster_section = next(section for section in report.sections if section.id.startswith("risk_remediation__"))
+    return [
+        row
+        for block in risk_cluster_section.blocks
+        if hasattr(block, "rows")
+        for row in block.rows
+    ]

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from hashlib import sha1
 import os
 from pathlib import Path
@@ -16,6 +16,7 @@ from dba_assistant.capabilities.redis_inspection_report.types import (
     InspectionNode,
     InspectionSystem,
 )
+from dba_assistant.application.request_models import DEFAULT_INSPECTION_LOG_TIME_WINDOW_DAYS
 from dba_assistant.core.observability import get_current_execution_session
 
 
@@ -39,25 +40,49 @@ _IP_PORT_PATTERN = re.compile(
     r"(?P<ip>(?:\d{1,3}\.){3}\d{1,3})(?:[_:-](?P<port>\d{2,5}))?"
 )
 _FACT_LINE_PATTERN = re.compile(r"^\s*([^#\s:=][^:=\s]*)\s*(?::|\s)\s*(.*?)\s*$")
-_LOG_EVENT_PATTERN = re.compile(
-    r"(?i)\b(error|warning|warn|restart|fail|oom|fork|aof|rdb|replication)\b"
+_LOG_CANDIDATE_PATTERN = re.compile(
+    r"(?i)\b(error|warning|warn|restart|fail|failed|oom|fork|aof|rdb|replication|"
+    r"append only|copy-on-write|bgsave|rewrite|cluster)\b"
 )
 _SECTION_PATTERN = re.compile(r"^#+\s*(?P<title>[^#].*?)\s*#+\s*$")
 _ALLOWED_EVIDENCE_SUFFIXES = frozenset(
     {"", ".txt", ".log", ".output", ".conf", ".cfg", ".ini", ".json", ".out"}
 )
 _MAX_LOG_EVENTS_PER_NODE = 20
-_DEFAULT_LOG_TIME_WINDOW_DAYS = 30
 _LOG_TIMESTAMP_PATTERN = re.compile(
-    r"(?P<ts>\d{4}[-/]\d{1,2}[-/]\d{1,2}[\sT]\d{1,2}:\d{2}(?::\d{2})?)"
+    r"(?P<ts>\d{4}[-/]\d{1,2}[-/]\d{1,2}"
+    r"(?:[\sT]\d{1,2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?)?)"
+)
+_LOG_DMY_YEAR_TIMESTAMP_PATTERN = re.compile(
+    r"(?P<ts>\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}\s+\d{1,2}:\d{2}:\d{2}(?:\.\d{1,6})?)"
+)
+_LOG_DMY_NO_YEAR_TIMESTAMP_PATTERN = re.compile(
+    r"(?P<ts>\d{1,2}\s+[A-Za-z]{3,9}\s+\d{1,2}:\d{2}:\d{2}(?:\.\d{1,6})?)"
 )
 _LOG_TIMESTAMP_FORMATS = (
     "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d %H:%M:%S.%f",
     "%Y-%m-%d %H:%M",
     "%Y/%m/%d %H:%M:%S",
+    "%Y/%m/%d %H:%M:%S.%f",
     "%Y/%m/%d %H:%M",
     "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%dT%H:%M:%S.%f",
     "%Y-%m-%dT%H:%M",
+    "%Y-%m-%d",
+    "%Y/%m/%d",
+)
+_LOG_DMY_YEAR_TIMESTAMP_FORMATS = (
+    "%d %b %Y %H:%M:%S.%f",
+    "%d %b %Y %H:%M:%S",
+    "%d %B %Y %H:%M:%S.%f",
+    "%d %B %Y %H:%M:%S",
+)
+_LOG_DMY_NO_YEAR_TIMESTAMP_FORMATS = (
+    "%d %b %H:%M:%S.%f",
+    "%d %b %H:%M:%S",
+    "%d %B %H:%M:%S.%f",
+    "%d %B %H:%M:%S",
 )
 
 
@@ -91,6 +116,7 @@ class RedisInspectionOfflineCollector:
 
         _record_phase("evidence_grouping_start", node_candidate_count=len(nodes))
         systems = _group_nodes(nodes, fallback_system_name=collector_input.system_name)
+        _attach_log_candidate_scope(systems)
         cluster_count = sum(len(system.clusters) for system in systems)
         unresolved_count = sum(
             1
@@ -211,8 +237,8 @@ def _build_node_from_group(
 ) -> InspectionNode:
     redis_facts: dict[str, Any] = {}
     host_facts: dict[str, Any] = {}
-    log_events: list[dict[str, str]] = []
-    log_event_count = 0
+    log_candidates: list[dict[str, Any]] = []
+    log_candidate_count = 0
     source_paths = [item.path for item in files]
 
     for item in files:
@@ -229,10 +255,15 @@ def _build_node_from_group(
             redis_facts["slowlog"] = {"count": _count_nonempty_lines(item.text), "entries": []}
             continue
         if "log" in name:
-            available = max(0, _MAX_LOG_EVENTS_PER_NODE - len(log_events))
-            parsed_events, parsed_count = _parse_log_events(item.text, limit=available, time_bounds=log_time_bounds)
-            log_events.extend(parsed_events)
-            log_event_count += parsed_count
+            available = max(0, _MAX_LOG_EVENTS_PER_NODE - len(log_candidates))
+            parsed_candidates, parsed_count = _parse_log_candidates(
+                item.text,
+                limit=available,
+                time_bounds=log_time_bounds,
+                source_path=item.path,
+            )
+            log_candidates.extend(parsed_candidates)
+            log_candidate_count += parsed_count
             continue
         if _is_thp_file(name):
             host_facts["transparent_hugepage"] = _first_nonempty_line(item.text)
@@ -266,11 +297,18 @@ def _build_node_from_group(
         host_facts=host_facts,
         redis_facts=redis_facts,
         log_facts={
-            "error_events": log_events,
-            "error_event_count": str(log_event_count),
-            "error_event_overflow_count": str(max(0, log_event_count - len(log_events))),
+            "log_candidates": [
+                {
+                    **candidate,
+                    "node_id": node_id,
+                    "source_path": candidate.get("source_path") or str(group_path),
+                }
+                for candidate in log_candidates
+            ],
+            "log_candidate_count": str(log_candidate_count),
+            "log_candidate_overflow_count": str(max(0, log_candidate_count - len(log_candidates))),
         }
-        if log_event_count
+        if log_candidate_count
         else {},
     )
 
@@ -313,6 +351,21 @@ def _group_nodes(
             )
         )
     return tuple(systems)
+
+
+def _attach_log_candidate_scope(systems: tuple[InspectionSystem, ...]) -> None:
+    for system in systems:
+        for cluster in system.clusters:
+            for node in cluster.nodes:
+                candidates = node.log_facts.get("log_candidates")
+                if not isinstance(candidates, list):
+                    continue
+                for candidate in candidates:
+                    if not isinstance(candidate, dict):
+                        continue
+                    candidate.setdefault("cluster_id", cluster.cluster_id)
+                    candidate.setdefault("cluster_name", cluster.name)
+                    candidate.setdefault("node_id", node.node_id)
 
 
 def _cluster_key(node: InspectionNode) -> str:
@@ -438,29 +491,71 @@ def _parse_combined_output(text: str) -> tuple[dict[str, Any], dict[str, Any]]:
     return redis_facts, host_facts
 
 
-def _parse_log_events(
+def _parse_log_candidates(
     text: str,
     *,
     limit: int,
     time_bounds: tuple[datetime, datetime] | None = None,
-) -> tuple[list[dict[str, str]], int]:
-    events: list[dict[str, str]] = []
-    event_count = 0
+    source_path: Path | None = None,
+) -> tuple[list[dict[str, Any]], int]:
+    candidates_by_key: dict[str, dict[str, Any]] = {}
+    ordered_keys: list[str] = []
+    candidate_count = 0
     for line in text.splitlines():
         stripped = line.strip()
         if not stripped:
             continue
-        match = _LOG_EVENT_PATTERN.search(stripped)
+        match = _LOG_CANDIDATE_PATTERN.search(stripped)
         if match is None:
             continue
+        timestamp = _extract_timestamp(stripped, time_bounds=time_bounds)
         if time_bounds is not None:
-            ts = _extract_timestamp(stripped)
-            if ts is not None and (ts < time_bounds[0] or ts > time_bounds[1]):
+            # Active time filtering is strict: lines with unparseable timestamps
+            # cannot bypass the requested/default window.
+            if timestamp is None or timestamp < time_bounds[0] or timestamp > time_bounds[1]:
                 continue
-        event_count += 1
-        if len(events) < limit:
-            events.append({"level": match.group(1).lower(), "message": stripped})
-    return events, event_count
+        candidate_count += 1
+        key = _normalize_log_candidate_key(stripped)
+        existing = candidates_by_key.get(key)
+        if existing is not None:
+            existing["count"] = int(existing["count"]) + 1
+            existing["repeated_count"] = int(existing["repeated_count"]) + 1
+            continue
+        if len(ordered_keys) >= limit:
+            continue
+        ordered_keys.append(key)
+        candidates_by_key[key] = {
+            "timestamp": timestamp.isoformat() if timestamp is not None else None,
+            "raw_message": stripped,
+            "candidate_signal": _candidate_signal(stripped),
+            "count": 1,
+            "repeated_count": 0,
+            "source_path": str(source_path) if source_path is not None else "",
+            "parse_confidence": "high" if timestamp is not None else "unbounded",
+            "time_window_applied": time_bounds is not None,
+        }
+    return [candidates_by_key[key] for key in ordered_keys], candidate_count
+
+
+def _normalize_log_candidate_key(message: str) -> str:
+    return re.sub(r"\s+", " ", message.strip())
+
+
+def _candidate_signal(message: str) -> str:
+    lowered = message.lower()
+    if "oom" in lowered:
+        return "oom_signal"
+    if "fork" in lowered:
+        return "fork_signal"
+    if "cluster" in lowered and ("fail" in lowered or "failed" in lowered):
+        return "cluster_fail_signal"
+    if "replication" in lowered or "replica" in lowered or "slave" in lowered or "master" in lowered:
+        return "replication_signal"
+    if any(token in lowered for token in ("aof", "rdb", "bgsave", "append only", "copy-on-write", "rewrite")):
+        return "persistence_signal"
+    if "warning" in lowered or "warn" in lowered:
+        return "warning_signal"
+    return "generic_attention_signal"
 
 
 def _is_redis_fact_file(name: str) -> bool:
@@ -700,14 +795,29 @@ def _resolve_log_time_bounds(
     """
     now = datetime.now()
     if collector_input.log_start_time or collector_input.log_end_time:
-        start = _parse_user_timestamp(collector_input.log_start_time) if collector_input.log_start_time else (now - timedelta(days=_DEFAULT_LOG_TIME_WINDOW_DAYS))
-        end = _parse_user_timestamp(collector_input.log_end_time) if collector_input.log_end_time else now
+        start = (
+            _parse_user_timestamp(collector_input.log_start_time)
+            if collector_input.log_start_time
+            else (now - timedelta(days=DEFAULT_INSPECTION_LOG_TIME_WINDOW_DAYS))
+        )
+        end = (
+            _parse_user_timestamp(collector_input.log_end_time)
+            if collector_input.log_end_time
+            else now
+        )
         return (start, end)
-    window_days = collector_input.log_time_window_days if collector_input.log_time_window_days is not None else _DEFAULT_LOG_TIME_WINDOW_DAYS
+    window_days = (
+        collector_input.log_time_window_days
+        if collector_input.log_time_window_days is not None
+        else DEFAULT_INSPECTION_LOG_TIME_WINDOW_DAYS
+    )
     return (now - timedelta(days=window_days), now)
 
 
 def _parse_user_timestamp(value: str) -> datetime:
+    parsed = _parse_iso_timestamp(value.strip())
+    if parsed is not None:
+        return parsed
     for fmt in _LOG_TIMESTAMP_FORMATS:
         try:
             return datetime.strptime(value.strip(), fmt)
@@ -717,20 +827,74 @@ def _parse_user_timestamp(value: str) -> datetime:
         return datetime.strptime(value.strip(), "%Y-%m-%d")
     except ValueError:
         pass
-    return datetime.now()
+    raise ValueError(f"Unsupported log timestamp: {value}")
 
 
-def _extract_timestamp(line: str) -> datetime | None:
+def _extract_timestamp(
+    line: str,
+    *,
+    time_bounds: tuple[datetime, datetime] | None = None,
+) -> datetime | None:
     match = _LOG_TIMESTAMP_PATTERN.search(line)
-    if match is None:
-        return None
-    raw = match.group("ts")
-    for fmt in _LOG_TIMESTAMP_FORMATS:
+    if match is not None:
+        raw = match.group("ts")
+        parsed = _parse_iso_timestamp(raw)
+        if parsed is not None:
+            return parsed
+        parsed = _parse_with_formats(raw, _LOG_TIMESTAMP_FORMATS)
+        if parsed is not None:
+            return parsed
+
+    match = _LOG_DMY_YEAR_TIMESTAMP_PATTERN.search(line)
+    if match is not None:
+        parsed = _parse_with_formats(match.group("ts"), _LOG_DMY_YEAR_TIMESTAMP_FORMATS)
+        if parsed is not None:
+            return parsed
+
+    match = _LOG_DMY_NO_YEAR_TIMESTAMP_PATTERN.search(line)
+    if match is not None:
+        return _parse_day_month_without_year(match.group("ts"), time_bounds=time_bounds)
+
+    return None
+
+
+def _parse_with_formats(value: str, formats: tuple[str, ...]) -> datetime | None:
+    for fmt in formats:
         try:
-            return datetime.strptime(raw, fmt)
+            return datetime.strptime(value, fmt)
         except ValueError:
             continue
     return None
+
+
+def _parse_iso_timestamp(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+def _parse_day_month_without_year(
+    value: str,
+    *,
+    time_bounds: tuple[datetime, datetime] | None,
+) -> datetime | None:
+    parsed_without_year = _parse_with_formats(value, _LOG_DMY_NO_YEAR_TIMESTAMP_FORMATS)
+    if parsed_without_year is None:
+        return None
+
+    if time_bounds is None:
+        return parsed_without_year.replace(year=datetime.now().year)
+
+    start, end = time_bounds
+    for year in range(start.year, end.year + 1):
+        candidate = parsed_without_year.replace(year=year)
+        if start <= candidate <= end:
+            return candidate
+    return parsed_without_year.replace(year=start.year)
 
 
 __all__ = ["RedisInspectionOfflineCollector", "RedisInspectionOfflineInput"]

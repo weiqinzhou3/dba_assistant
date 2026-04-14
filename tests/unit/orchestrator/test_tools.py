@@ -134,6 +134,59 @@ def test_redis_inspection_report_tool_validates_offline_paths_before_analysis(mo
     assert captured == {}
 
 
+def test_redis_inspection_report_tool_passes_log_time_window_fields(monkeypatch, tmp_path: Path) -> None:
+    from dba_assistant.core.reporter.report_model import AnalysisReport, ReportSectionModel, TextBlock
+
+    source = tmp_path / "inspection"
+    source.mkdir()
+    captured: dict[str, object] = {}
+
+    def fake_analyze_offline_inspection(
+        paths,
+        *,
+        language="zh-CN",
+        log_time_window_days=None,
+        log_start_time=None,
+        log_end_time=None,
+    ):
+        captured["paths"] = tuple(paths)
+        captured["log_time_window_days"] = log_time_window_days
+        captured["log_start_time"] = log_start_time
+        captured["log_end_time"] = log_end_time
+        return AnalysisReport(
+            title="Redis 巡检报告",
+            sections=[ReportSectionModel(id="summary", title="摘要", blocks=[TextBlock(text="ok")])],
+            metadata={"route": "offline_inspection"},
+            language=language,
+        )
+
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._analyze_offline_inspection",
+        fake_analyze_offline_inspection,
+    )
+    monkeypatch.setattr(
+        "dba_assistant.core.reporter.report_model.render_summary_text",
+        lambda report, *, language=None: "inspection summary",
+    )
+
+    request = _make_request(runtime_inputs=RuntimeInputs(output_mode="summary", input_paths=()))
+    tools = build_all_tools(request)
+    inspection_tool = next(t for t in tools if t.__name__ == "redis_inspection_report")
+
+    result = inspection_tool(
+        input_paths=str(source),
+        log_time_window_days=7,
+        log_start_time="2026-04-01T00:00:00+08:00",
+        log_end_time="2026-04-08T00:00:00+08:00",
+    )
+
+    assert "inspection" in result.lower()
+    assert captured["paths"] == (source,)
+    assert captured["log_time_window_days"] == 7
+    assert captured["log_start_time"] == "2026-04-01T00:00:00+08:00"
+    assert captured["log_end_time"] == "2026-04-08T00:00:00+08:00"
+
+
 def test_fetch_remote_rdb_via_ssh_tool_does_not_expose_ssh_secret_parameters() -> None:
     request = _make_request()
     connection = RedisConnectionConfig(host="redis.example", port=6379)

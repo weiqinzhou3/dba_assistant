@@ -260,6 +260,9 @@ def _make_redis_inspection_report_tool(
         output_mode: str = "",
         report_format: str = "",
         output_path: str = "",
+        log_time_window_days: int | None = None,
+        log_start_time: str = "",
+        log_end_time: str = "",
     ) -> str:
         explicit_paths = [Path(p.strip()).expanduser() for p in input_paths.split(",") if p.strip()]
         request_paths = list(request.runtime_inputs.input_paths)
@@ -271,7 +274,17 @@ def _make_redis_inspection_report_tool(
                 for path in paths:
                     if not path.exists():
                         return f"Error: input path does not exist on host filesystem: {path}"
-                analysis = _analyze_offline_inspection(tuple(paths), language=language)
+                analysis = _analyze_offline_inspection(
+                    tuple(paths),
+                    language=language,
+                    log_time_window_days=(
+                        log_time_window_days
+                        if log_time_window_days is not None
+                        else request.runtime_inputs.log_time_window_days
+                    ),
+                    log_start_time=log_start_time or request.runtime_inputs.log_start_time,
+                    log_end_time=log_end_time or request.runtime_inputs.log_end_time,
+                )
                 runtime_inputs = request.runtime_inputs
             else:
                 resolved_request, connection = _resolve_request_with_redis_connection(
@@ -287,11 +300,13 @@ def _make_redis_inspection_report_tool(
         except PermissionError as exc:
             return str(exc)
 
+        effective_format = report_format or runtime_inputs.report_format or "docx"
+        effective_mode = output_mode or runtime_inputs.output_mode or "report"
         return _render_analysis_output(
             analysis,
             runtime_inputs=runtime_inputs,
-            output_mode=output_mode or runtime_inputs.output_mode or "summary",
-            report_format=report_format or runtime_inputs.report_format or "summary",
+            output_mode=effective_mode,
+            report_format=effective_format,
             output_path=Path(output_path) if output_path else runtime_inputs.output_path,
             template_name="inspection",
         )
@@ -304,7 +319,9 @@ def _make_redis_inspection_report_tool(
             "Use local input_paths for offline inspection bundles/directories, or omit "
             "input_paths to run a live read-only Redis inspection from redis_host/redis_port. "
             "Parameters: input_paths (comma-separated files/directories/tar.gz bundles), "
-            "redis_host, redis_port, redis_db, report_language, output_mode, report_format, output_path."
+            "redis_host, redis_port, redis_db, report_language, output_mode, report_format, output_path, "
+            "log_time_window_days, log_start_time, log_end_time. Log time window parameters are optional "
+            "structured intent supplied by the LLM; the CLI does not parse or infer them."
         ),
     )
 

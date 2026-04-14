@@ -139,6 +139,12 @@ def _apply_overrides(
         runtime_updates["mysql_query"] = request.mysql_query
     if request.mysql_stage_batch_size is not None:
         runtime_updates["mysql_stage_batch_size"] = request.mysql_stage_batch_size
+    if request.log_time_window_days is not None:
+        runtime_updates["log_time_window_days"] = request.log_time_window_days
+    if request.log_start_time is not None:
+        runtime_updates["log_start_time"] = request.log_start_time
+    if request.log_end_time is not None:
+        runtime_updates["log_end_time"] = request.log_end_time
     if runtime_updates:
         runtime_inputs = replace(runtime_inputs, **runtime_updates)
 

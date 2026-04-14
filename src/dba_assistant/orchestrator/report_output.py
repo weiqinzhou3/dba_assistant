@@ -32,6 +32,7 @@ def render_analysis_output(
             output_path=output_path,
         ),
         report_format,
+        report_slug=template_name,
     )
     fmt = ReportFormat.SUMMARY if report_format == "summary" else ReportFormat.DOCX
     if fmt is ReportFormat.DOCX and effective_runtime_inputs.output_path is None:

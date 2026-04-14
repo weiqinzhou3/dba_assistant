@@ -47,6 +47,9 @@ class InterfaceRequest:
     mysql_table: str | None = None
     mysql_query: str | None = None
     mysql_stage_batch_size: int | None = None
+    log_time_window_days: int | None = None
+    log_start_time: str | None = None
+    log_end_time: str | None = None
 
 
 @dataclass(frozen=True)

@@ -6,7 +6,12 @@
       "Bash(python3.11 -m pytest tests/ -x -v)",
       "Bash(python3.11 -m pytest tests/ -v)",
       "Bash(ls -la /Users/zqw/Desktop/Project/dba_assistant/*.md)",
-      "Bash(find /Users/zqw/Desktop/Project/dba_assistant/tests -name \"*.py\" -exec wc -l {} +)"
+      "Bash(find /Users/zqw/Desktop/Project/dba_assistant/tests -name \"*.py\" -exec wc -l {} +)",
+      "Bash(python -m pytest tests/unit/capabilities/redis_inspection_report/ tests/unit/core/reporter/test_output_path_policy.py tests/unit/orchestrator/test_tools.py -x --tb=short)",
+      "Bash(python3.11 -m pytest tests/unit/capabilities/redis_inspection_report/ tests/unit/core/reporter/test_output_path_policy.py -x --tb=short)",
+      "Bash(python3.11 -m pytest tests/unit/capabilities/redis_inspection_report/ tests/unit/core/reporter/test_output_path_policy.py tests/unit/core/reporter/test_docx_reporter.py -x --tb=long)",
+      "Bash(python3.11 -m pytest tests/unit/orchestrator/test_tools.py -x --tb=short)",
+      "Bash(python3.11 -m pytest tests/ -x --tb=short)"
     ]
   }
 }

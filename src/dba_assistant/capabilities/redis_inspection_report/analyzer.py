@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+import re
 from typing import Any
 
 from dba_assistant.capabilities.redis_inspection_report.types import (
@@ -24,7 +25,6 @@ def analyze_inspection_dataset(dataset: InspectionDataset, *, language: str = "z
     findings = _collect_findings(dataset)
     system_count, cluster_count, node_count = _count_scope(dataset)
     severity_counts = Counter(finding.severity for finding in findings)
-    summary = _build_summary(system_count, cluster_count, node_count, severity_counts)
     metadata = {
         "source_mode": dataset.source_mode,
         "system_count": str(system_count),
@@ -33,32 +33,69 @@ def analyze_inspection_dataset(dataset: InspectionDataset, *, language: str = "z
         "finding_count": str(len(findings)),
         "high_findings": str(severity_counts["critical"] + severity_counts["high"]),
         "medium_findings": str(severity_counts["medium"]),
+        "unresolved_grouping_count": str(_unresolved_grouping_count(dataset)),
         **{key: str(value) for key, value in dataset.metadata.items()},
     }
-    sections = [
-        _scope_section(dataset, system_count, cluster_count, node_count),
-        _architecture_section(dataset),
-        _summary_section(findings, severity_counts),
-        _method_section(dataset),
-        _system_config_section(dataset, findings),
-        _os_section(dataset, findings),
-        _redis_section(dataset, findings),
-        _log_section(dataset, findings),
-        _risk_section(findings),
-        _appendix_section(dataset),
-    ]
+    sections = _build_report_sections(
+        dataset,
+        findings=findings,
+        system_count=system_count,
+        cluster_count=cluster_count,
+        node_count=node_count,
+        severity_counts=severity_counts,
+    )
     return AnalysisReport(
         title="Redis 巡检报告" if language != "en-US" else "Redis Inspection Report",
-        summary=summary,
+        summary=None,
         sections=sections,
         metadata=metadata,
         language=language,
     )
 
 
+def _build_report_sections(
+    dataset: InspectionDataset,
+    *,
+    findings: list[InspectionFinding],
+    system_count: int,
+    cluster_count: int,
+    node_count: int,
+    severity_counts: Counter,
+) -> list[ReportSectionModel]:
+    sections: list[ReportSectionModel] = [
+        _overview_section(dataset, system_count, cluster_count, node_count, findings, severity_counts),
+        _scope_section(dataset, system_count, cluster_count, node_count),
+        _architecture_section(dataset, findings),
+        _summary_section(findings, severity_counts),
+        _method_section(dataset),
+        _system_config_overview_section(findings),
+    ]
+    sections.extend(_system_config_cluster_sections(dataset))
+    sections.append(_os_overview_section(findings))
+    sections.extend(_os_cluster_sections(dataset))
+    sections.append(_redis_overview_section(findings))
+    sections.extend(_redis_cluster_sections(dataset))
+    sections.append(_risk_overview_section(findings))
+    sections.extend(_risk_cluster_sections(dataset, findings))
+    sections.append(_appendix_section(dataset))
+    return sections
+
+
 def _collect_findings(dataset: InspectionDataset) -> list[InspectionFinding]:
     findings: list[InspectionFinding] = []
     for cluster in _iter_clusters(dataset):
+        if cluster.metadata.get("unresolved_grouping") == "true":
+            findings.append(
+                InspectionFinding(
+                    risk_name="集群归并证据不足",
+                    severity="low",
+                    target=cluster.name,
+                    evidence="; ".join(str(item) for item in cluster.metadata.get("grouping_evidence", [])),
+                    impact="证据不足时系统不会静默合并节点，报告中的集群边界需要人工复核。",
+                    recommendation="补充 Redis INFO、CLUSTER NODES、节点命名或复制关系证据后重新归并。",
+                    category="architecture",
+                )
+            )
         versions = sorted({node.version for node in cluster.nodes if node.version})
         if len(versions) > 1:
             findings.append(
@@ -161,6 +198,46 @@ def _node_findings(cluster: InspectionCluster, node: InspectionNode) -> list[Ins
             )
         )
 
+    if _string_value(facts.get("rdb_last_bgsave_status")).lower() in {"err", "error", "fail", "failed"}:
+        findings.append(
+            InspectionFinding(
+                risk_name="Redis 持久化最近一次保存失败",
+                severity="high",
+                target=target,
+                evidence=f"rdb_last_bgsave_status={facts.get('rdb_last_bgsave_status')}",
+                impact="RDB 最近一次保存失败会降低实例异常退出后的数据恢复能力。",
+                recommendation="检查磁盘空间、权限、fork 内存和 Redis 日志，确认下一次 BGSAVE 是否恢复正常。",
+                category="redis",
+            )
+        )
+
+    if _string_value(facts.get("aof_last_write_status")).lower() in {"err", "error", "fail", "failed"}:
+        findings.append(
+            InspectionFinding(
+                risk_name="Redis AOF 最近一次写入失败",
+                severity="high",
+                target=target,
+                evidence=f"aof_last_write_status={facts.get('aof_last_write_status')}",
+                impact="AOF 写入失败会影响持久化完整性，并可能导致故障恢复点落后。",
+                recommendation="检查 AOF 目录、磁盘空间、fsync 延迟和 Redis 错误日志。",
+                category="redis",
+            )
+        )
+
+    master_link_status = _string_value(facts.get("master_link_status")).lower()
+    if master_link_status not in {"", "up"}:
+        findings.append(
+            InspectionFinding(
+                risk_name="Redis 复制链路异常",
+                severity="high",
+                target=target,
+                evidence=f"master_link_status={facts.get('master_link_status')}",
+                impact="复制链路异常会造成主从数据延迟或读写切换风险。",
+                recommendation="检查主从网络连通性、复制 backlog、认证配置和主节点负载。",
+                category="redis",
+            )
+        )
+
     thp = _string_value(node.host_facts.get("transparent_hugepage"))
     if thp and thp.strip().startswith("[always]"):
         findings.append(
@@ -175,20 +252,70 @@ def _node_findings(cluster: InspectionCluster, node: InspectionNode) -> list[Ins
             )
         )
 
-    for event in _log_events(node):
-        message = _string_value(event.get("message"))
+    swap = _string_value(node.host_facts.get("swap"))
+    if _swap_used(swap):
+        findings.append(
+            InspectionFinding(
+                risk_name="主机 Swap 已使用",
+                severity="medium",
+                target=target,
+                evidence=swap,
+                impact="Redis 对延迟敏感，Swap 使用可能导致请求抖动或超时。",
+                recommendation="确认内存余量和 vm.swappiness 设置，必要时扩容或调整实例内存上限。",
+                category="os",
+            )
+        )
+
+    log_events = _log_events(node)
+    if log_events:
+        evidence = _log_event_evidence(node)
         findings.append(
             InspectionFinding(
                 risk_name="Redis 错误日志存在异常事件",
-                severity="high" if _is_high_log_event(message) else "medium",
+                severity="high" if any(_is_high_log_event(_string_value(event.get("message"))) for event in log_events) else "medium",
                 target=target,
-                evidence=message,
-                impact="错误日志中的异常事件可能对应服务重启、持久化失败、复制中断或内存风险。",
-                recommendation="按事件时间线关联业务告警、Redis 状态与主机资源，优先处理重复出现的 error/OOM/fail 事件。",
+                evidence=evidence,
+                impact="错误日志中的异常事件可能对应服务重启、持久化失败、复制中断或内存风险；报告按节点聚合，避免海量日志逐条淹没巡检结论。",
+                recommendation="按样本事件和原始日志时间线关联业务告警、Redis 状态与主机资源，优先处理重复出现的 error/OOM/fail 事件。",
                 category="log",
             )
         )
     return findings
+
+
+def _overview_section(
+    dataset: InspectionDataset,
+    system_count: int,
+    cluster_count: int,
+    node_count: int,
+    findings: list[InspectionFinding],
+    severity_counts: Counter,
+) -> ReportSectionModel:
+    return ReportSectionModel(
+        id="inspection_overview",
+        title="巡检概述",
+        blocks=[
+            TextBlock(
+                text=(
+                    f"本次 Redis 离线巡检覆盖 {system_count} 个系统、{cluster_count} 个集群/子集群、"
+                    f"{node_count} 个节点。报告先给出巡检结论，再按系统、集群和节点展开配置、"
+                    "操作系统、Redis 数据库与风险整改证据。"
+                )
+            ),
+            TableBlock(
+                title="巡检概览",
+                columns=["项目", "结果"],
+                rows=[
+                    ["输入模式", dataset.source_mode],
+                    ["集群/子集群数", str(cluster_count)],
+                    ["节点数", str(node_count)],
+                    ["风险项总数", str(len(findings))],
+                    ["高风险项", str(severity_counts["critical"] + severity_counts["high"])],
+                    ["中风险项", str(severity_counts["medium"])],
+                ],
+            ),
+        ],
+    )
 
 
 def _scope_section(
@@ -210,34 +337,76 @@ def _scope_section(
     )
 
 
-def _architecture_section(dataset: InspectionDataset) -> ReportSectionModel:
+def _architecture_section(dataset: InspectionDataset, findings: list[InspectionFinding]) -> ReportSectionModel:
     rows: list[list[str]] = []
     for system in dataset.systems:
         for cluster in system.clusters:
             masters = sum(1 for node in cluster.nodes if (node.role or "").lower() == "master")
             replicas = sum(1 for node in cluster.nodes if (node.role or "").lower() in {"slave", "replica"})
+            cluster_findings = _findings_for_cluster(cluster, findings)
             rows.append(
                 [
-                    system.name,
                     cluster.name,
                     cluster.cluster_type,
                     str(len(cluster.nodes)),
                     str(masters),
                     str(replicas),
+                    _cluster_main_conclusion(cluster_findings),
+                    _highest_severity(cluster_findings),
                 ]
             )
+    unresolved_count = _unresolved_grouping_count(dataset)
+    blocks: list[TextBlock | TableBlock] = [
+        TextBlock(text="本章按集群维度汇总架构类型、节点规模、角色分布和主要巡检结论，详细节点证据在后续章节展开。")
+    ]
+    if unresolved_count:
+        blocks.append(TextBlock(text=f"存在 {unresolved_count} 个集群归并证据不足，正文仅保留提示，详细依据见附录和审计元数据。"))
+    blocks.append(
+        TableBlock(
+            title="集群架构与风险概览",
+            columns=["集群", "类型", "节点数", "Master 数", "Replica 数", "主要结论", "风险等级"],
+            rows=rows or [["-", "-", "0", "0", "0", "未识别到 Redis 集群证据", "info"]],
+        )
+    )
+    problem_rows = _problem_overview_rows(dataset, findings)
+    if problem_rows:
+        blocks.append(
+            TextBlock(text="以下按集群维度汇总关键问题与整改优先级，便于非开发人员快速掌握巡检结论和整改方向。")
+        )
+        blocks.append(
+            TableBlock(
+                title="问题概览与整改优先级",
+                columns=["集群", "关键问题", "涉及节点", "风险等级", "影响", "优先整改建议"],
+                rows=problem_rows,
+            )
+        )
     return ReportSectionModel(
         id="architecture_overview",
         title="集群识别与架构总览",
-        blocks=[
-            TextBlock(text="系统按统一 inspection dataset 归并为系统、集群、节点三层，便于离线和在线路径复用同一分析器。"),
-            TableBlock(
-                title="集群归并结果",
-                columns=["系统", "集群", "类型", "节点数", "Master 数", "Replica 数"],
-                rows=rows or [["-", "-", "-", "0", "0", "0"]],
-            ),
-        ],
+        blocks=blocks,
     )
+
+
+def _problem_overview_rows(
+    dataset: InspectionDataset,
+    findings: list[InspectionFinding],
+) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for cluster in _iter_clusters(dataset):
+        cluster_findings = _findings_for_cluster(cluster, findings)
+        significant = [f for f in cluster_findings if f.severity in {"critical", "high", "medium"}]
+        if not significant:
+            continue
+        for finding in significant:
+            rows.append([
+                cluster.name,
+                finding.risk_name,
+                finding.target,
+                finding.severity,
+                _shorten(finding.impact, limit=60),
+                _shorten(finding.recommendation, limit=60),
+            ])
+    return rows
 
 
 def _summary_section(findings: list[InspectionFinding], severity_counts: Counter) -> ReportSectionModel:
@@ -271,143 +440,400 @@ def _method_section(dataset: InspectionDataset) -> ReportSectionModel:
     )
 
 
-def _system_config_section(dataset: InspectionDataset, findings: list[InspectionFinding]) -> ReportSectionModel:
-    rows = []
-    for node in _iter_nodes(dataset):
-        rows.append(
-            [
-                node.node_id,
-                _string_value(node.redis_facts.get("maxmemory")) or "-",
-                _string_value(node.redis_facts.get("maxmemory_policy") or node.redis_facts.get("maxmemory-policy")) or "-",
-                _string_value(node.redis_facts.get("appendonly") or node.redis_facts.get("aof_enabled")) or "-",
-            ]
-        )
+def _system_config_overview_section(findings: list[InspectionFinding]) -> ReportSectionModel:
     return ReportSectionModel(
         id="system_config",
         title="系统配置检查",
         blocks=[
             TextBlock(text=f"配置检查重点覆盖 maxmemory、淘汰策略、持久化配置等项目；相关风险项 {sum(1 for item in findings if item.category == 'redis')} 个。"),
-            TableBlock(title="关键 Redis 配置", columns=["节点", "maxmemory", "淘汰策略", "AOF/appendonly"], rows=rows or [["-", "-", "-", "-"]]),
         ],
     )
 
 
-def _os_section(dataset: InspectionDataset, findings: list[InspectionFinding]) -> ReportSectionModel:
-    rows = [
-        [
-            node.node_id,
-            _string_value(node.host_facts.get("os")) or "-",
-            _string_value(node.host_facts.get("kernel")) or "-",
-            _string_value(node.host_facts.get("transparent_hugepage")) or "-",
-            _string_value(node.host_facts.get("swap")) or "-",
+def _system_config_cluster_sections(dataset: InspectionDataset) -> list[ReportSectionModel]:
+    sections: list[ReportSectionModel] = []
+    for cluster in _iter_clusters(dataset):
+        memory_rows = [
+            [
+                node.node_id,
+                _string_value(node.redis_facts.get("maxmemory")) or "-",
+                _string_value(node.redis_facts.get("maxmemory_policy") or node.redis_facts.get("maxmemory-policy")) or "-",
+            ]
+            for node in cluster.nodes
         ]
-        for node in _iter_nodes(dataset)
-    ]
+        persistence_rows = [
+            [
+                node.node_id,
+                _string_value(node.redis_facts.get("appendonly") or node.redis_facts.get("aof_enabled")) or "-",
+                _persistence_status(node),
+            ]
+            for node in cluster.nodes
+        ]
+        sections.append(
+            ReportSectionModel(
+                id=_cluster_section_id("system_config", cluster),
+                title=cluster.name,
+                level=2,
+                blocks=[
+                    TextBlock(text=f"{cluster.name} 的配置明细按节点列示，重点关注容量上限、淘汰策略和持久化开关。"),
+                    TableBlock(
+                        title="容量与淘汰策略",
+                        columns=["节点", "maxmemory", "淘汰策略"],
+                        rows=memory_rows or [["-", "-", "-"]],
+                    ),
+                    TableBlock(
+                        title="持久化配置",
+                        columns=["节点", "AOF/appendonly", "持久化状态"],
+                        rows=persistence_rows or [["-", "-", "-"]],
+                    ),
+                ],
+            )
+        )
+    return sections
+
+
+def _os_overview_section(findings: list[InspectionFinding]) -> ReportSectionModel:
     return ReportSectionModel(
         id="os_inspection",
         title="操作系统检查",
         blocks=[
             TextBlock(text=f"操作系统检查覆盖平台、内核、透明大页、swap 等主机侧证据；相关风险项 {sum(1 for item in findings if item.category == 'os')} 个。"),
-            TableBlock(title="主机侧证据摘要", columns=["节点", "OS", "内核", "透明大页", "Swap"], rows=rows or [["-", "-", "-", "-", "-"]]),
         ],
     )
 
 
-def _redis_section(dataset: InspectionDataset, findings: list[InspectionFinding]) -> ReportSectionModel:
-    rows = [
-        [
-            node.node_id,
-            node.role or "-",
-            node.version or "-",
-            _string_value(node.redis_facts.get("used_memory")) or "-",
-            _string_value(node.redis_facts.get("maxmemory")) or "-",
-            _string_value(node.redis_facts.get("mem_fragmentation_ratio")) or "-",
-            str(_slowlog_count(node)),
+def _os_cluster_sections(dataset: InspectionDataset) -> list[ReportSectionModel]:
+    sections: list[ReportSectionModel] = []
+    for cluster in _iter_clusters(dataset):
+        platform_rows = [
+            [
+                node.node_id,
+                _string_value(node.host_facts.get("os")) or "-",
+                _shorten(_string_value(node.host_facts.get("kernel")) or "-", limit=90),
+            ]
+            for node in cluster.nodes
         ]
-        for node in _iter_nodes(dataset)
-    ]
+        host_param_rows = [
+            [
+                node.node_id,
+                _string_value(node.host_facts.get("transparent_hugepage")) or "-",
+                _string_value(node.host_facts.get("swap")) or "-",
+            ]
+            for node in cluster.nodes
+        ]
+        sections.append(
+            ReportSectionModel(
+                id=_cluster_section_id("os_inspection", cluster),
+                title=cluster.name,
+                level=2,
+                blocks=[
+                    TextBlock(text=f"{cluster.name} 的主机侧检查以节点为单位列示，长文本内核信息在表内做摘要展示。"),
+                    TableBlock(
+                        title="平台与内核",
+                        columns=["节点", "OS", "内核摘要"],
+                        rows=platform_rows or [["-", "-", "-"]],
+                    ),
+                    TableBlock(
+                        title="主机参数",
+                        columns=["节点", "THP", "Swap"],
+                        rows=host_param_rows or [["-", "-", "-"]],
+                    ),
+                ],
+            )
+        )
+    return sections
+
+
+def _redis_overview_section(findings: list[InspectionFinding]) -> ReportSectionModel:
     return ReportSectionModel(
         id="redis_database",
         title="Redis 数据库检查",
         blocks=[
-            TextBlock(text=f"Redis 数据库检查覆盖角色、版本、内存、碎片率、慢日志和集群状态；相关风险项 {sum(1 for item in findings if item.category == 'redis')} 个。"),
-            TableBlock(title="Redis 节点状态摘要", columns=["节点", "角色", "版本", "used_memory", "maxmemory", "碎片率", "慢日志数"], rows=rows or [["-", "-", "-", "-", "-", "-", "0"]]),
+            TextBlock(text=f"Redis 数据库检查覆盖架构、角色、版本、内存、持久化、key 空间、复制、Cluster 状态、慢日志和 Redis 日志异常；相关风险项 {sum(1 for item in findings if item.category in {'redis', 'log'})} 个。"),
         ],
     )
 
 
-def _log_section(dataset: InspectionDataset, findings: list[InspectionFinding]) -> ReportSectionModel:
-    rows = []
-    for node in _iter_nodes(dataset):
-        for event in _log_events(node):
-            rows.append([node.node_id, _string_value(event.get("level")) or "-", _string_value(event.get("message"))])
-    return ReportSectionModel(
-        id="error_log_analysis",
-        title="错误日志与异常事件分析",
-        blocks=[
-            TextBlock(text=f"日志检查汇总 error、warning、restart、fail、OOM、fork、AOF/RDB、replication 等事件；相关风险项 {sum(1 for item in findings if item.category == 'log')} 个。"),
-            TableBlock(title="异常日志事件", columns=["节点", "级别", "事件"], rows=rows or [["-", "-", "未发现明确异常日志事件"]]),
-        ],
-    )
+def _redis_cluster_sections(dataset: InspectionDataset) -> list[ReportSectionModel]:
+    sections: list[ReportSectionModel] = []
+    for cluster in _iter_clusters(dataset):
+        sections.append(
+            ReportSectionModel(
+                id=_cluster_section_id("redis_database", cluster),
+                title=cluster.name,
+                level=2,
+                blocks=[
+                    TextBlock(text=f"{cluster.name} 的 Redis 检查拆分为 8 个小节，避免使用一张不可阅读的宽表。"),
+                    TableBlock(
+                        title="架构与角色摘要",
+                        columns=["节点", "角色", "端口", "Cluster 状态"],
+                        rows=_architecture_role_rows(cluster),
+                    ),
+                    TableBlock(
+                        title="版本与一致性检查",
+                        columns=["版本", "节点数"],
+                        rows=_version_rows(cluster),
+                    ),
+                    TableBlock(
+                        title="内存与 maxmemory",
+                        columns=["节点", "used_memory", "maxmemory", "水位"],
+                        rows=_memory_rows(cluster),
+                    ),
+                    TableBlock(
+                        title="持久化状态",
+                        columns=["节点", "RDB", "AOF"],
+                        rows=_persistence_rows(cluster),
+                    ),
+                    TableBlock(
+                        title="复制状态",
+                        columns=["节点", "角色", "复制状态"],
+                        rows=_replication_rows(cluster),
+                    ),
+                    TableBlock(
+                        title="Key 空间摘要",
+                        columns=["节点", "Key 空间"],
+                        rows=_keyspace_rows(cluster),
+                    ),
+                    TableBlock(
+                        title="Slowlog 摘要",
+                        columns=["节点", "慢日志数"],
+                        rows=_slowlog_rows(cluster),
+                    ),
+                    TableBlock(
+                        title="Redis 日志异常摘要",
+                        columns=["节点", "事件数", "样本"],
+                        rows=_log_rows(cluster),
+                    ),
+                ],
+            )
+        )
+    return sections
 
 
-def _risk_section(findings: list[InspectionFinding]) -> ReportSectionModel:
-    rows = [
-        [
-            finding.risk_name,
-            finding.severity,
-            finding.target,
-            finding.impact,
-            finding.evidence,
-            finding.recommendation,
-        ]
-        for finding in findings
-    ]
+def _risk_overview_section(findings: list[InspectionFinding]) -> ReportSectionModel:
+    severity_counts = Counter(finding.severity for finding in findings)
     return ReportSectionModel(
         id="risk_remediation",
         title="风险与整改建议",
         blocks=[
             TableBlock(
-                title="风险与整改建议清单",
-                columns=["风险名称", "风险等级", "发现对象", "影响说明", "证据", "建议整改措施"],
-                rows=rows or [["未发现明确风险", "info", "-", "-", "-", "保持例行巡检和容量监控。"]],
+                title="风险等级汇总",
+                columns=["风险等级", "数量"],
+                rows=[
+                    ["critical", str(severity_counts["critical"])],
+                    ["high", str(severity_counts["high"])],
+                    ["medium", str(severity_counts["medium"])],
+                    ["low", str(severity_counts["low"])],
+                    ["info", str(severity_counts["info"])],
+                ],
             )
         ],
     )
 
 
+def _risk_cluster_sections(dataset: InspectionDataset, findings: list[InspectionFinding]) -> list[ReportSectionModel]:
+    sections: list[ReportSectionModel] = []
+    for cluster in _iter_clusters(dataset):
+        cluster_findings = _findings_for_cluster(cluster, findings)
+        rows = [
+            [
+                finding.risk_name,
+                finding.severity,
+                finding.target,
+                finding.impact,
+                finding.evidence,
+                finding.recommendation,
+            ]
+            for finding in cluster_findings
+        ]
+        sections.append(
+            ReportSectionModel(
+                id=_cluster_section_id("risk_remediation", cluster),
+                title=cluster.name,
+                level=2,
+                blocks=[
+                    TextBlock(text=f"{cluster.name} 风险项按等级排序，整改建议需要结合原始证据复核后执行。"),
+                    TableBlock(
+                        title="风险与整改建议清单",
+                        columns=["风险名称", "风险等级", "发现对象", "影响说明", "证据", "建议整改措施"],
+                        rows=rows or [["未发现明确风险", "info", "-", "-", "-", "保持例行巡检和容量监控。"]],
+                    ),
+                ],
+            )
+        )
+    return sections
+
+
 def _appendix_section(dataset: InspectionDataset) -> ReportSectionModel:
     rows = [
         [
+            cluster.name,
             node.node_id,
             node.hostname,
             node.ip or "-",
             "" if node.port is None else str(node.port),
             node.source_path or "-",
         ]
-        for node in _iter_nodes(dataset)
+        for _, cluster, node in _iter_scoped_nodes(dataset)
+    ]
+    grouping_rows = [
+        [
+            cluster.name,
+            str(cluster.metadata.get("grouping_confidence") or "-"),
+            "; ".join(str(item) for item in cluster.metadata.get("grouping_evidence", [])) or "-",
+        ]
+        for cluster in _iter_clusters(dataset)
     ]
     return ReportSectionModel(
         id="appendix",
         title="附录",
         blocks=[
             TextBlock(text="附录保留节点来源与关键标识，便于后续回溯证据。"),
-            TableBlock(title="节点清单", columns=["节点", "主机名", "IP", "端口", "来源"], rows=rows or [["-", "-", "-", "-", "-"]]),
+            TableBlock(title="节点清单", columns=["集群", "节点", "主机名", "IP", "端口", "来源"], rows=rows or [["-", "-", "-", "-", "-", "-"]]),
+            TableBlock(title="归并依据附录", columns=["集群", "归并状态", "归并依据"], rows=grouping_rows or [["-", "-", "-"]]),
         ],
     )
 
 
-def _build_summary(
-    system_count: int,
-    cluster_count: int,
-    node_count: int,
-    severity_counts: Counter,
-) -> str:
-    high_total = severity_counts["critical"] + severity_counts["high"]
-    return (
-        f"本次 Redis 巡检覆盖 {system_count} 个系统、{cluster_count} 个集群、{node_count} 个节点。"
-        f"识别高风险 {high_total} 项、中风险 {severity_counts['medium']} 项，建议优先处理高风险并保留整改证据。"
-    )
+def _architecture_role_rows(cluster: InspectionCluster) -> list[list[str]]:
+    return [
+        [
+            node.node_id,
+            node.role or "-",
+            "" if node.port is None else str(node.port),
+            _cluster_status_display(cluster, node),
+        ]
+        for node in cluster.nodes
+    ] or [["-", "-", "-", "-"]]
+
+
+def _cluster_status_display(cluster: InspectionCluster, node: InspectionNode) -> str:
+    if cluster.cluster_type != "redis-cluster":
+        return "-"
+    raw = _string_value(node.redis_facts.get("cluster_state")).strip().lower()
+    if raw == "ok":
+        return "正常"
+    if raw and raw != "":
+        return f"异常 ({raw})"
+    return "证据不足"
+
+
+def _version_rows(cluster: InspectionCluster) -> list[list[str]]:
+    counts = Counter(node.version or "未知" for node in cluster.nodes)
+    return [[version, str(count)] for version, count in sorted(counts.items())] or [["未知", "0"]]
+
+
+def _memory_rows(cluster: InspectionCluster) -> list[list[str]]:
+    rows = []
+    for node in cluster.nodes:
+        used_memory = _to_float(node.redis_facts.get("used_memory"))
+        maxmemory = _to_float(node.redis_facts.get("maxmemory"))
+        if used_memory is not None and maxmemory and maxmemory > 0:
+            waterline = f"{used_memory / maxmemory:.2%}"
+        elif maxmemory == 0:
+            waterline = "未设置上限"
+        else:
+            waterline = "-"
+        rows.append(
+            [
+                node.node_id,
+                _string_value(node.redis_facts.get("used_memory")) or "-",
+                _string_value(node.redis_facts.get("maxmemory")) or "-",
+                waterline,
+            ]
+        )
+    return rows or [["-", "-", "-", "-"]]
+
+
+def _persistence_rows(cluster: InspectionCluster) -> list[list[str]]:
+    return [
+        [
+            node.node_id,
+            _string_value(node.redis_facts.get("rdb_last_bgsave_status") or node.redis_facts.get("rdb_bgsave_in_progress") or "-"),
+            _string_value(node.redis_facts.get("aof_last_write_status") or node.redis_facts.get("aof_enabled") or "-"),
+        ]
+        for node in cluster.nodes
+    ] or [["-", "-", "-"]]
+
+
+def _replication_rows(cluster: InspectionCluster) -> list[list[str]]:
+    return [
+        [node.node_id, node.role or "-", _replication_status(node)]
+        for node in cluster.nodes
+    ] or [["-", "-", "-"]]
+
+
+def _keyspace_rows(cluster: InspectionCluster) -> list[list[str]]:
+    return [
+        [node.node_id, _keyspace_summary(node)]
+        for node in cluster.nodes
+    ] or [["-", "-"]]
+
+
+def _slowlog_rows(cluster: InspectionCluster) -> list[list[str]]:
+    return [
+        [node.node_id, str(_slowlog_count(node))]
+        for node in cluster.nodes
+    ] or [["-", "0"]]
+
+
+def _log_rows(cluster: InspectionCluster) -> list[list[str]]:
+    rows = []
+    for node in cluster.nodes:
+        events = _log_events(node)
+        if not events and not _log_event_count(node):
+            continue
+        sample = " | ".join(
+            _shorten(_string_value(event.get("message")), limit=80)
+            for event in events[:2]
+            if _string_value(event.get("message"))
+        ) or "-"
+        overflow_count = _log_event_overflow_count(node)
+        if overflow_count:
+            sample = f"{sample}；另有 {overflow_count} 条未展开"
+        rows.append([node.node_id, str(_log_event_count(node)), sample])
+    return rows or [["-", "0", "未发现明确异常日志事件"]]
+
+
+def _findings_for_cluster(
+    cluster: InspectionCluster,
+    findings: list[InspectionFinding],
+) -> list[InspectionFinding]:
+    targets = {cluster.name, *(node.node_id for node in cluster.nodes)}
+    return [finding for finding in findings if finding.target in targets]
+
+
+def _highest_severity(findings: list[InspectionFinding]) -> str:
+    if not findings:
+        return "info"
+    return min(findings, key=lambda item: SEVERITY_ORDER.get(item.severity, 99)).severity
+
+
+def _cluster_main_conclusion(findings: list[InspectionFinding]) -> str:
+    if not findings:
+        return "未发现明确风险"
+    high_count = sum(1 for finding in findings if finding.severity in {"critical", "high"})
+    medium_count = sum(1 for finding in findings if finding.severity == "medium")
+    if high_count:
+        return f"存在 {high_count} 项高风险，需优先处理"
+    if medium_count:
+        return f"存在 {medium_count} 项中风险，建议纳入整改计划"
+    return f"存在 {len(findings)} 项低风险/提示项，建议复核"
+
+
+def _cluster_section_id(prefix: str, cluster: InspectionCluster) -> str:
+    return f"{prefix}__{_slug(cluster.name)}"
+
+
+def _slug(value: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", value.strip()).strip("-")
+    return slug or "cluster"
+
+
+def _shorten(value: str, *, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    return value[: max(0, limit - 3)] + "..."
 
 
 def _count_scope(dataset: InspectionDataset) -> tuple[int, int, int]:
@@ -427,6 +853,21 @@ def _iter_nodes(dataset: InspectionDataset):
         yield from cluster.nodes
 
 
+def _iter_scoped_nodes(dataset: InspectionDataset):
+    for system in dataset.systems:
+        for cluster in system.clusters:
+            for node in cluster.nodes:
+                yield system, cluster, node
+
+
+def _unresolved_grouping_count(dataset: InspectionDataset) -> int:
+    return sum(
+        1
+        for cluster in _iter_clusters(dataset)
+        if cluster.metadata.get("unresolved_grouping") == "true"
+    )
+
+
 def _slowlog_count(node: InspectionNode) -> int:
     slowlog = node.redis_facts.get("slowlog")
     if isinstance(slowlog, dict):
@@ -443,6 +884,72 @@ def _log_events(node: InspectionNode) -> list[dict[str, Any]]:
     if isinstance(events, list):
         return [event for event in events if isinstance(event, dict)]
     return []
+
+
+def _log_event_count(node: InspectionNode) -> int:
+    parsed = _to_float(node.log_facts.get("error_event_count"))
+    return int(parsed) if parsed is not None else len(_log_events(node))
+
+
+def _log_event_overflow_count(node: InspectionNode) -> int:
+    parsed = _to_float(node.log_facts.get("error_event_overflow_count"))
+    return int(parsed) if parsed is not None else 0
+
+
+def _log_event_evidence(node: InspectionNode) -> str:
+    events = _log_events(node)
+    sample_messages = [_string_value(event.get("message")) for event in events[:3]]
+    sample = " | ".join(message for message in sample_messages if message) or "-"
+    total = _log_event_count(node)
+    overflow = _log_event_overflow_count(node)
+    suffix = f"；另有 {overflow} 条未展开" if overflow else ""
+    return f"共 {total} 条异常日志事件；样本：{sample}{suffix}"
+
+
+def _persistence_status(node: InspectionNode) -> str:
+    facts = node.redis_facts
+    rdb_status = _string_value(facts.get("rdb_last_bgsave_status") or facts.get("rdb_bgsave_in_progress") or "-")
+    aof_status = _string_value(facts.get("aof_last_write_status") or facts.get("aof_enabled") or "-")
+    return f"RDB={rdb_status}; AOF={aof_status}"
+
+
+def _replication_status(node: InspectionNode) -> str:
+    facts = node.redis_facts
+    if node.role in {"replica", "slave"}:
+        return f"master={facts.get('master_host', '-')}; link={facts.get('master_link_status', '-')}"
+    return f"connected_slaves={facts.get('connected_slaves', '-')}"
+
+
+_KEYSPACE_DB_PATTERN = re.compile(r"^db\d+$")
+_KEYSPACE_VALUE_PATTERN = re.compile(
+    r"keys=\d+,expires=\d+,avg_ttl=\d+"
+)
+
+
+def _keyspace_summary(node: InspectionNode) -> str:
+    parts = []
+    for key, value in sorted(node.redis_facts.items()):
+        if not _KEYSPACE_DB_PATTERN.match(str(key)):
+            continue
+        val_str = str(value)
+        if _KEYSPACE_VALUE_PATTERN.search(val_str):
+            parts.append(f"{key}={val_str}")
+    return "; ".join(parts) or "-"
+
+
+def _swap_used(summary: str) -> bool:
+    total = _extract_kb(summary, "SwapTotal")
+    free = _extract_kb(summary, "SwapFree")
+    if total is None or free is None:
+        return False
+    return total > 0 and free < total
+
+
+def _extract_kb(summary: str, key: str) -> int | None:
+    import re
+
+    match = re.search(rf"{key}:\s*([0-9]+)", summary)
+    return int(match.group(1)) if match else None
 
 
 def _is_high_log_event(message: str) -> bool:

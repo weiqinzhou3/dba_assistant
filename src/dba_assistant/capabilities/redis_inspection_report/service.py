@@ -27,13 +27,19 @@ def analyze_offline_inspection(
     sources: tuple[Path, ...],
     *,
     language: str = "zh-CN",
+    log_time_window_days: int | None = None,
+    log_start_time: str | None = None,
+    log_end_time: str | None = None,
     collector: RedisInspectionOfflineCollector | None = None,
 ) -> AnalysisReport:
-    _record_phase("offline_collection", stage="start", input_count=len(sources))
     dataset = (collector or RedisInspectionOfflineCollector()).collect(
-        RedisInspectionOfflineInput(sources=sources)
+        RedisInspectionOfflineInput(
+            sources=sources,
+            log_time_window_days=log_time_window_days,
+            log_start_time=log_start_time,
+            log_end_time=log_end_time,
+        )
     )
-    _record_dataset_phase(dataset, phase="offline_collection")
     return analyze_inspection(dataset, language=language, route="offline_inspection")
 
 
@@ -43,7 +49,6 @@ def analyze_remote_inspection(
     language: str = "zh-CN",
     collector: RedisInspectionRemoteCollector | None = None,
 ) -> AnalysisReport:
-    _record_phase("online_collection", stage="start", redis_target=f"{connection.host}:{connection.port}")
     snapshot = (collector or RedisInspectionRemoteCollector()).collect(
         RedisInspectionRemoteInput(connection=connection)
     )
@@ -58,10 +63,17 @@ def analyze_inspection(
     language: str = "zh-CN",
     route: str,
 ) -> AnalysisReport:
-    _record_dataset_phase(dataset, phase="redis_inspection_analysis")
+    _record_dataset_phase(dataset, phase="inspection_analysis_start")
     report = analyze_inspection_dataset(dataset, language=language)
     metadata = {**report.metadata, "route": route, "source_mode": dataset.source_mode}
-    _record_phase("report_model", stage="ready", route=route, finding_count=metadata.get("finding_count"))
+    _record_phase(
+        "inspection_analysis_end",
+        route=route,
+        finding_count=metadata.get("finding_count"),
+        system_count=metadata.get("system_count"),
+        cluster_count=metadata.get("cluster_count"),
+        node_count=metadata.get("node_count"),
+    )
     return AnalysisReport(
         title=report.title,
         summary=report.summary,

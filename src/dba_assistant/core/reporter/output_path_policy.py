@@ -25,15 +25,19 @@ def infer_report_format_alias(token: str | None) -> str | None:
     return normalized or None
 
 
-def default_report_output_path(format: str, base_dir: Path | None = None) -> Path:
+def default_report_output_path(
+    format: str,
+    base_dir: Path | None = None,
+    report_slug: str = "report",
+) -> Path:
     normalized = infer_report_format_alias(format)
     if normalized != "docx":
         raise ValueError(f"Unsupported default output path format: {format}")
 
-    target_dir = (base_dir or (Path.cwd() / "outputs")).expanduser()
+    target_dir = (base_dir or Path("/tmp")).expanduser()
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    stem = f"dba_assistant_report_{_timestamp_slug()}"
+    stem = f"{_report_stem(report_slug)}_{_timestamp_slug()}"
     candidate = target_dir / f"{stem}.docx"
     counter = 2
     while candidate.exists():
@@ -45,6 +49,8 @@ def default_report_output_path(format: str, base_dir: Path | None = None) -> Pat
 def ensure_report_output_path(
     runtime_inputs: RuntimeInputs,
     report_format: str | None,
+    *,
+    report_slug: str = "report",
 ) -> RuntimeInputs:
     normalized = infer_report_format_alias(report_format or runtime_inputs.report_format)
     if normalized != "docx":
@@ -59,8 +65,15 @@ def ensure_report_output_path(
         runtime_inputs,
         output_mode="report",
         report_format="docx",
-        output_path=default_report_output_path("docx"),
+        output_path=default_report_output_path("docx", report_slug=report_slug),
     )
+
+
+def _report_stem(report_slug: str) -> str:
+    normalized = report_slug.strip().lower().replace("-", "_")
+    if normalized in {"inspection", "redis_inspection", "redis_inspection_report"}:
+        return "dba_assistant_redis_inspection"
+    return "dba_assistant_report"
 
 
 def _timestamp_slug() -> str:

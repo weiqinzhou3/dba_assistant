@@ -20,3 +20,4 @@ references/**
 !references/report-samples/
 !references/report-samples/README.md
 outputs/
+tmp/

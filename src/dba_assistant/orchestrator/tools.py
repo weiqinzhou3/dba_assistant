@@ -50,6 +50,10 @@ from dba_assistant.capabilities.redis_rdb_analysis.types import (
     RdbAnalysisRequest,
     SampleInput,
 )
+from dba_assistant.capabilities.redis_inspection_report.service import (
+    analyze_offline_inspection as _analyze_offline_inspection,
+    analyze_remote_inspection as _analyze_remote_inspection,
+)
 from dba_assistant.tools.analyze_rdb import analyze_rdb_tool
 from dba_assistant.tools.mysql_tools import (
     MySQLStagingSession,
@@ -161,6 +165,11 @@ def build_all_tools(
         )
     )
     tools.append(
+        _make_redis_inspection_report_tool(
+            context,
+        )
+    )
+    tools.append(
         _make_discover_remote_rdb_tool(
             context,
             adaptor,
@@ -228,6 +237,74 @@ def _make_inspect_local_rdb_tool():
             "Returns JSON with existence, size, and file status. "
             "Use this BEFORE analysis to decide if a file is too large for direct analysis. "
             "Parameter: input_paths (comma-separated file paths)."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Redis inspection report (Phase 4)
+# ---------------------------------------------------------------------------
+
+def _make_redis_inspection_report_tool(
+    context: ToolRuntimeContext,
+):
+    """Analyze Redis inspection evidence or live read-only Redis state."""
+    request = context.request
+
+    def redis_inspection_report(
+        input_paths: str = "",
+        redis_host: str = "",
+        redis_port: int | None = None,
+        redis_db: int | None = None,
+        report_language: str = "",
+        output_mode: str = "",
+        report_format: str = "",
+        output_path: str = "",
+    ) -> str:
+        explicit_paths = [Path(p.strip()).expanduser() for p in input_paths.split(",") if p.strip()]
+        request_paths = list(request.runtime_inputs.input_paths)
+        paths = explicit_paths or request_paths
+        language = report_language or request.runtime_inputs.report_language
+
+        try:
+            if paths:
+                for path in paths:
+                    if not path.exists():
+                        return f"Error: input path does not exist on host filesystem: {path}"
+                analysis = _analyze_offline_inspection(tuple(paths), language=language)
+                runtime_inputs = request.runtime_inputs
+            else:
+                resolved_request, connection = _resolve_request_with_redis_connection(
+                    context,
+                    redis_host=redis_host,
+                    redis_port=redis_port,
+                    redis_db=redis_db,
+                )
+                analysis = _analyze_remote_inspection(connection, language=language)
+                runtime_inputs = resolved_request.runtime_inputs
+        except ValueError as exc:
+            return f"Error: {exc}"
+        except PermissionError as exc:
+            return str(exc)
+
+        return _render_analysis_output(
+            analysis,
+            runtime_inputs=runtime_inputs,
+            output_mode=output_mode or runtime_inputs.output_mode or "summary",
+            report_format=report_format or runtime_inputs.report_format or "summary",
+            output_path=Path(output_path) if output_path else runtime_inputs.output_path,
+            template_name="inspection",
+        )
+
+    return _named_tool(
+        redis_inspection_report,
+        "redis_inspection_report",
+        (
+            "Analyze Redis inspection evidence and generate a summary or DOCX report. "
+            "Use local input_paths for offline inspection bundles/directories, or omit "
+            "input_paths to run a live read-only Redis inspection from redis_host/redis_port. "
+            "Parameters: input_paths (comma-separated files/directories/tar.gz bundles), "
+            "redis_host, redis_port, redis_db, report_language, output_mode, report_format, output_path."
         ),
     )
 

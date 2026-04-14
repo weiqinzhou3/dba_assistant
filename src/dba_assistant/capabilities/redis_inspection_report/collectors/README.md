@@ -1,5 +1,8 @@
 # redis-inspection-report Collectors
 
-This directory reserves collector implementations for offline and remote inspection data paths.
+This directory contains collector implementations for Redis inspection data paths.
 
-Status: Phase 2 ships the narrow read-only Redis remote collector path. The full inspection pipeline remains later-phase work.
+Current coverage:
+
+- Offline evidence directories and `.tar.gz` bundles are normalized into the shared inspection dataset.
+- Live Redis collection remains read-only and gathers bounded INFO, CONFIG, SLOWLOG, CLIENT LIST, and CLUSTER probes.

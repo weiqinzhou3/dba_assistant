@@ -1,5 +1,4 @@
 # Inspection Report Templates
 
-This directory reserves standard templates for Redis inspection reports.
-
-Status: scaffold-only.
+This directory stores the repository-owned Redis inspection report template
+specification used by the shared DOCX renderer.

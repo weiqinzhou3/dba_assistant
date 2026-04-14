@@ -70,6 +70,7 @@ def test_build_all_tools_includes_local_rdb_without_connection() -> None:
     assert "analyze_local_rdb_stream" in names
     assert "analyze_preparsed_dataset" in names
     assert "redis_ping" in names
+    assert "redis_inspection_report" in names
     assert "discover_remote_rdb" in names
     assert "ensure_remote_rdb_snapshot" in names
     assert "fetch_remote_rdb_via_ssh" in names
@@ -88,10 +89,49 @@ def test_build_all_tools_includes_redis_tools_with_connection() -> None:
     assert "redis_config_get" in names
     assert "redis_slowlog_get" in names
     assert "redis_client_list" in names
+    assert "redis_cluster_info" in names
+    assert "redis_cluster_nodes" in names
+    assert "redis_inspection_report" in names
     assert "discover_remote_rdb" in names
     assert "ensure_remote_rdb_snapshot" in names
     assert "fetch_remote_rdb_via_ssh" in names
     assert "fetch_and_analyze_remote_rdb" not in names
+
+
+def test_redis_inspection_report_tool_validates_offline_paths_before_analysis(monkeypatch) -> None:
+    from dba_assistant.core.reporter.report_model import AnalysisReport, ReportSectionModel, TextBlock
+
+    captured: dict[str, object] = {}
+
+    def fake_analyze_offline_inspection(paths, *, language="zh-CN"):
+        captured["paths"] = tuple(paths)
+        return AnalysisReport(
+            title="Redis 巡检报告",
+            sections=[ReportSectionModel(id="summary", title="摘要", blocks=[TextBlock(text="ok")])],
+            metadata={"route": "offline_inspection"},
+            language=language,
+        )
+
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._analyze_offline_inspection",
+        fake_analyze_offline_inspection,
+    )
+    monkeypatch.setattr(
+        "dba_assistant.core.reporter.report_model.render_summary_text",
+        lambda report, *, language=None: "inspection summary",
+    )
+
+    request = _make_request(runtime_inputs=RuntimeInputs(output_mode="summary", input_paths=()))
+    tools = build_all_tools(request)
+    inspection_tool = next(t for t in tools if t.__name__ == "redis_inspection_report")
+
+    result = inspection_tool(input_paths="/tmp/definitely-missing-inspection-bundle")
+
+    assert result == (
+        "Error: input path does not exist on host filesystem: "
+        "/tmp/definitely-missing-inspection-bundle"
+    )
+    assert captured == {}
 
 
 def test_fetch_remote_rdb_via_ssh_tool_does_not_expose_ssh_secret_parameters() -> None:

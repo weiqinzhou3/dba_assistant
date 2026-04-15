@@ -7,7 +7,14 @@ from typing import Any
 
 import yaml
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+from dba_assistant.core.runtime_paths import (
+    DEFAULT_AGENT_WORKSPACE_ROOT,
+    DEFAULT_ARTIFACT_DIR,
+    DEFAULT_EVIDENCE_DIR,
+    DEFAULT_TEMP_DIR,
+    REPO_ROOT,
+)
+
 DEFAULT_CONFIG_PATH = REPO_ROOT / "config" / "config.yaml"
 DEFAULT_MYSQL_STAGE_BATCH_SIZE = 2000
 
@@ -50,6 +57,25 @@ class RuntimeConfig:
 
 
 @dataclass(frozen=True)
+class FilesystemBackendConfig:
+    kind: str = "filesystem"
+    root_dir: Path = DEFAULT_AGENT_WORKSPACE_ROOT
+    virtual_mode: bool = True
+
+
+@dataclass(frozen=True)
+class AgentConfig:
+    filesystem_backend: FilesystemBackendConfig = field(default_factory=FilesystemBackendConfig)
+
+
+@dataclass(frozen=True)
+class PathsConfig:
+    artifact_dir: Path = DEFAULT_ARTIFACT_DIR
+    evidence_dir: Path = DEFAULT_EVIDENCE_DIR
+    temp_dir: Path = DEFAULT_TEMP_DIR
+
+
+@dataclass(frozen=True)
 class ObservabilityConfig:
     enabled: bool = True
     console_enabled: bool = True
@@ -72,6 +98,8 @@ class ObservabilityConfig:
 class AppConfig:
     model: ModelConfig
     runtime: RuntimeConfig
+    agent: AgentConfig = field(default_factory=AgentConfig)
+    paths: PathsConfig = field(default_factory=PathsConfig)
     observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
 
 
@@ -81,9 +109,12 @@ def load_app_config(config_path: str | Path | None = None) -> AppConfig:
         raise FileNotFoundError(f"Config file not found: {path}")
 
     document = _load_yaml_document(path)
+    agent = _load_agent_config(_optional_mapping(document, "agent"))
     return AppConfig(
         model=_load_model_config(_require_mapping(document, "model")),
         runtime=_load_runtime_config(_require_mapping(document, "runtime")),
+        agent=agent,
+        paths=_load_paths_config(_optional_mapping(document, "paths"), agent.filesystem_backend.root_dir),
         observability=_load_observability_config(_optional_mapping(document, "observability")),
     )
 
@@ -127,6 +158,34 @@ def _load_runtime_config(data: dict[str, Any]) -> RuntimeConfig:
         mysql_connect_timeout_seconds=float(data.get("mysql_connect_timeout_seconds", 5.0)),
         mysql_read_timeout_seconds=float(data.get("mysql_read_timeout_seconds", 15.0)),
         mysql_write_timeout_seconds=float(data.get("mysql_write_timeout_seconds", 30.0)),
+    )
+
+
+def _load_agent_config(data: dict[str, Any] | None) -> AgentConfig:
+    data = data or {}
+    backend_data = data.get("filesystem_backend", {})
+    if backend_data is None:
+        backend_data = {}
+    if not isinstance(backend_data, dict):
+        raise ValueError("Config section agent.filesystem_backend must be a mapping.")
+    kind = _optional_string(backend_data, "kind", "filesystem")
+    if kind != "filesystem":
+        raise ValueError("Config field agent.filesystem_backend.kind must be 'filesystem'.")
+    return AgentConfig(
+        filesystem_backend=FilesystemBackendConfig(
+            kind=kind,
+            root_dir=_resolve_repo_path(backend_data.get("root_dir", DEFAULT_AGENT_WORKSPACE_ROOT)),
+            virtual_mode=_optional_bool(backend_data, "virtual_mode", True),
+        )
+    )
+
+
+def _load_paths_config(data: dict[str, Any] | None, backend_root: Path) -> PathsConfig:
+    data = data or {}
+    return PathsConfig(
+        artifact_dir=_resolve_repo_path(data.get("artifact_dir", backend_root / "artifacts")),
+        evidence_dir=_resolve_repo_path(data.get("evidence_dir", backend_root / "evidence")),
+        temp_dir=_resolve_repo_path(data.get("temp_dir", backend_root / "tmp")),
     )
 
 
@@ -184,6 +243,19 @@ def _optional_string(data: dict[str, Any], field: str, default: str) -> str:
     value = data.get(field, default)
     value = str(value).strip()
     return value or default
+
+
+def _optional_bool(data: dict[str, Any], field: str, default: bool) -> bool:
+    value = data.get(field, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "yes", "1", "on"}:
+            return True
+        if normalized in {"false", "no", "0", "off"}:
+            return False
+    raise ValueError(f"Config field {field} must be a boolean.")
 
 
 def _resolve_repo_path(value: str | Path) -> Path:

@@ -10,7 +10,6 @@ from functools import wraps
 import inspect
 import json
 import logging
-import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -40,6 +39,8 @@ from dba_assistant.application.request_models import (
 from dba_assistant.core.observability import observe_tool_call
 from dba_assistant.core.reporter.output_path_policy import ensure_report_output_path
 from dba_assistant.core.reporter.types import OutputMode, ReportFormat, ReportOutputConfig
+from dba_assistant.core.runtime_paths import DEFAULT_EVIDENCE_DIR, make_runtime_work_dir
+from dba_assistant.deep_agent_integration.model_provider import build_model
 from dba_assistant.interface.hitl import HumanApprovalHandler
 from dba_assistant.interface.types import ApprovalRequest, ApprovalStatus
 from dba_assistant.capabilities.redis_rdb_analysis.remote_input import (
@@ -59,6 +60,9 @@ from dba_assistant.capabilities.redis_inspection_report.service import (
     collect_offline_log_review_payload as _collect_offline_log_review_payload,
     parse_reviewed_log_issues as _parse_reviewed_log_issues,
     summarize_inspection_dataset as _summarize_inspection_dataset,
+)
+from dba_assistant.capabilities.redis_inspection_report.reviewer import (
+    review_redis_log_candidates as _review_redis_log_candidates,
 )
 from dba_assistant.tools.analyze_rdb import analyze_rdb_tool
 from dba_assistant.tools.mysql_tools import (
@@ -104,6 +108,7 @@ class ToolRuntimeContext:
     mysql_connect_timeout_seconds: float = 5.0
     mysql_read_timeout_seconds: float = 15.0
     mysql_write_timeout_seconds: float = 30.0
+    model_config: Any | None = None
 
 def build_all_tools(
     request: NormalizedRequest,
@@ -133,6 +138,7 @@ def build_all_tools(
         mysql_write_timeout_seconds=float(
             getattr(runtime_config, "mysql_write_timeout_seconds", 30.0)
         ),
+        model_config=getattr(config, "model", None),
     )
     tools: list = []
     inspection_datasets: dict[str, Any] = {}
@@ -181,6 +187,11 @@ def build_all_tools(
         _make_redis_inspection_log_candidates_tool(
             context,
             inspection_datasets,
+        )
+    )
+    tools.append(
+        _make_review_redis_log_candidates_tool(
+            context,
         )
     )
     tools.append(
@@ -306,6 +317,7 @@ def _make_collect_offline_inspection_dataset_tool(
                 log_time_window_days=effective_log_time_window_days,
                 log_start_time=effective_log_start_time,
                 log_end_time=effective_log_end_time,
+                work_dir=request.runtime_inputs.temp_dir,
             )
         except ValueError as exc:
             return f"Error: {exc}"
@@ -456,6 +468,7 @@ def _make_redis_inspection_log_candidates_tool(
                 log_time_window_days=effective_log_time_window_days,
                 log_start_time=effective_log_start_time,
                 log_end_time=effective_log_end_time,
+                work_dir=request.runtime_inputs.temp_dir,
             )
         except ValueError as exc:
             return f"Error: {exc}"
@@ -471,6 +484,45 @@ def _make_redis_inspection_log_candidates_tool(
             "It does not decide whether a candidate is anomalous. "
             "Prefer dataset_handle from collect_offline_inspection_dataset to avoid re-parsing evidence. "
             "After reviewing the JSON, call render_redis_inspection_report with reviewed_log_issues_json."
+        ),
+    )
+
+
+def _make_review_redis_log_candidates_tool(context: ToolRuntimeContext):
+    """Run LLM semantic review over a log candidate payload."""
+    request = context.request
+
+    def review_redis_log_candidates(
+        log_candidates_json: str,
+        focus_topics: str = "",
+        report_language: str = "",
+    ) -> str:
+        if not log_candidates_json.strip():
+            return "Error: log_candidates_json is required."
+        if context.model_config is None:
+            return "Error: model configuration is required for Redis log semantic review."
+        try:
+            model = build_model(context.model_config)
+            return _review_redis_log_candidates(
+                log_candidates_json,
+                model=model,
+                focus_topics=focus_topics,
+                report_language=report_language or request.runtime_inputs.report_language,
+            )
+        except ValueError as exc:
+            return f"Error: {exc}"
+        except Exception as exc:  # noqa: BLE001
+            return f"Error during Redis log semantic review: {exc}"
+
+    return _named_tool(
+        review_redis_log_candidates,
+        "review_redis_log_candidates",
+        (
+            "Review Redis log candidates with an LLM and return reviewed_log_issues_json. "
+            "Input must be the JSON returned by redis_inspection_log_candidates. "
+            "This tool directly consumes log_candidates_json and does not access filesystem "
+            "tools such as ls, glob, grep, or read_file. "
+            "Parameters: log_candidates_json, focus_topics, report_language."
         ),
     )
 
@@ -1138,6 +1190,7 @@ def _make_fetch_remote_rdb_via_ssh_tool(
             request=resolved_request,
             remote_rdb_path=remote_rdb_path,
             local_directory=local_directory,
+            default_directory=resolved_request.runtime_inputs.evidence_dir,
         )
         return str(fetched_path)
 
@@ -1608,6 +1661,7 @@ def _fetch_remote_rdb_via_ssh(
     request: NormalizedRequest,
     remote_rdb_path: str,
     local_directory: str = "",
+    default_directory: Path | None = None,
 ) -> Path | str:
     target_path = remote_rdb_path.strip()
     if not target_path:
@@ -1617,7 +1671,10 @@ def _fetch_remote_rdb_via_ssh(
     local_dir = (
         Path(local_directory).expanduser()
         if local_directory.strip()
-        else Path(tempfile.mkdtemp(prefix="dba-assistant-remote-rdb-"))
+        else make_runtime_work_dir(
+            default_directory or request.runtime_inputs.evidence_dir or DEFAULT_EVIDENCE_DIR,
+            prefix="remote-rdb-",
+        )
     )
     local_dir.mkdir(parents=True, exist_ok=True)
     local_path = local_dir / Path(target_path).name

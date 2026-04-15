@@ -45,6 +45,10 @@ class RuntimeInputs:
     log_time_window_days: int | None = None
     log_start_time: str | None = None
     log_end_time: str | None = None
+    filesystem_root_dir: Path | None = None
+    artifact_dir: Path | None = None
+    evidence_dir: Path | None = None
+    temp_dir: Path | None = None
 
     def effective_redis_host(self) -> str:
         return self.redis_host or DEFAULT_LOOPBACK_HOST

@@ -39,6 +39,7 @@ def analyze_offline_inspection(
     log_end_time: str | None = None,
     reviewed_log_issues: tuple[ReviewedLogIssue, ...] = (),
     collector: RedisInspectionOfflineCollector | None = None,
+    work_dir: Path | None = None,
 ) -> AnalysisReport:
     dataset = (collector or RedisInspectionOfflineCollector()).collect(
         RedisInspectionOfflineInput(
@@ -46,6 +47,7 @@ def analyze_offline_inspection(
             log_time_window_days=log_time_window_days,
             log_start_time=log_start_time,
             log_end_time=log_end_time,
+            work_dir=work_dir,
         )
     )
     if reviewed_log_issues:
@@ -60,6 +62,7 @@ def collect_offline_inspection_dataset(
     log_start_time: str | None = None,
     log_end_time: str | None = None,
     collector: RedisInspectionOfflineCollector | None = None,
+    work_dir: Path | None = None,
 ) -> InspectionDataset:
     return (collector or RedisInspectionOfflineCollector()).collect(
         RedisInspectionOfflineInput(
@@ -67,6 +70,7 @@ def collect_offline_inspection_dataset(
             log_time_window_days=log_time_window_days,
             log_start_time=log_start_time,
             log_end_time=log_end_time,
+            work_dir=work_dir,
         )
     )
 
@@ -164,6 +168,7 @@ def collect_offline_log_review_payload(
     log_start_time: str | None = None,
     log_end_time: str | None = None,
     collector: RedisInspectionOfflineCollector | None = None,
+    work_dir: Path | None = None,
 ) -> dict[str, Any]:
     dataset = collect_offline_inspection_dataset(
         sources,
@@ -171,6 +176,7 @@ def collect_offline_log_review_payload(
         log_start_time=log_start_time,
         log_end_time=log_end_time,
         collector=collector,
+        work_dir=work_dir,
     )
     return build_log_review_payload(dataset)
 

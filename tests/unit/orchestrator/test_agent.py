@@ -3,13 +3,22 @@ from types import SimpleNamespace
 
 from dba_assistant.application.request_models import NormalizedRequest, RdbOverrides, RuntimeInputs, Secrets
 from dba_assistant.core.observability import start_execution_session
-from dba_assistant.deep_agent_integration.config import AppConfig, ModelConfig, ProviderKind, RuntimeConfig
+from dba_assistant.deep_agent_integration.config import (
+    AgentConfig,
+    AppConfig,
+    FilesystemBackendConfig,
+    ModelConfig,
+    PathsConfig,
+    ProviderKind,
+    RuntimeConfig,
+)
 from dba_assistant.interface.hitl import AutoApproveHandler
 from dba_assistant.interface.types import InterfaceSurface
 from dba_assistant.orchestrator import agent as agent_module
 
 
-def _make_config() -> AppConfig:
+def _make_config(*, filesystem_root: Path | None = None) -> AppConfig:
+    filesystem_root = filesystem_root or Path("/agent-root")
     return AppConfig(
         model=ModelConfig(
             preset_name="ollama_local",
@@ -19,6 +28,18 @@ def _make_config() -> AppConfig:
             api_key="ollama",
         ),
         runtime=RuntimeConfig(default_output_mode="summary", redis_socket_timeout=5.0),
+        agent=AgentConfig(
+            filesystem_backend=FilesystemBackendConfig(
+                kind="filesystem",
+                root_dir=filesystem_root,
+                virtual_mode=False,
+            )
+        ),
+        paths=PathsConfig(
+            artifact_dir=filesystem_root / "artifacts",
+            evidence_dir=filesystem_root / "evidence",
+            temp_dir=filesystem_root / "tmp",
+        ),
     )
 
 
@@ -89,6 +110,9 @@ def test_build_user_message_includes_context() -> None:
             report_format="docx",
             output_path=Path("/tmp/out.docx"),
             input_paths=(Path("/tmp/dump.rdb"),),
+            filesystem_root_dir=Path("/configured-agent-root"),
+            artifact_dir=Path("/configured-agent-root/artifacts"),
+            evidence_dir=Path("/configured-agent-root/evidence"),
         ),
         secrets=Secrets(redis_password="secret", ssh_password="ssh-secret"),
         rdb_overrides=RdbOverrides(
@@ -113,6 +137,9 @@ def test_build_user_message_includes_context() -> None:
     assert "rcs" in msg
     assert "report / docx" in msg
     assert "/tmp/out.docx" in msg
+    assert "Agent filesystem backend root: /configured-agent-root" in msg
+    assert "Artifact directory: /configured-agent-root/artifacts" in msg
+    assert "Evidence directory: /configured-agent-root/evidence" in msg
     assert "cache:*" in msg
 
 
@@ -120,7 +147,11 @@ def test_build_unified_agent_wires_tools_and_model(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(agent_module, "build_model", lambda mc: "fake-model")
-    monkeypatch.setattr(agent_module, "build_runtime_backend", lambda: "fake-backend")
+    def fake_build_runtime_backend(filesystem_backend_config):
+        captured["filesystem_backend_config"] = filesystem_backend_config
+        return "fake-backend"
+
+    monkeypatch.setattr(agent_module, "build_runtime_backend", fake_build_runtime_backend)
     monkeypatch.setattr(agent_module, "get_memory_sources", lambda: ["/AGENTS.md"])
     monkeypatch.setattr(agent_module, "get_skill_sources", lambda: ["/skills"])
     monkeypatch.setattr(agent_module, "build_runtime_checkpointer", lambda: "fake-checkpointer")
@@ -148,6 +179,7 @@ def test_build_unified_agent_wires_tools_and_model(monkeypatch) -> None:
     assert captured["model"] == "fake-model"
     assert captured["tools"] == ["tool1", "tool2"]
     assert captured["backend"] == "fake-backend"
+    assert captured["filesystem_backend_config"] == config.agent.filesystem_backend
     assert captured["memory"] == ["/AGENTS.md"]
     assert captured["skills"] == ["/skills"]
     assert captured["checkpointer"] == "fake-checkpointer"

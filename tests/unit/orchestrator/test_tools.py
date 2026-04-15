@@ -8,7 +8,7 @@ from dba_assistant.adaptors.redis_adaptor import RedisConnectionConfig
 from dba_assistant.application.request_models import NormalizedRequest, RdbOverrides, RuntimeInputs, Secrets
 from dba_assistant.capabilities.redis_rdb_analysis.remote_input import RemoteRedisDiscoveryError
 from dba_assistant.core.observability import bootstrap_observability, reset_observability_state
-from dba_assistant.deep_agent_integration.config import ObservabilityConfig
+from dba_assistant.deep_agent_integration.config import ModelConfig, ObservabilityConfig, ProviderKind
 from dba_assistant.interface.types import ApprovalResponse, ApprovalStatus
 from dba_assistant.orchestrator.tools import build_all_tools, resolve_remote_rdb_fetch_plan
 
@@ -26,6 +26,23 @@ def _make_request(**overrides) -> NormalizedRequest:
     )
     defaults.update(overrides)
     return NormalizedRequest(**defaults)
+
+
+def _make_config():
+    return type(
+        "Config",
+        (),
+        {
+            "model": ModelConfig(
+                preset_name="ollama_local",
+                provider_kind=ProviderKind.OPENAI_COMPATIBLE,
+                model_name="qwen3:8b",
+                base_url="http://127.0.0.1:11434/v1",
+                api_key="ollama",
+            ),
+            "runtime": type("Runtime", (), {})(),
+        },
+    )()
 
 
 def _streamed_rows(rows: list[dict[str, object]]):
@@ -73,6 +90,7 @@ def test_build_all_tools_includes_local_rdb_without_connection() -> None:
     assert "redis_ping" in names
     assert "collect_offline_inspection_dataset" in names
     assert "redis_inspection_log_candidates" in names
+    assert "review_redis_log_candidates" in names
     assert "render_redis_inspection_report" in names
     assert "redis_inspection_report" in names
     assert "discover_remote_rdb" in names
@@ -97,6 +115,7 @@ def test_build_all_tools_includes_redis_tools_with_connection() -> None:
     assert "redis_cluster_nodes" in names
     assert "collect_offline_inspection_dataset" in names
     assert "redis_inspection_log_candidates" in names
+    assert "review_redis_log_candidates" in names
     assert "render_redis_inspection_report" in names
     assert "redis_inspection_report" in names
     assert "discover_remote_rdb" in names
@@ -202,6 +221,117 @@ def test_offline_inspection_uses_collect_review_then_render_tools(tmp_path: Path
     assert collect_payload["dataset_handle"].startswith("inspection_dataset_")
     assert "Redis 日志显示 OOM" in result
     assert "问题概览与整改优先级" in result
+
+
+def test_offline_inspection_uses_explicit_review_tool_before_render(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "inspection"
+    source.mkdir()
+    (source / "info.txt").write_text(
+        "redis_version:7.0.15\nrole:master\ntcp_port:6379\ncluster_state:ok\n",
+        encoding="utf-8",
+    )
+    (source / "redis.log").write_text(
+        "2026-04-14 09:00:00 # OOM command not allowed when used memory > 'maxmemory'\n",
+        encoding="utf-8",
+    )
+
+    review_calls: list[dict[str, object]] = []
+
+    def fake_review(log_candidates_json, *, model, focus_topics="", report_language="zh-CN"):
+        payload = json.loads(log_candidates_json)
+        candidate = payload["clusters"][0]["log_candidates"][0]
+        sample = candidate["raw_message"]
+        review_calls.append(
+            {
+                "log_candidates_json": log_candidates_json,
+                "model": model,
+                "focus_topics": focus_topics,
+                "report_language": report_language,
+            }
+        )
+        return json.dumps(
+            {
+                "issues": [
+                    {
+                        "cluster_id": payload["clusters"][0]["cluster_id"],
+                        "cluster_name": payload["clusters"][0]["cluster_name"],
+                        "issue_name": "Redis 日志显示 OOM",
+                        "is_anomalous": True,
+                        "severity": "high",
+                        "why": "review tool judged OOM as anomalous.",
+                        "affected_nodes": [candidate["node_id"]],
+                        "supporting_samples": [sample],
+                        "recommendation": "检查 maxmemory 与淘汰策略。",
+                        "merge_key": "oom-memory-pressure",
+                        "category": "log",
+                        "confidence": "high",
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr("dba_assistant.orchestrator.tools._review_redis_log_candidates", fake_review)
+    monkeypatch.setattr("dba_assistant.orchestrator.tools.build_model", lambda model_config: "review-model")
+
+    request = _make_request(runtime_inputs=RuntimeInputs(output_mode="summary", input_paths=()))
+    tools = build_all_tools(request, config=_make_config())
+    collect_tool = next(t for t in tools if t.__name__ == "collect_offline_inspection_dataset")
+    candidates_tool = next(t for t in tools if t.__name__ == "redis_inspection_log_candidates")
+    review_tool = next(t for t in tools if t.__name__ == "review_redis_log_candidates")
+    render_tool = next(t for t in tools if t.__name__ == "render_redis_inspection_report")
+
+    collect_payload = json.loads(
+        collect_tool(
+            input_paths=str(source),
+            log_start_time="2026-04-01 00:00:00",
+            log_end_time="2026-04-30 23:59:59",
+        )
+    )
+    candidates_json = candidates_tool(dataset_handle=collect_payload["dataset_handle"])
+    reviewed_json = review_tool(log_candidates_json=candidates_json, report_language="zh-CN")
+    result = render_tool(
+        dataset_handle=collect_payload["dataset_handle"],
+        reviewed_log_issues_json=reviewed_json,
+        output_mode="summary",
+        report_format="summary",
+    )
+
+    assert review_calls[0]["model"] == "review-model"
+    assert json.loads(review_calls[0]["log_candidates_json"])["clusters"][0]["log_candidates"]
+    assert "Redis 日志显示 OOM" in result
+    assert "问题概览与整改优先级" in result
+    assert "风险与整改建议" in result
+    assert "review tool judged OOM as anomalous" in result
+
+
+def test_review_redis_log_candidates_tool_does_not_call_generic_filesystem_tools(monkeypatch) -> None:
+    called = {"review": False}
+
+    def fake_review(log_candidates_json, *, model, focus_topics="", report_language="zh-CN"):
+        called["review"] = True
+        return '{"issues": []}'
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("review tool must not use generic filesystem tools")
+
+    monkeypatch.setattr("dba_assistant.orchestrator.tools._review_redis_log_candidates", fake_review)
+    monkeypatch.setattr("dba_assistant.orchestrator.tools.build_model", lambda model_config: "review-model")
+    for name in ("ls", "glob", "grep", "read_file"):
+        monkeypatch.setitem(build_all_tools.__globals__, name, forbidden)
+
+    request = _make_request(runtime_inputs=RuntimeInputs(output_mode="summary", input_paths=()))
+    review_tool = next(
+        t for t in build_all_tools(request, config=_make_config())
+        if t.__name__ == "review_redis_log_candidates"
+    )
+
+    result = json.loads(review_tool(log_candidates_json='{"clusters": []}'))
+
+    assert called["review"] is True
+    assert result == {"issues": []}
 
 
 def test_log_candidates_tool_uses_dataset_handle_without_recollecting(
@@ -399,7 +529,7 @@ def test_render_redis_inspection_report_consumes_dataset_handle(
     assert "inspection" in result.lower()
 
 
-def test_redis_inspection_report_docx_without_output_path_defaults_to_tmp(
+def test_redis_inspection_report_docx_without_output_path_uses_runtime_artifact_dir(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -410,10 +540,17 @@ def test_redis_inspection_report_docx_without_output_path_defaults_to_tmp(
         "dba_assistant.core.reporter.output_path_policy._timestamp_slug",
         lambda: "20260414_010203",
     )
-    default_path = Path("/tmp/dba_assistant_redis_inspection_20260414_010203.docx")
+    artifact_dir = tmp_path / "configured-artifacts"
+    default_path = artifact_dir / "dba_assistant_redis_inspection_20260414_010203.docx"
     default_path.unlink(missing_ok=True)
 
-    request = _make_request(runtime_inputs=RuntimeInputs(output_mode="summary", input_paths=()))
+    request = _make_request(
+        runtime_inputs=RuntimeInputs(
+            output_mode="summary",
+            input_paths=(),
+            artifact_dir=artifact_dir,
+        )
+    )
     tools = build_all_tools(request)
     collect_tool = next(t for t in tools if t.__name__ == "collect_offline_inspection_dataset")
     inspection_tool = next(t for t in tools if t.__name__ == "render_redis_inspection_report")
@@ -728,7 +865,12 @@ def test_analyze_local_rdb_tool_returns_docx_path_when_request_is_docx_without_e
 ) -> None:
     source = tmp_path / "dump.rdb"
     source.write_text("fixture", encoding="utf-8")
-    docx_path = tmp_path / "outputs" / "auto.docx"
+    artifact_dir = tmp_path / "configured-artifacts"
+    expected_docx = artifact_dir / "dba_assistant_report_20260414_010203.docx"
+    monkeypatch.setattr(
+        "dba_assistant.core.reporter.output_path_policy._timestamp_slug",
+        lambda: "20260414_010203",
+    )
 
     def fake_analyze_rdb_tool(
         prompt,
@@ -752,21 +894,13 @@ def test_analyze_local_rdb_tool_returns_docx_path_when_request_is_docx_without_e
         )
 
     monkeypatch.setattr("dba_assistant.orchestrator.tools.analyze_rdb_tool", fake_analyze_rdb_tool)
-    monkeypatch.setattr(
-        "dba_assistant.orchestrator.tools.ensure_report_output_path",
-        lambda runtime_inputs, report_format: __import__("dataclasses").replace(
-            runtime_inputs,
-            output_path=docx_path,
-            report_format="docx",
-            output_mode="report",
-        ),
-    )
 
     request = _make_request(
         runtime_inputs=RuntimeInputs(
             output_mode="report",
             report_format="docx",
             input_paths=(source,),
+            artifact_dir=artifact_dir,
         )
     )
     tools = build_all_tools(request)
@@ -774,8 +908,8 @@ def test_analyze_local_rdb_tool_returns_docx_path_when_request_is_docx_without_e
 
     result = analyze_tool(input_paths=str(source), output_mode="report", report_format="docx")
 
-    assert result == str(docx_path)
-    assert docx_path.exists()
+    assert result == str(expected_docx)
+    assert expected_docx.exists()
 
 
 def test_analyze_local_rdb_tool_returns_host_side_missing_path_error(monkeypatch) -> None:
@@ -1357,6 +1491,44 @@ def test_fetch_remote_rdb_via_ssh_tool_uses_request_ssh_context_when_args_omitte
     assert captured["ssh_config"].port == 2222
     assert captured["ssh_config"].username == "root"
     assert captured["ssh_config"].password == "secret"
+
+
+def test_fetch_remote_rdb_via_ssh_without_local_directory_uses_runtime_evidence_dir(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+    evidence_dir = tmp_path / "configured-evidence"
+
+    class FakeSSHAdaptor:
+        def fetch_file(self, config, remote_path, local_path):
+            captured["remote_path"] = remote_path
+            captured["local_path"] = local_path
+            local_path.write_text("fixture", encoding="utf-8")
+            return local_path
+
+    monkeypatch.setattr("dba_assistant.orchestrator.tools.SSHAdaptor", FakeSSHAdaptor)
+
+    request = _make_request(
+        runtime_inputs=RuntimeInputs(
+            output_mode="summary",
+            ssh_host="ssh.example",
+            ssh_port=2222,
+            ssh_username="root",
+            evidence_dir=evidence_dir,
+        ),
+        secrets=Secrets(ssh_password="secret"),
+    )
+    tools = build_all_tools(request)
+    fetch_tool = next(t for t in tools if t.__name__ == "fetch_remote_rdb_via_ssh")
+
+    result = Path(fetch_tool(remote_rdb_path="/data/dump.rdb"))
+
+    assert result == captured["local_path"]
+    assert result.parent.parent == evidence_dir
+    assert result.name == "dump.rdb"
+    assert result.exists()
+    assert captured["remote_path"] == "/data/dump.rdb"
 
 
 def test_fetch_remote_rdb_via_ssh_uses_ssh_secret_not_redis_secret(monkeypatch, tmp_path: Path) -> None:

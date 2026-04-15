@@ -5,6 +5,10 @@ import pytest
 
 from dba_assistant.deep_agent_integration.config import (
     DEFAULT_CONFIG_PATH,
+    DEFAULT_AGENT_WORKSPACE_ROOT,
+    DEFAULT_ARTIFACT_DIR,
+    DEFAULT_EVIDENCE_DIR,
+    DEFAULT_TEMP_DIR,
     REPO_ROOT,
     ProviderKind,
     SUPPORTED_PRESET_NAMES,
@@ -37,6 +41,15 @@ def test_load_app_config_reads_repository_default_shape(tmp_path: Path) -> None:
           mysql_connect_timeout_seconds: 7.5
           mysql_read_timeout_seconds: 18.0
           mysql_write_timeout_seconds: 35.0
+        agent:
+          filesystem_backend:
+            kind: filesystem
+            root_dir: /var/dba-agent
+            virtual_mode: false
+        paths:
+          artifact_dir: /var/dba-agent/artifacts
+          evidence_dir: /var/dba-agent/evidence
+          temp_dir: /var/dba-agent/tmp
         observability:
           enabled: true
           console_enabled: false
@@ -64,6 +77,12 @@ def test_load_app_config_reads_repository_default_shape(tmp_path: Path) -> None:
     assert config.runtime.mysql_connect_timeout_seconds == 7.5
     assert config.runtime.mysql_read_timeout_seconds == 18.0
     assert config.runtime.mysql_write_timeout_seconds == 35.0
+    assert config.agent.filesystem_backend.kind == "filesystem"
+    assert config.agent.filesystem_backend.root_dir == Path("/var/dba-agent")
+    assert config.agent.filesystem_backend.virtual_mode is False
+    assert config.paths.artifact_dir == Path("/var/dba-agent/artifacts")
+    assert config.paths.evidence_dir == Path("/var/dba-agent/evidence")
+    assert config.paths.temp_dir == Path("/var/dba-agent/tmp")
     assert config.observability.enabled is True
     assert config.observability.console_enabled is False
     assert config.observability.console_level == "ERROR"
@@ -264,6 +283,57 @@ def test_load_app_config_uses_mysql_timeout_defaults_when_omitted(tmp_path: Path
     assert config.runtime.mysql_connect_timeout_seconds == 5.0
     assert config.runtime.mysql_read_timeout_seconds == 15.0
     assert config.runtime.mysql_write_timeout_seconds == 30.0
+
+
+def test_load_app_config_defaults_filesystem_and_paths_from_single_policy() -> None:
+    config = load_app_config()
+
+    assert config.agent.filesystem_backend.root_dir.is_absolute()
+    assert config.agent.filesystem_backend.virtual_mode is True
+    assert config.paths.artifact_dir.is_absolute()
+    assert config.paths.evidence_dir.is_absolute()
+    assert config.paths.temp_dir.is_absolute()
+    assert config.paths.artifact_dir != Path("/tmp")
+    assert config.paths.evidence_dir != Path("/tmp")
+
+
+def test_load_app_config_uses_backend_root_subdirs_when_paths_omitted(tmp_path: Path) -> None:
+    workspace = tmp_path / "agent-workspace"
+    config_path = tmp_path / "config.yaml"
+    _write_config(
+        config_path,
+        f"""
+        model:
+          preset_name: ollama_local
+          provider_kind: openai_compatible
+          model_name: qwen3:8b
+          base_url: http://127.0.0.1:11434/v1
+          api_key: ollama
+        runtime:
+          default_output_mode: summary
+          redis_socket_timeout: 5.0
+        agent:
+          filesystem_backend:
+            kind: filesystem
+            root_dir: {workspace}
+            virtual_mode: true
+        """,
+    )
+
+    config = load_app_config(config_path)
+
+    assert config.agent.filesystem_backend.root_dir == workspace
+    assert config.paths.artifact_dir == workspace / "artifacts"
+    assert config.paths.evidence_dir == workspace / "evidence"
+    assert config.paths.temp_dir == workspace / "tmp"
+
+
+def test_configured_fallback_paths_are_centralized_and_not_tmp() -> None:
+    assert DEFAULT_AGENT_WORKSPACE_ROOT == REPO_ROOT / "outputs" / "agent_fs"
+    assert DEFAULT_ARTIFACT_DIR == DEFAULT_AGENT_WORKSPACE_ROOT / "artifacts"
+    assert DEFAULT_EVIDENCE_DIR == DEFAULT_AGENT_WORKSPACE_ROOT / "evidence"
+    assert DEFAULT_TEMP_DIR == DEFAULT_AGENT_WORKSPACE_ROOT / "tmp"
+    assert DEFAULT_AGENT_WORKSPACE_ROOT != Path("/tmp")
 
 
 def test_load_app_config_rejects_non_positive_mysql_stage_batch_size(tmp_path: Path) -> None:

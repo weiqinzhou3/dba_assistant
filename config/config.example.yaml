@@ -10,3 +10,12 @@ model:
 runtime:
   default_output_mode: summary
   redis_socket_timeout: 5.0
+agent:
+  filesystem_backend:
+    kind: filesystem
+    root_dir: outputs/agent_fs
+    virtual_mode: true
+paths:
+  artifact_dir: outputs/agent_fs/artifacts
+  evidence_dir: outputs/agent_fs/evidence
+  temp_dir: outputs/agent_fs/tmp

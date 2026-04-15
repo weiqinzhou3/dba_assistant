@@ -1,20 +1,24 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from pathlib import Path
 from typing import Any
 
 from deepagents.backends import FilesystemBackend
 from langgraph.checkpoint.memory import InMemorySaver
 
+from dba_assistant.deep_agent_integration.config import FilesystemBackendConfig
+from dba_assistant.core.runtime_paths import REPO_ROOT, ensure_directory
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
 MEMORY_SOURCES = ("/AGENTS.md",)
 SKILL_SOURCES = ("/skills",)
 
 
-def build_runtime_backend() -> FilesystemBackend:
-    return FilesystemBackend(root_dir=REPO_ROOT, virtual_mode=True)
+def build_runtime_backend(config: FilesystemBackendConfig | None = None) -> FilesystemBackend:
+    filesystem_config = config or FilesystemBackendConfig()
+    if filesystem_config.kind != "filesystem":
+        raise ValueError("Only filesystem backend is supported.")
+    root_dir = ensure_directory(filesystem_config.root_dir)
+    return FilesystemBackend(root_dir=root_dir, virtual_mode=filesystem_config.virtual_mode)
 
 
 def get_memory_sources() -> list[str]:

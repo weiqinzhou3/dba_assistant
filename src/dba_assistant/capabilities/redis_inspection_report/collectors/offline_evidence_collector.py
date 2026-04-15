@@ -18,6 +18,7 @@ from dba_assistant.capabilities.redis_inspection_report.types import (
 )
 from dba_assistant.application.request_models import DEFAULT_INSPECTION_LOG_TIME_WINDOW_DAYS
 from dba_assistant.core.observability import get_current_execution_session
+from dba_assistant.core.runtime_paths import DEFAULT_TEMP_DIR, ensure_directory
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,7 @@ class RedisInspectionOfflineInput:
     log_time_window_days: int | None = None
     log_start_time: str | None = None
     log_end_time: str | None = None
+    work_dir: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -94,7 +96,8 @@ class RedisInspectionOfflineCollector:
         log_time_bounds = _resolve_log_time_bounds(collector_input)
 
         nodes: list[InspectionNode] = []
-        with tempfile.TemporaryDirectory(prefix="dba-inspection-") as tmp_name:
+        work_dir = ensure_directory(collector_input.work_dir or DEFAULT_TEMP_DIR)
+        with tempfile.TemporaryDirectory(prefix="dba-inspection-", dir=str(work_dir)) as tmp_name:
             tmp_root = Path(tmp_name)
             _record_phase(
                 "offline_input_detected",

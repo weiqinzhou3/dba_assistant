@@ -67,7 +67,7 @@ def build_unified_agent(
     )
 
     model = build_model(config.model)
-    backend = build_runtime_backend()
+    backend = build_runtime_backend(config.agent.filesystem_backend)
     checkpointer = build_runtime_checkpointer()
 
     interrupt_on: dict[str, Any] = {
@@ -368,6 +368,12 @@ def _build_user_message(request: NormalizedRequest) -> str:
 
     if request.runtime_inputs.output_path:
         context_lines.append(f"Output path: {request.runtime_inputs.output_path}")
+    if request.runtime_inputs.filesystem_root_dir:
+        context_lines.append(f"Agent filesystem backend root: {request.runtime_inputs.filesystem_root_dir}")
+    if request.runtime_inputs.artifact_dir:
+        context_lines.append(f"Artifact directory: {request.runtime_inputs.artifact_dir}")
+    if request.runtime_inputs.evidence_dir:
+        context_lines.append(f"Evidence directory: {request.runtime_inputs.evidence_dir}")
 
     if request.rdb_overrides.focus_prefixes:
         context_lines.append(

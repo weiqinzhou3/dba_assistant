@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 from dba_assistant.application.request_models import RuntimeInputs
+from dba_assistant.core.runtime_paths import DEFAULT_ARTIFACT_DIR
 
 
 def infer_report_format_alias(token: str | None) -> str | None:
@@ -34,7 +35,7 @@ def default_report_output_path(
     if normalized != "docx":
         raise ValueError(f"Unsupported default output path format: {format}")
 
-    target_dir = (base_dir or Path("/tmp")).expanduser()
+    target_dir = (base_dir or DEFAULT_ARTIFACT_DIR).expanduser()
     target_dir.mkdir(parents=True, exist_ok=True)
 
     stem = f"{_report_stem(report_slug)}_{_timestamp_slug()}"
@@ -65,7 +66,11 @@ def ensure_report_output_path(
         runtime_inputs,
         output_mode="report",
         report_format="docx",
-        output_path=default_report_output_path("docx", report_slug=report_slug),
+        output_path=default_report_output_path(
+            "docx",
+            base_dir=runtime_inputs.artifact_dir,
+            report_slug=report_slug,
+        ),
     )
 
 

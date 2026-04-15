@@ -14,6 +14,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Iterator, Protocol
 
+from dba_assistant.core.runtime_paths import DEFAULT_TEMP_DIR, ensure_directory
+
 
 @dataclass(frozen=True)
 class FlamegraphSpec:
@@ -89,7 +91,10 @@ class HdtRdbCliStrategy:
         )
 
     def export_json(self, path: Path) -> Iterator[dict[str, object]]:
-        with tempfile.TemporaryDirectory(prefix="dba-assistant-rdb-json-", dir="/tmp") as tmpdir:
+        with tempfile.TemporaryDirectory(
+            prefix="dba-assistant-rdb-json-",
+            dir=str(ensure_directory(DEFAULT_TEMP_DIR)),
+        ) as tmpdir:
             output_path = Path(tmpdir) / "dump.json"
             os.mkfifo(output_path)
             error_box: dict[str, Exception] = {}
@@ -175,7 +180,10 @@ class HdtRdbCliStrategy:
         return FlamegraphSpec(command=tuple(command), url=f"http://localhost:{port}/flamegraph")
 
     def _run_csv_command(self, path: Path, args: list[str]) -> list[dict[str, str]]:
-        with tempfile.TemporaryDirectory(prefix="dba-assistant-rdb-csv-") as tmpdir:
+        with tempfile.TemporaryDirectory(
+            prefix="dba-assistant-rdb-csv-",
+            dir=str(ensure_directory(DEFAULT_TEMP_DIR)),
+        ) as tmpdir:
             output_path = Path(tmpdir) / "report.csv"
             # Ensure output flag is used correctly
             full_args = list(args)

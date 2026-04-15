@@ -2,6 +2,7 @@ from pathlib import Path
 
 from dba_assistant.application.request_models import RuntimeInputs
 from dba_assistant.core.reporter.output_path_policy import (
+    DEFAULT_ARTIFACT_DIR,
     default_report_output_path,
     ensure_report_output_path,
     infer_report_format_alias,
@@ -14,7 +15,7 @@ def test_infer_report_format_alias_maps_word_to_docx() -> None:
     assert infer_report_format_alias("docx/word") == "docx"
 
 
-def test_default_report_output_path_uses_tmp_directory_and_docx_suffix(monkeypatch) -> None:
+def test_default_report_output_path_uses_central_artifact_directory_and_docx_suffix(monkeypatch) -> None:
     monkeypatch.setattr(
         "dba_assistant.core.reporter.output_path_policy._timestamp_slug",
         lambda: "20260406_123456",
@@ -22,7 +23,7 @@ def test_default_report_output_path_uses_tmp_directory_and_docx_suffix(monkeypat
 
     path = default_report_output_path("docx")
 
-    assert path == Path("/tmp") / "dba_assistant_report_20260406_123456.docx"
+    assert path == DEFAULT_ARTIFACT_DIR / "dba_assistant_report_20260406_123456.docx"
     assert path.parent.exists()
     assert path.suffix == ".docx"
 
@@ -35,7 +36,7 @@ def test_default_report_output_path_uses_inspection_filename_for_inspection_repo
 
     path = default_report_output_path("docx", report_slug="inspection")
 
-    assert path == Path("/tmp") / "dba_assistant_redis_inspection_20260406_123456.docx"
+    assert path == DEFAULT_ARTIFACT_DIR / "dba_assistant_redis_inspection_20260406_123456.docx"
 
 
 def test_default_report_output_path_avoids_overwriting_existing_file(tmp_path, monkeypatch) -> None:
@@ -57,14 +58,18 @@ def test_default_report_output_path_avoids_overwriting_existing_file(tmp_path, m
 def test_ensure_report_output_path_generates_docx_path_when_missing(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
         "dba_assistant.core.reporter.output_path_policy.default_report_output_path",
-        lambda format, base_dir=None, report_slug="report": tmp_path / "outputs" / f"{report_slug}.docx",
+        lambda format, base_dir=None, report_slug="report": base_dir / f"{report_slug}.docx",
     )
 
-    runtime_inputs = RuntimeInputs(output_mode="report", report_format="docx")
+    runtime_inputs = RuntimeInputs(
+        output_mode="report",
+        report_format="docx",
+        artifact_dir=tmp_path / "configured-artifacts",
+    )
 
     updated = ensure_report_output_path(runtime_inputs, "docx", report_slug="inspection")
 
-    assert updated.output_path == tmp_path / "outputs" / "inspection.docx"
+    assert updated.output_path == tmp_path / "configured-artifacts" / "inspection.docx"
 
 
 def test_ensure_report_output_path_keeps_existing_prompt_path() -> None:

@@ -14,6 +14,16 @@ def _base_config(*, mysql_stage_batch_size: int = 2000):
             default_output_mode="summary",
             mysql_stage_batch_size=mysql_stage_batch_size,
         ),
+        agent=SimpleNamespace(
+            filesystem_backend=SimpleNamespace(
+                root_dir=Path("/configured-agent-root"),
+            )
+        ),
+        paths=SimpleNamespace(
+            artifact_dir=Path("/configured-agent-root/artifacts"),
+            evidence_dir=Path("/configured-agent-root/evidence"),
+            temp_dir=Path("/configured-agent-root/tmp"),
+        ),
         model=None,
     )
 
@@ -56,6 +66,10 @@ def test_handle_request_normalizes_and_delegates_to_orchestrator(monkeypatch) ->
 
     assert result == "orchestrated result"
     assert normalized.runtime_inputs.input_paths == (Path("/tmp/dump.rdb"),)
+    assert normalized.runtime_inputs.filesystem_root_dir == Path("/configured-agent-root")
+    assert normalized.runtime_inputs.artifact_dir == Path("/configured-agent-root/artifacts")
+    assert normalized.runtime_inputs.evidence_dir == Path("/configured-agent-root/evidence")
+    assert normalized.runtime_inputs.temp_dir == Path("/configured-agent-root/tmp")
     assert isinstance(captured["handler"], AuditedApprovalHandler)
     assert captured["handler"]._delegate is handler
 

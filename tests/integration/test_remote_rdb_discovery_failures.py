@@ -47,7 +47,7 @@ def test_run_orchestrated_surfaces_real_discovery_failure_through_approval_and_f
             self.value = value
 
     monkeypatch.setattr(agent_module, "build_model", lambda mc: "fake-model")
-    monkeypatch.setattr(agent_module, "build_runtime_backend", lambda: "fake-backend")
+    monkeypatch.setattr(agent_module, "build_runtime_backend", lambda _filesystem_config: "fake-backend")
     monkeypatch.setattr(agent_module, "build_runtime_checkpointer", lambda: "fake-checkpointer")
     monkeypatch.setattr(agent_module, "get_memory_sources", lambda: [])
     monkeypatch.setattr(agent_module, "get_skill_sources", lambda: [])

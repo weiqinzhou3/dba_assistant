@@ -389,15 +389,15 @@ def test_docx_reporter_anomaly_highlighting_applies_red_to_keywords(tmp_path: Pa
     assert "FF0000" in document_xml, "Anomaly keywords should be highlighted in red"
 
 
-def test_default_output_path_for_inspection_defaults_to_tmp(monkeypatch) -> None:
-    """Round 1.2 #7: Inspection report default output should be in /tmp."""
-    from dba_assistant.core.reporter.output_path_policy import default_report_output_path
+def test_default_output_path_for_inspection_defaults_to_configured_artifact_policy(monkeypatch) -> None:
+    from dba_assistant.core.reporter.output_path_policy import DEFAULT_ARTIFACT_DIR, default_report_output_path
+
     monkeypatch.setattr(
         "dba_assistant.core.reporter.output_path_policy._timestamp_slug",
         lambda: "20260414_120000",
     )
     path = default_report_output_path("docx", report_slug="inspection")
-    assert str(path).startswith("/tmp/")
+    assert path.parent == DEFAULT_ARTIFACT_DIR
     assert "dba_assistant_redis_inspection" in str(path)
 
 

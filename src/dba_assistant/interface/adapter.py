@@ -15,7 +15,7 @@ from dba_assistant.application.request_models import (
 )
 from dba_assistant.core.observability import bootstrap_observability, start_execution_session
 from dba_assistant.core.observability.sanitizer import summarize_prompt
-from dba_assistant.deep_agent_integration.config import ObservabilityConfig, load_app_config
+from dba_assistant.deep_agent_integration.config import AppConfig, ObservabilityConfig, load_app_config
 from dba_assistant.interface.hitl import AuditedApprovalHandler, HumanApprovalHandler
 from dba_assistant.interface.types import InterfaceRequest
 from dba_assistant.orchestrator.agent import run_orchestrated
@@ -155,7 +155,24 @@ def _apply_runtime_defaults(
         )
         runtime = replace(runtime, mysql_stage_batch_size=configured_batch_size)
 
+    paths = getattr(config, "paths", None)
+    agent = getattr(config, "agent", None)
+    filesystem_backend = getattr(agent, "filesystem_backend", None)
+    path_defaults: dict[str, Any] = {}
+    if runtime.filesystem_root_dir is None and getattr(filesystem_backend, "root_dir", None) is not None:
+        path_defaults["filesystem_root_dir"] = filesystem_backend.root_dir
+    if runtime.artifact_dir is None and getattr(paths, "artifact_dir", None) is not None:
+        path_defaults["artifact_dir"] = paths.artifact_dir
+    if runtime.evidence_dir is None and getattr(paths, "evidence_dir", None) is not None:
+        path_defaults["evidence_dir"] = paths.evidence_dir
+    if runtime.temp_dir is None and getattr(paths, "temp_dir", None) is not None:
+        path_defaults["temp_dir"] = paths.temp_dir
+    if path_defaults:
+        runtime = replace(runtime, **path_defaults)
+
     return replace(normalized, runtime_inputs=runtime)
+
+
 def _summarize_interface_request(request: InterfaceRequest) -> dict[str, Any]:
     """Provide a summarized version of the raw interface request for auditing."""
     return {

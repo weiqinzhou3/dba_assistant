@@ -10,10 +10,34 @@ class TextBlock:
 
 
 @dataclass(frozen=True)
+class TextRun:
+    text: str
+    bold: bool = False
+
+
+@dataclass(frozen=True)
+class RichTextBlock:
+    lines: list[list[TextRun]]
+
+
+@dataclass(frozen=True)
+class InfoTableRow:
+    label: str
+    text: str
+    bullet: bool = False
+
+
+@dataclass(frozen=True)
+class InfoTableBlock:
+    rows: list[InfoTableRow]
+
+
+@dataclass(frozen=True)
 class TableBlock:
     title: str
     columns: list[str]
     rows: list[list[str]]
+    show_title: bool = True
 
 
 @dataclass(frozen=True)
@@ -21,7 +45,7 @@ class ReportSectionModel:
     id: str
     title: str
     level: int = 1
-    blocks: list[TextBlock | TableBlock] = field(default_factory=list)
+    blocks: list[TextBlock | RichTextBlock | InfoTableBlock | TableBlock] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -81,7 +105,15 @@ def render_summary_text(report: AnalysisReport, *, language: str | None = None) 
             if isinstance(block, TextBlock):
                 lines.append(block.text)
                 continue
-            lines.append(block.title)
+            if isinstance(block, RichTextBlock):
+                lines.extend("".join(run.text for run in line) for line in block.lines)
+                continue
+            if isinstance(block, InfoTableBlock):
+                for row in block.rows:
+                    lines.append(f"{row.label}: {row.text}")
+                continue
+            if block.show_title and block.title:
+                lines.append(block.title)
             if block.columns:
                 lines.append(", ".join(block.columns))
             for row in block.rows:
@@ -101,7 +133,7 @@ def _summary_labels(language: str) -> dict[str, str]:
 
 
 def _coerce_section(section: ReportSection) -> ReportSectionModel:
-    blocks: list[TextBlock | TableBlock] = []
+    blocks: list[TextBlock | RichTextBlock | InfoTableBlock | TableBlock] = []
 
     if section.summary:
         blocks.append(TextBlock(text=section.summary))

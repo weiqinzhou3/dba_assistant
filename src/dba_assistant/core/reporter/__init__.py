@@ -5,9 +5,13 @@ from typing import TYPE_CHECKING
 from dba_assistant.core.reporter.generate_analysis_report import generate_analysis_report
 from dba_assistant.core.reporter.report_model import (
     AnalysisReport,
+    InfoTableBlock,
+    InfoTableRow,
     ReportSectionModel,
+    RichTextBlock,
     TableBlock,
     TextBlock,
+    TextRun,
     coerce_analysis_report,
     render_summary_text,
 )
@@ -37,10 +41,14 @@ __all__ = [
     "ReportOutputConfig",
     "AnalysisReport",
     "coerce_analysis_report",
+    "InfoTableBlock",
+    "InfoTableRow",
     "ReportSectionModel",
+    "RichTextBlock",
     "SummaryReporter",
     "TableBlock",
     "TextBlock",
+    "TextRun",
     "render_summary_text",
     "generate_analysis_report",
 ]

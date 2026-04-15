@@ -18,10 +18,18 @@ from dba_assistant.core.reporter.docx_styles import (
     add_page_break,
     add_table_title,
     apply_document_theme,
+    style_info_table,
     style_table,
 )
 from dba_assistant.core.reporter.localization import normalize_report_language
-from dba_assistant.core.reporter.report_model import AnalysisReport, TableBlock, TextBlock, coerce_analysis_report
+from dba_assistant.core.reporter.report_model import (
+    AnalysisReport,
+    InfoTableBlock,
+    RichTextBlock,
+    TableBlock,
+    TextBlock,
+    coerce_analysis_report,
+)
 from dba_assistant.core.reporter.types import IReporter, ReportArtifact, ReportFormat, ReportOutputConfig
 
 
@@ -129,14 +137,21 @@ class DocxReporter(IReporter[AnalysisResult | AnalysisReport]):
                 if isinstance(block, TextBlock):
                     add_body_paragraph(document, block.text)
                     continue
+                if isinstance(block, RichTextBlock):
+                    self._render_rich_text_block(document, block)
+                    continue
+                if isinstance(block, InfoTableBlock):
+                    self._render_info_table_block(document, block, table_style_module, language)
+                    continue
                 if not isinstance(block, TableBlock):
                     raise TypeError(f"Unsupported block type: {type(block)!r}")
-                if section.level >= 2 and block.title:
+                if block.show_title and section.level >= 2 and block.title:
                     sub_index += 1
                     numbered_title = f"{major_index}.{minor_index}.{sub_index} {block.title}"
                 else:
                     numbered_title = block.title
-                add_table_title(document, numbered_title)
+                if block.show_title and numbered_title:
+                    add_table_title(document, numbered_title)
                 docx_table = document.add_table(rows=1, cols=len(block.columns))
                 for index, column in enumerate(block.columns):
                     docx_table.rows[0].cells[index].text = column
@@ -146,6 +161,35 @@ class DocxReporter(IReporter[AnalysisResult | AnalysisReport]):
                         cells[index].text = value
                 style_table(docx_table, language=language, table_style_module=table_style_module)
         return major_index
+
+    def _render_info_table_block(
+        self,
+        document: Document,
+        block: InfoTableBlock,
+        table_style_module: ModuleType,
+        language: str,
+    ) -> None:
+        docx_table = document.add_table(rows=max(1, len(block.rows)), cols=2)
+        for index, row in enumerate(block.rows or []):
+            cells = docx_table.rows[index].cells
+            cells[0].text = row.label
+            self._set_cell_lines(cells[1], row.text.splitlines() or ["-"], bullet=row.bullet)
+        style_info_table(docx_table, language=language, table_style_module=table_style_module)
+
+    def _set_cell_lines(self, cell, lines: list[str], *, bullet: bool) -> None:
+        cell.text = ""
+        for index, line in enumerate(lines):
+            paragraph = cell.paragraphs[0] if index == 0 else cell.add_paragraph()
+            paragraph.text = f"- {line}" if bullet else line
+
+    def _render_rich_text_block(self, document: Document, block: RichTextBlock) -> None:
+        for line in block.lines:
+            paragraph = document.add_paragraph(style="DBA Body Text")
+            if not line:
+                continue
+            for text_run in line:
+                run = paragraph.add_run(text_run.text)
+                run.bold = text_run.bold
 
     def _render_major_heading(self, document: Document, index: int, title: str, *, language: str) -> None:
         prefix = _major_heading_prefix(index, language=language)

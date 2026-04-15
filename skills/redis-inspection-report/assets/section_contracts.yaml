@@ -1,0 +1,116 @@
+chapter_3:
+  title: 问题概览与整改优先级
+  responsibility: 领导视角执行摘要；只说明哪些集群需要优先关注、关键问题和处置方向，不承载证据明细。
+  subsections:
+    - id: priority_overview
+      title: 优先级速览
+      presentation: table
+      display_mode: all
+      top_n: null
+      suppress_repeated_table_title: true
+      columns:
+        - 序号
+        - 集群
+        - 风险等级
+        - 关键问题
+    - id: node_direction
+      title: 涉及节点与优先处置方向
+      presentation: info_table_per_problem_type
+      grouping: by_problem_type
+      fields:
+        - 问题类型
+        - 涉及集群
+        - 涉及节点
+        - 优先处置方向
+      required_fields:
+        - 问题类型
+        - 涉及集群
+        - 涉及节点
+        - 优先处置方向
+      optional_fields: []
+      bold_labels:
+        - 问题类型
+        - 涉及集群
+        - 涉及节点
+        - 优先处置方向
+      recommendation_mode: multiline_actions
+      table_style:
+        columns: 2
+        left_column_fill: D9E2F3
+  problem_type_order:
+    - AOF重写频繁触发
+    - RDB持久化期间Copy-on-Write内存使用量高
+    - fork失败导致无法后台保存
+    - Redis集群节点故障与恢复事件
+    - 主机 Swap 已使用
+    - 主机透明大页处于 always
+    - Redis 内存碎片率偏高
+    - Redis 未配置 maxmemory
+  problem_type_actions:
+    AOF重写频繁触发:
+      - 复核 AOF rewrite 触发阈值与写入峰值时间线。
+      - 检查磁盘 IO、AOF 重写耗时和业务写入突增情况。
+    RDB持久化期间Copy-on-Write内存使用量高:
+      - 评估 BGSAVE 期间主机可用内存和写入放大。
+      - 将持久化窗口避开业务高峰，必要时扩容内存。
+    fork失败导致无法后台保存:
+      - 优先检查主机可用内存、overcommit_memory 和 Redis fork 日志。
+      - 恢复后台保存能力后补充一次持久化验证。
+    Redis集群节点故障与恢复事件:
+      - 复核故障节点、恢复时间线和主从切换结果。
+      - 检查集群槽位、节点连通性和复制状态。
+    主机 Swap 已使用:
+      - 确认内存余量和 vm.swappiness 设置。
+      - 必要时扩容或调整实例内存上限。
+    主机透明大页处于 always:
+      - 按 Redis 官方建议关闭 THP。
+      - 将 THP 关闭配置写入系统启动项并验证重启后生效。
+    Redis 内存碎片率偏高:
+      - 评估 active defrag、实例重启窗口和写入模式。
+      - 跟踪 used_memory_rss 与 mem_fragmentation_ratio 变化。
+    Redis 未配置 maxmemory:
+      - 根据实例容量规划配置 maxmemory。
+      - 明确淘汰策略并完成变更前容量评估。
+
+chapter_9:
+  title: 风险与整改建议
+  responsibility: 运维落地明细；按集群和风险条目说明对象、影响、证据和整改动作。
+  structure:
+    - 9.x 集群名
+    - 9.x.y 风险名称
+  merge_rule: same_cluster_same_risk_name
+  presentation: info_table_per_risk_item
+  fields:
+    - 风险等级
+    - 风险描述
+    - 涉及对象
+    - 影响说明
+    - Review
+    - 证据
+    - 整改建议
+  required_fields:
+    - 风险等级
+    - 风险描述
+    - 涉及对象
+    - 影响说明
+    - 证据
+    - 整改建议
+  optional_fields:
+    - Review
+  bold_labels:
+    - 风险等级
+    - 风险描述
+    - 涉及对象
+    - 影响说明
+    - Review
+    - 证据
+    - 整改建议
+  review_field:
+    display: log_semantic_review_only
+    samples_label: Samples
+    confidence_label: Confidence
+  evidence_mode: per_node_lines
+  recommendation_mode: multiline_actions
+  table_style:
+    columns: 2
+    left_column_fill: D9E2F3

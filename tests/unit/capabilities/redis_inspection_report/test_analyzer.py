@@ -3,6 +3,7 @@ from dba_assistant.capabilities.redis_inspection_report.analyzer import (
     _keyspace_summary,
     _cluster_status_display,
 )
+from dba_assistant.core.reporter.report_model import InfoTableBlock, TableBlock, TextBlock
 from dba_assistant.capabilities.redis_inspection_report.types import (
     InspectionCluster,
     InspectionDataset,
@@ -122,14 +123,18 @@ def test_analyzer_builds_report_sections_and_findings_from_cluster_dataset() -> 
     assert all("系统" not in table.columns for table in main_tables)
     assert all("归并置信度" not in table.columns for table in main_tables)
     assert all("归并依据" not in table.columns for table in main_tables)
-    problem_section = next(section for section in report.sections if section.id == "problem_overview")
-    assert any("高风险" in block.text for block in problem_section.blocks if hasattr(block, "text"))
-    problem_tables = [block for block in problem_section.blocks if hasattr(block, "columns")]
-    assert len(problem_tables) <= 1
+    problem_sections = _chapter_sections(report, "problem_overview")
+    assert "高风险" in _section_text(problem_sections)
+    priority_table = next(
+        block
+        for section in problem_sections
+        for block in section.blocks
+        if isinstance(block, TableBlock)
+    )
+    assert priority_table.columns == ["序号", "集群", "风险等级", "关键问题"]
     assert any(
-        "cluster-a" in block.text and "Redis 日志显示 OOM 与复制异常" in block.text
-        for block in problem_section.blocks
-        if hasattr(block, "text")
+        row[1] == "cluster-a" and "Redis 日志显示 OOM 与复制异常" in row[3]
+        for row in priority_table.rows
     )
     architecture_section = next(section for section in report.sections if section.id == "architecture_overview")
     architecture_table = next(block for block in architecture_section.blocks if hasattr(block, "columns"))
@@ -150,12 +155,8 @@ def test_analyzer_builds_report_sections_and_findings_from_cluster_dataset() -> 
     assert all(len(block.columns) <= 4 for block in redis_cluster_section.blocks if hasattr(block, "columns"))
     risk_cluster_section = next(section for section in report.sections if section.id == "risk_remediation__cluster-a")
     assert all(not hasattr(block, "columns") for block in risk_cluster_section.blocks)
-    risk_text = "\n".join(
-        block.text
-        for section in report.sections
-        if section.id.startswith("risk_remediation__cluster-a")
-        for block in section.blocks
-        if hasattr(block, "text")
+    risk_text = _section_text(
+        [section for section in report.sections if section.id.startswith("risk_remediation__cluster-a")]
     )
     assert "风险等级：high" in risk_text
     assert "Redis Cluster 状态异常" in risk_text
@@ -163,7 +164,8 @@ def test_analyzer_builds_report_sections_and_findings_from_cluster_dataset() -> 
     assert "Redis 持久化最近一次保存失败" in risk_text
     assert "Redis 复制链路异常" in risk_text
     assert "主机 Swap 已使用" in risk_text
-    assert risk_text.count("Redis 日志显示 OOM 与复制异常") == 1
+    risk_titles = [section.title for section in report.sections if section.id.startswith("risk_remediation__cluster-a")]
+    assert risk_titles.count("Redis 日志显示 OOM 与复制异常") == 1
     assert "Review：" in risk_text
     assert "Samples：" in risk_text
     assert "Confidence：high" in risk_text
@@ -320,7 +322,7 @@ def test_cluster_status_display_dash_for_non_cluster() -> None:
 
 
 def test_problem_overview_is_executive_summary_not_wide_table() -> None:
-    """Chapter 3 should be executive summary text, with at most a small priority table."""
+    """Chapter 3 should contain only the contracted 3.1/3.2 subsections."""
     dataset = _make_simple_dataset(
         redis_facts={
             "used_memory": "920",
@@ -332,14 +334,56 @@ def test_problem_overview_is_executive_summary_not_wide_table() -> None:
     report = analyze_inspection_dataset(dataset)
     top_level_titles = [section.title for section in report.sections if section.level == 1]
     assert top_level_titles[2] == "问题概览与整改优先级"
-    problem_section = next(s for s in report.sections if s.id == "problem_overview")
-    text_blocks = [b.text for b in problem_section.blocks if hasattr(b, "text")]
-    tables = [b for b in problem_section.blocks if hasattr(b, "columns")]
-    assert any("test-cluster" in text and "Redis 内存水位过高" in text for text in text_blocks)
-    assert all("..." not in text for text in text_blocks)
-    assert len(tables) <= 1
-    if tables:
-        assert tables[0].columns == ["优先级", "集群", "风险等级", "关键问题", "优先动作"]
+    problem_sections = _chapter_sections(report, "problem_overview")
+    assert [section.title for section in problem_sections] == [
+        "问题概览与整改优先级",
+        "优先级速览",
+        "涉及节点与优先处置方向",
+        "Redis 内存水位过高",
+    ]
+    assert [section.level for section in problem_sections] == [1, 2, 2, 3]
+    problem_text = _section_text(problem_sections)
+    assert "高风险集群：" not in problem_text
+    assert "中风险集群：" not in problem_text
+    assert "集群：test-cluster。\n风险等级：" not in problem_text
+    assert "优先动作：" not in problem_text
+    priority_table = next(
+        block
+        for section in problem_sections
+        for block in section.blocks
+        if isinstance(block, TableBlock)
+    )
+    assert priority_table.columns == ["序号", "集群", "风险等级", "关键问题"]
+    assert priority_table.show_title is False
+    assert priority_table.rows[0][1] == "test-cluster"
+    assert "Redis 内存水位过高" in priority_table.rows[0][3]
+    direction_text = _section_text([problem_sections[3]])
+    assert "涉及集群：test-cluster" in direction_text
+    assert "涉及节点：10.0.0.1:6379" in direction_text
+    assert "优先处置方向：" in direction_text
+    assert "；" not in direction_text
+
+
+def test_problem_overview_node_direction_entries_are_numbered_info_tables() -> None:
+    dataset = _multi_node_host_risk_dataset()
+
+    report = analyze_inspection_dataset(dataset)
+
+    direction_entry_sections = [
+        section
+        for section in report.sections
+        if section.id.startswith("problem_overview__node_direction__")
+    ]
+    assert direction_entry_sections
+    assert all(section.level == 3 for section in direction_entry_sections)
+    assert all(
+        len(section.blocks) == 1 and isinstance(section.blocks[0], InfoTableBlock)
+        for section in direction_entry_sections
+    )
+    first_table = direction_entry_sections[0].blocks[0]
+    assert [row.label for row in first_table.rows] == ["问题类型", "涉及集群", "涉及节点", "优先处置方向"]
+    assert "trade-redis" in _info_row_text(first_table, "涉及集群")
+    assert "\n" in _info_row_text(first_table, "优先处置方向")
 
 
 def test_redis_table_titles_have_no_hardcoded_number_prefix() -> None:
@@ -467,12 +511,175 @@ def test_problem_overview_merges_reviewed_log_issues_by_cluster_merge_key() -> N
     )
 
     report = analyze_inspection_dataset(dataset)
-    problem_section = next(s for s in report.sections if s.id == "problem_overview")
-    problem_text = "\n".join(b.text for b in problem_section.blocks if hasattr(b, "text"))
+    problem_text = _section_text(_chapter_sections(report, "problem_overview"))
 
-    assert problem_text.count("复制链路反复中断") == 1
+    priority_section = next(section for section in report.sections if section.id == "problem_overview__priority")
+    direction_section = next(
+        section
+        for section in report.sections
+        if section.id.startswith("problem_overview__node_direction__")
+        and section.title == "复制链路反复中断"
+    )
+    assert _section_text([priority_section]).count("复制链路反复中断") == 1
+    direction_table = next(block for block in direction_section.blocks if isinstance(block, InfoTableBlock))
+    assert _info_row_text(direction_table, "问题类型") == "复制链路反复中断"
     assert "10.0.0.1:6379" in problem_text
     assert "10.0.0.2:6379" in problem_text
+
+
+def test_problem_overview_priority_table_lists_all_significant_clusters() -> None:
+    clusters = []
+    for index in range(13):
+        clusters.append(
+            InspectionCluster(
+                cluster_id=f"cluster-{index}",
+                name=f"cluster-{index}",
+                cluster_type="redis-cluster",
+                nodes=(
+                    InspectionNode(
+                        node_id=f"10.0.0.{index}:6379",
+                        hostname=f"redis-{index}",
+                        ip=f"10.0.0.{index}",
+                        port=6379,
+                        role="master",
+                        version="7.0",
+                        source_path=f"/e/{index}",
+                        redis_facts={"used_memory": "900", "maxmemory": "1000"},
+                    ),
+                ),
+            )
+        )
+    dataset = InspectionDataset(
+        systems=(InspectionSystem(system_id="sys-1", name="System", clusters=tuple(clusters)),),
+        source_mode="offline",
+        input_sources=("/evidence",),
+    )
+
+    report = analyze_inspection_dataset(dataset)
+
+    priority_section = next(section for section in report.sections if section.id == "problem_overview__priority")
+    priority_table = next(block for block in priority_section.blocks if isinstance(block, TableBlock))
+    assert priority_table.title == "优先级速览"
+    assert len(priority_table.rows) == 13
+    assert {row[1] for row in priority_table.rows} == {f"cluster-{index}" for index in range(13)}
+
+
+def test_risk_remediation_merges_same_named_risks_within_cluster() -> None:
+    dataset = _multi_node_host_risk_dataset()
+
+    report = analyze_inspection_dataset(dataset)
+
+    risk_sections = _chapter_sections(report, "risk_remediation__trade-redis")
+    titles = [section.title for section in risk_sections]
+    assert titles.count("主机 Swap 已使用") == 1
+    assert titles.count("主机透明大页处于 always") == 1
+    swap_text = _section_text([section for section in risk_sections if section.title == "主机 Swap 已使用"])
+    thp_text = _section_text([section for section in risk_sections if section.title == "主机透明大页处于 always"])
+    assert "10.158.64.52:6379" in swap_text
+    assert "10.158.64.53:6379" in swap_text
+    assert "10.158.64.52:6379：SwapTotal" in swap_text
+    assert "10.158.64.53:6379：SwapTotal" in swap_text
+    assert "10.158.64.52:6379" in thp_text
+    assert "10.158.64.53:6379" in thp_text
+
+
+def test_risk_remediation_uses_rich_bold_labels_and_multiline_actions() -> None:
+    dataset = _multi_node_host_risk_dataset()
+
+    report = analyze_inspection_dataset(dataset)
+
+    swap_section = next(
+        section
+        for section in report.sections
+        if section.id.startswith("risk_remediation__trade-redis")
+        and section.title == "主机 Swap 已使用"
+    )
+    info_block = next(block for block in swap_section.blocks if isinstance(block, InfoTableBlock))
+    labels = [row.label for row in info_block.rows]
+    assert labels == [
+        "风险等级",
+        "风险描述",
+        "涉及对象",
+        "影响说明",
+        "证据",
+        "整改建议",
+    ]
+    text = _section_text([swap_section])
+    assert "Review：" not in text
+    assert "确认内存余量和 vm.swappiness 设置\n" in text
+    assert "必要时扩容或调整实例内存上限" in text
+    assert "确认内存余量和 vm.swappiness 设置；必要时扩容" not in text
+
+
+def test_log_risk_keeps_review_samples_and_confidence_naturally() -> None:
+    dataset = _make_simple_dataset(
+        reviewed_log_issues=(
+            ReviewedLogIssue(
+                cluster_id="cluster-a",
+                cluster_name="test-cluster",
+                issue_name="AOF重写频繁触发",
+                is_anomalous=True,
+                severity="medium",
+                why="AOF rewrite was reviewed as too frequent for the observed workload.",
+                affected_nodes=("10.0.0.1:6379",),
+                supporting_samples=("Background append only file rewriting started", "AOF rewrite again"),
+                recommendation="检查 AOF rewrite 触发阈值；评估写入峰值；保留重写时间线。",
+                merge_key="aof-rewrite-frequent",
+                category="log",
+                confidence="high",
+            ),
+        ),
+    )
+
+    report = analyze_inspection_dataset(dataset)
+
+    section = next(
+        section
+        for section in report.sections
+        if section.id.startswith("risk_remediation__test-cluster")
+        and section.title == "AOF重写频繁触发"
+    )
+    info_block = next(block for block in section.blocks if isinstance(block, InfoTableBlock))
+    assert [row.label for row in info_block.rows] == [
+        "风险等级",
+        "风险描述",
+        "涉及对象",
+        "影响说明",
+        "Review",
+        "证据",
+        "整改建议",
+    ]
+    text = _section_text([section])
+    assert "Review：AOF rewrite was reviewed as too frequent" in text
+    assert "Samples：" in text
+    assert "Background append only file rewriting started" in text
+    assert "Confidence：high" in text
+    assert "review=" not in text
+    assert "samples=" not in text
+    assert "检查 AOF rewrite 触发阈值\n" in text
+
+
+def test_risk_remediation_entries_are_info_tables_with_evidence_and_optional_review() -> None:
+    dataset = _multi_node_host_risk_dataset()
+
+    report = analyze_inspection_dataset(dataset)
+
+    risk_entry_sections = [
+        section
+        for section in report.sections
+        if section.id.startswith("risk_remediation__trade-redis__")
+        and section.title != "未发现明确风险"
+    ]
+    assert risk_entry_sections
+    assert all(section.level == 3 for section in risk_entry_sections)
+    assert all(
+        len(section.blocks) == 1 and isinstance(section.blocks[0], InfoTableBlock)
+        for section in risk_entry_sections
+    )
+    swap_table = next(section.blocks[0] for section in risk_entry_sections if section.title == "主机 Swap 已使用")
+    assert _info_row_text(swap_table, "证据")
+    assert _info_row_text(swap_table, "整改建议").count("\n") >= 1
+    assert all(row.label != "Review" for row in swap_table.rows)
 
 
 def test_reviewed_log_issue_cluster_scope_does_not_leak_foreign_nodes() -> None:
@@ -544,19 +751,11 @@ def test_reviewed_log_issue_cluster_scope_does_not_leak_foreign_nodes() -> None:
     other_section = next(section for section in report.sections if section.id == "risk_remediation__other-redis")
     assert all(not hasattr(block, "columns") for block in glp_section.blocks)
     assert all(not hasattr(block, "columns") for block in other_section.blocks)
-    glp_text = "\n".join(
-        block.text
-        for section in report.sections
-        if section.id.startswith("risk_remediation__glp-redis")
-        for block in section.blocks
-        if hasattr(block, "text")
+    glp_text = _section_text(
+        [section for section in report.sections if section.id.startswith("risk_remediation__glp-redis")]
     )
-    other_text = "\n".join(
-        block.text
-        for section in report.sections
-        if section.id.startswith("risk_remediation__other-redis")
-        for block in section.blocks
-        if hasattr(block, "text")
+    other_text = _section_text(
+        [section for section in report.sections if section.id.startswith("risk_remediation__other-redis")]
     )
     assert "日志显示复制链路异常" in glp_text
     assert "10.0.0.1:6379" in glp_text
@@ -570,9 +769,76 @@ def _risk_text(report):
         for section in report.sections
         if section.id.startswith("risk_remediation__")
     ]
-    return "\n".join(
-        block.text
-        for section in risk_sections
-        for block in section.blocks
-        if hasattr(block, "text")
+    return _section_text(risk_sections)
+
+
+def _section_text(sections) -> str:
+    lines: list[str] = []
+    for section in sections:
+        lines.append(section.title)
+        for block in section.blocks:
+            if isinstance(block, TextBlock):
+                lines.append(block.text)
+            elif isinstance(block, TableBlock):
+                lines.extend(", ".join(row) for row in block.rows)
+            elif isinstance(block, InfoTableBlock):
+                for row in block.rows:
+                    lines.append(f"{row.label}：{row.text}")
+    return "\n".join(lines)
+
+
+def _info_row_text(block: InfoTableBlock, label: str) -> str:
+    return next(row.text for row in block.rows if row.label == label)
+
+
+def _chapter_sections(report, prefix: str):
+    return [
+        section
+        for section in report.sections
+        if section.id == prefix or section.id.startswith(f"{prefix}__")
+    ]
+
+
+def _multi_node_host_risk_dataset() -> InspectionDataset:
+    nodes = (
+        InspectionNode(
+            node_id="10.158.64.52:6379",
+            hostname="redis-a",
+            ip="10.158.64.52",
+            port=6379,
+            role="master",
+            version="7.0",
+            source_path="/e/a",
+            redis_facts={"used_memory": "100", "maxmemory": "1000"},
+            host_facts={"swap": "SwapTotal: 1048576 kB / SwapFree: 524288 kB", "transparent_hugepage": "[always] madvise never"},
+        ),
+        InspectionNode(
+            node_id="10.158.64.53:6379",
+            hostname="redis-b",
+            ip="10.158.64.53",
+            port=6379,
+            role="replica",
+            version="7.0",
+            source_path="/e/b",
+            redis_facts={"used_memory": "100", "maxmemory": "1000"},
+            host_facts={"swap": "SwapTotal: 1048576 kB / SwapFree: 262144 kB", "transparent_hugepage": "[always] madvise never"},
+        ),
+    )
+    return InspectionDataset(
+        systems=(
+            InspectionSystem(
+                system_id="sys-1",
+                name="System",
+                clusters=(
+                    InspectionCluster(
+                        cluster_id="trade",
+                        name="trade-redis",
+                        cluster_type="redis-cluster",
+                        nodes=nodes,
+                    ),
+                ),
+            ),
+        ),
+        source_mode="offline",
+        input_sources=("/evidence",),
     )

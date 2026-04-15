@@ -104,6 +104,26 @@ def style_table(table, *, language: str, table_style_module: ModuleType) -> None
                     _apply_cell_shading(cell, table_style_module.DOCX_TABLE_HEADER_FILL)
 
 
+def style_info_table(table, *, language: str, table_style_module: ModuleType, label_fill: str = "D9E2F3") -> None:
+    theme = _theme_for(language)
+    table.style = table_style_module.DEFAULT_DOCX_TABLE_STYLE
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    table.autofit = False
+    _set_fixed_layout(table)
+
+    for row in table.rows:
+        for cell_index, cell in enumerate(row.cells):
+            cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
+            if cell_index == 0:
+                _apply_cell_shading(cell, label_fill)
+            for paragraph in cell.paragraphs:
+                paragraph.paragraph_format.space_before = Pt(0)
+                paragraph.paragraph_format.space_after = Pt(0)
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                for run in paragraph.runs:
+                    _apply_run_font(run, theme["table_header"].font if cell_index == 0 else theme["table_body"].font)
+
+
 def _apply_page_layout(document: Document) -> None:
     section = document.sections[0]
     section.top_margin = Cm(2.54)

@@ -632,11 +632,11 @@ def test_problem_overview_columns_come_from_skill_table_schema_asset(tmp_path: P
         RedisInspectionOfflineInput(sources=(source,), log_time_window_days=30)
     )
     report = analyze_inspection_dataset(dataset)
-    problem_section = next(section for section in report.sections if section.id == "problem_overview")
+    problem_section = next(section for section in report.sections if section.id == "problem_overview__priority")
     problem_table = next(block for block in problem_section.blocks if hasattr(block, "columns"))
 
     assert problem_table.title == "优先级速览"
-    assert problem_table.columns == ["优先级", "集群", "风险等级", "关键问题", "优先动作"]
+    assert problem_table.columns == ["序号", "集群", "风险等级", "关键问题"]
 
 
 def test_render_redis_inspection_report_consumes_dataset_handle(

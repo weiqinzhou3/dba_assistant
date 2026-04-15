@@ -100,6 +100,7 @@ def test_inspection_skill_package_contains_references_assets_and_scripts() -> No
         "references/report_writing_guide.md": ("artifact", "cluster", "chapter"),
         "assets/report_outline.md": ("第三章", "第九章", "docx"),
         "assets/table_schemas.yaml": ("problem_overview", "detailed_risk_items"),
+        "assets/section_contracts.yaml": ("chapter_3", "chapter_9", "info_table", "same_cluster_same_risk_name", "bold_labels"),
         "assets/log_issue_schema.json": ("is_anomalous", "merge_key", "supporting_samples"),
         "assets/cluster_merge_schema.json": ("affected_nodes", "merged_issues"),
         "assets/style_rules.md": ("highlight", "heading"),

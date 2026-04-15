@@ -1,21 +1,30 @@
 problem_overview:
   title: 优先级速览
   columns:
-    - 优先级
+    - 序号
     - 集群
     - 风险等级
     - 关键问题
-    - 优先动作
 
 detailed_risk_items:
-  presentation: paragraph_risk_entries
+  presentation: info_table_per_risk_item
+  merge_rule: same_cluster_same_risk_name
   fields:
     - 风险等级
     - 风险描述
     - 涉及对象
     - 影响说明
+    - Review
     - 证据
-    - 建议整改措施
+    - 整改建议
+  bold_labels:
+    - 风险等级
+    - 风险描述
+    - 涉及对象
+    - 影响说明
+    - Review
+    - 证据
+    - 整改建议
 
 log_candidates:
   title: Redis 日志候选摘要

@@ -6,7 +6,17 @@ from docx import Document
 
 from dba_assistant.core.analyzer.types import AnalysisResult, ReportSection, TableModel
 from dba_assistant.core.reporter.docx_reporter import DocxReporter
-from dba_assistant.core.reporter.report_model import AnalysisReport, ReportSectionModel, TableBlock, TextBlock, render_summary_text
+from dba_assistant.core.reporter.report_model import (
+    AnalysisReport,
+    InfoTableBlock,
+    InfoTableRow,
+    ReportSectionModel,
+    RichTextBlock,
+    TableBlock,
+    TextBlock,
+    TextRun,
+    render_summary_text,
+)
 from dba_assistant.core.reporter.types import OutputMode, ReportFormat, ReportOutputConfig
 
 
@@ -389,6 +399,207 @@ def test_docx_reporter_anomaly_highlighting_applies_red_to_keywords(tmp_path: Pa
     assert "FF0000" in document_xml, "Anomaly keywords should be highlighted in red"
 
 
+def test_docx_reporter_renders_rich_text_bold_label_runs(tmp_path: Path) -> None:
+    output_path = tmp_path / "rich-labels.docx"
+    report = AnalysisReport(
+        title="Redis 巡检报告",
+        sections=[
+            ReportSectionModel(
+                id="risk",
+                title="风险与整改建议",
+                level=1,
+                blocks=[
+                    RichTextBlock(
+                        lines=[
+                            [TextRun("风险等级：", bold=True), TextRun("medium。")],
+                            [TextRun("整改建议：", bold=True)],
+                            [TextRun("确认内存余量和 vm.swappiness 设置")],
+                            [TextRun("必要时扩容或调整实例内存上限")],
+                        ]
+                    )
+                ],
+            )
+        ],
+        language="zh-CN",
+    )
+
+    DocxReporter().render(
+        report,
+        ReportOutputConfig(
+            output_path=output_path,
+            mode=OutputMode.REPORT,
+            format=ReportFormat.DOCX,
+            template_name="inspection",
+            language="zh-CN",
+        ),
+    )
+
+    document = Document(output_path)
+    text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+    _, document_xml = _read_docx_xml(output_path)
+
+    assert "风险等级：medium。" in text
+    assert "确认内存余量和 vm.swappiness 设置" in text
+    assert "必要时扩容或调整实例内存上限" in text
+    assert _bold_run_exists(document_xml, "风险等级：")
+    assert _bold_run_exists(document_xml, "整改建议：")
+
+
+def test_docx_reporter_can_suppress_repeated_table_title_for_section_table(tmp_path: Path) -> None:
+    output_path = tmp_path / "hidden-table-title.docx"
+    report = AnalysisReport(
+        title="Redis 巡检报告",
+        sections=[
+            ReportSectionModel(id="problem_overview", title="问题概览与整改优先级", level=1),
+            ReportSectionModel(
+                id="problem_overview__priority",
+                title="优先级速览",
+                level=2,
+                blocks=[
+                    TableBlock(
+                        title="优先级速览",
+                        columns=["序号", "集群", "风险等级", "关键问题"],
+                        rows=[["1", "trade-redis", "medium", "主机 Swap 已使用"]],
+                        show_title=False,
+                    )
+                ],
+            ),
+        ],
+        language="zh-CN",
+    )
+
+    DocxReporter().render(
+        report,
+        ReportOutputConfig(
+            output_path=output_path,
+            mode=OutputMode.REPORT,
+            format=ReportFormat.DOCX,
+            template_name="inspection",
+            language="zh-CN",
+        ),
+    )
+
+    document = Document(output_path)
+    paragraph_text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+
+    assert "1.1 优先级速览" in paragraph_text
+    assert "1.1.1 优先级速览" not in paragraph_text
+
+
+def test_docx_reporter_renders_info_table_with_shaded_bold_left_column_and_multiline_values(
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "info-table.docx"
+    report = AnalysisReport(
+        title="Redis 巡检报告",
+        sections=[
+            ReportSectionModel(id="risk", title="风险与整改建议", level=1),
+            ReportSectionModel(id="risk__cluster", title="trade-redis", level=2),
+            ReportSectionModel(
+                id="risk__cluster__swap",
+                title="主机 Swap 已使用",
+                level=3,
+                blocks=[
+                    InfoTableBlock(
+                        rows=[
+                            InfoTableRow(label="风险等级", text="medium"),
+                            InfoTableRow(label="证据", text="10.158.64.52:6379：SwapTotal...\n10.158.64.53:6379：SwapTotal..."),
+                            InfoTableRow(
+                                label="整改建议",
+                                text="确认内存余量和 vm.swappiness 设置\n必要时扩容或调整实例内存上限",
+                                bullet=True,
+                            ),
+                        ]
+                    )
+                ],
+            ),
+        ],
+        language="zh-CN",
+    )
+
+    DocxReporter().render(
+        report,
+        ReportOutputConfig(
+            output_path=output_path,
+            mode=OutputMode.REPORT,
+            format=ReportFormat.DOCX,
+            template_name="inspection",
+            language="zh-CN",
+        ),
+    )
+
+    document = Document(output_path)
+    _, document_xml = _read_docx_xml(output_path)
+
+    assert len(document.tables) == 1
+    assert document.tables[0].cell(0, 0).text == "风险等级"
+    assert "确认内存余量和 vm.swappiness 设置" in document.tables[0].cell(2, 1).text
+    assert "必要时扩容或调整实例内存上限" in document.tables[0].cell(2, 1).text
+    assert _bold_run_exists(document_xml, "风险等级")
+    assert _cell_with_text_has_shading(document_xml, "风险等级", "D9E2F3")
+
+
+def test_docx_reporter_numbers_problem_direction_info_table_entries(tmp_path: Path) -> None:
+    output_path = tmp_path / "problem-direction-numbering.docx"
+    report = AnalysisReport(
+        title="Redis 巡检报告",
+        sections=[
+            ReportSectionModel(id="inspection_overview", title="巡检概述", level=1),
+            ReportSectionModel(id="scope_input", title="巡检范围与输入说明", level=1),
+            ReportSectionModel(id="problem_overview", title="问题概览与整改优先级", level=1),
+            ReportSectionModel(
+                id="problem_overview__priority",
+                title="优先级速览",
+                level=2,
+                blocks=[
+                    TableBlock(
+                        title="优先级速览",
+                        columns=["序号", "集群", "风险等级", "关键问题"],
+                        rows=[["1", "trade-redis", "medium", "主机 Swap 已使用"]],
+                        show_title=False,
+                    )
+                ],
+            ),
+            ReportSectionModel(id="problem_overview__node_direction", title="涉及节点与优先处置方向", level=2),
+            ReportSectionModel(
+                id="problem_overview__node_direction__swap",
+                title="主机 Swap 已使用",
+                level=3,
+                blocks=[
+                    InfoTableBlock(
+                        rows=[
+                            InfoTableRow(label="问题类型", text="主机 Swap 已使用"),
+                            InfoTableRow(label="涉及集群", text="trade-redis"),
+                            InfoTableRow(label="涉及节点", text="10.158.64.52:6379"),
+                            InfoTableRow(label="优先处置方向", text="确认内存余量\n必要时扩容", bullet=True),
+                        ]
+                    )
+                ],
+            ),
+        ],
+        language="zh-CN",
+    )
+
+    DocxReporter().render(
+        report,
+        ReportOutputConfig(
+            output_path=output_path,
+            mode=OutputMode.REPORT,
+            format=ReportFormat.DOCX,
+            template_name="inspection",
+            language="zh-CN",
+        ),
+    )
+
+    document = Document(output_path)
+    paragraph_text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+
+    assert "3.1 优先级速览" in paragraph_text
+    assert "3.1.1 优先级速览" not in paragraph_text
+    assert "3.2 涉及节点与优先处置方向" in paragraph_text
+    assert "3.2.1 主机 Swap 已使用" in paragraph_text
+
+
 def test_default_output_path_for_inspection_defaults_to_configured_artifact_policy(monkeypatch) -> None:
     from dba_assistant.core.reporter.output_path_policy import DEFAULT_ARTIFACT_DIR, default_report_output_path
 
@@ -406,3 +617,26 @@ def _read_docx_xml(output_path: Path) -> tuple[str, str]:
         styles_xml = archive.read("word/styles.xml").decode("utf-8")
         document_xml = archive.read("word/document.xml").decode("utf-8")
     return styles_xml, document_xml
+
+
+def _bold_run_exists(document_xml: str, text: str) -> bool:
+    root = ET.fromstring(document_xml)
+    for run in root.findall(".//w:r", WORD_NS):
+        texts = "".join(node.text or "" for node in run.findall("./w:t", WORD_NS))
+        if texts != text:
+            continue
+        if run.find("./w:rPr/w:b", WORD_NS) is not None:
+            return True
+    return False
+
+
+def _cell_with_text_has_shading(document_xml: str, text: str, fill: str) -> bool:
+    root = ET.fromstring(document_xml)
+    for cell in root.findall(".//w:tc", WORD_NS):
+        cell_text = "".join(node.text or "" for node in cell.findall(".//w:t", WORD_NS))
+        if cell_text != text:
+            continue
+        shading = cell.find("./w:tcPr/w:shd", WORD_NS)
+        if shading is not None and shading.attrib.get(f"{{{WORD_NS['w']}}}fill") == fill:
+            return True
+    return False

@@ -15,6 +15,7 @@ from dba_assistant.capabilities.redis_inspection_report.collectors.remote_redis_
     RedisInspectionRemoteCollector,
     RedisInspectionRemoteInput,
 )
+from dba_assistant.capabilities.redis_inspection_report.skill_assets import load_log_issue_schema
 from dba_assistant.capabilities.redis_inspection_report.types import (
     InspectionCluster,
     InspectionDataset,
@@ -49,6 +50,74 @@ def analyze_offline_inspection(
     return analyze_inspection(dataset, language=language, route="offline_inspection")
 
 
+def collect_offline_inspection_dataset(
+    sources: tuple[Path, ...],
+    *,
+    log_time_window_days: int | None = None,
+    log_start_time: str | None = None,
+    log_end_time: str | None = None,
+    collector: RedisInspectionOfflineCollector | None = None,
+) -> InspectionDataset:
+    return (collector or RedisInspectionOfflineCollector()).collect(
+        RedisInspectionOfflineInput(
+            sources=sources,
+            log_time_window_days=log_time_window_days,
+            log_start_time=log_start_time,
+            log_end_time=log_end_time,
+        )
+    )
+
+
+def summarize_inspection_dataset(
+    dataset: InspectionDataset,
+    *,
+    dataset_handle: str,
+    log_time_window_days: int | None = None,
+    log_start_time: str | None = None,
+    log_end_time: str | None = None,
+) -> dict[str, Any]:
+    clusters: list[dict[str, Any]] = []
+    for system in dataset.systems:
+        for cluster in system.clusters:
+            clusters.append(
+                {
+                    "system_id": system.system_id,
+                    "system_name": system.name,
+                    "cluster_id": cluster.cluster_id,
+                    "cluster_name": cluster.name,
+                    "cluster_type": cluster.cluster_type,
+                    "node_count": len(cluster.nodes),
+                    "nodes": [
+                        {
+                            "node_id": node.node_id,
+                            "hostname": node.hostname,
+                            "ip": node.ip,
+                            "port": node.port,
+                            "role": node.role,
+                            "version": node.version,
+                            "source_path": node.source_path,
+                            "log_candidate_count": str(node.log_facts.get("log_candidate_count") or "0"),
+                        }
+                        for node in cluster.nodes
+                    ],
+                }
+            )
+    return {
+        "dataset_handle": dataset_handle,
+        "source_mode": dataset.source_mode,
+        "input_sources": list(dataset.input_sources),
+        "system_count": len(dataset.systems),
+        "cluster_count": len(clusters),
+        "node_count": sum(len(cluster.nodes) for system in dataset.systems for cluster in system.clusters),
+        "log_time_window": {
+            "log_time_window_days": log_time_window_days,
+            "log_start_time": log_start_time,
+            "log_end_time": log_end_time,
+        },
+        "clusters": clusters,
+    }
+
+
 def collect_offline_log_review_payload(
     sources: tuple[Path, ...],
     *,
@@ -57,13 +126,12 @@ def collect_offline_log_review_payload(
     log_end_time: str | None = None,
     collector: RedisInspectionOfflineCollector | None = None,
 ) -> dict[str, Any]:
-    dataset = (collector or RedisInspectionOfflineCollector()).collect(
-        RedisInspectionOfflineInput(
-            sources=sources,
-            log_time_window_days=log_time_window_days,
-            log_start_time=log_start_time,
-            log_end_time=log_end_time,
-        )
+    dataset = collect_offline_inspection_dataset(
+        sources,
+        log_time_window_days=log_time_window_days,
+        log_start_time=log_start_time,
+        log_end_time=log_end_time,
+        collector=collector,
     )
     clusters: list[dict[str, Any]] = []
     for system in dataset.systems:
@@ -91,18 +159,7 @@ def collect_offline_log_review_payload(
         "source_mode": dataset.source_mode,
         "input_sources": list(dataset.input_sources),
         "clusters": clusters,
-        "review_output_schema": {
-            "issue_name": "string",
-            "is_anomalous": "boolean",
-            "severity": "critical|high|medium|low|info",
-            "why": "string",
-            "affected_nodes": ["node_id"],
-            "supporting_samples": ["raw_message"],
-            "recommendation": "string",
-            "merge_key": "string",
-            "category": "log",
-            "confidence": "high|medium|low",
-        },
+        "review_output_schema": load_log_issue_schema(),
     }
 
 
@@ -304,7 +361,9 @@ __all__ = [
     "analyze_inspection",
     "analyze_offline_inspection",
     "analyze_remote_inspection",
+    "collect_offline_inspection_dataset",
     "collect_offline_log_review_payload",
     "parse_reviewed_log_issues",
     "remote_snapshot_to_dataset",
+    "summarize_inspection_dataset",
 ]

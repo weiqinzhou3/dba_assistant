@@ -52,10 +52,12 @@ from dba_assistant.capabilities.redis_rdb_analysis.types import (
     SampleInput,
 )
 from dba_assistant.capabilities.redis_inspection_report.service import (
-    analyze_offline_inspection as _analyze_offline_inspection,
+    analyze_inspection as _analyze_inspection_dataset,
     analyze_remote_inspection as _analyze_remote_inspection,
+    collect_offline_inspection_dataset as _collect_offline_inspection_dataset,
     collect_offline_log_review_payload as _collect_offline_log_review_payload,
     parse_reviewed_log_issues as _parse_reviewed_log_issues,
+    summarize_inspection_dataset as _summarize_inspection_dataset,
 )
 from dba_assistant.tools.analyze_rdb import analyze_rdb_tool
 from dba_assistant.tools.mysql_tools import (
@@ -132,6 +134,7 @@ def build_all_tools(
         ),
     )
     tools: list = []
+    inspection_datasets: dict[str, Any] = {}
 
     # Local RDB analysis & inspection
     tools.append(
@@ -168,13 +171,28 @@ def build_all_tools(
         )
     )
     tools.append(
+        _make_collect_offline_inspection_dataset_tool(
+            context,
+            inspection_datasets,
+        )
+    )
+    tools.append(
         _make_redis_inspection_log_candidates_tool(
             context,
         )
     )
     tools.append(
-        _make_redis_inspection_report_tool(
+        _make_render_redis_inspection_report_tool(
             context,
+            inspection_datasets,
+            tool_name="render_redis_inspection_report",
+        )
+    )
+    tools.append(
+        _make_render_redis_inspection_report_tool(
+            context,
+            inspection_datasets,
+            tool_name="redis_inspection_report",
         )
     )
     tools.append(
@@ -253,13 +271,76 @@ def _make_inspect_local_rdb_tool():
 # Redis inspection report (Phase 4)
 # ---------------------------------------------------------------------------
 
-def _make_redis_inspection_report_tool(
+def _make_collect_offline_inspection_dataset_tool(
     context: ToolRuntimeContext,
+    dataset_store: dict[str, Any],
 ):
-    """Analyze Redis inspection evidence or live read-only Redis state."""
+    """Collect and normalize offline Redis inspection evidence."""
     request = context.request
 
-    def redis_inspection_report(
+    def collect_offline_inspection_dataset(
+        input_paths: str = "",
+        log_time_window_days: int | None = None,
+        log_start_time: str = "",
+        log_end_time: str = "",
+    ) -> str:
+        explicit_paths = [Path(p.strip()).expanduser() for p in input_paths.split(",") if p.strip()]
+        paths = explicit_paths or list(request.runtime_inputs.input_paths)
+        if not paths:
+            return "Error: input_paths are required for offline inspection dataset collection."
+
+        for path in paths:
+            if not path.exists():
+                return f"Error: input path does not exist on host filesystem: {path}"
+        effective_log_time_window_days, effective_log_start_time, effective_log_end_time = _resolve_inspection_log_window(
+            request,
+            log_time_window_days=log_time_window_days,
+            log_start_time=log_start_time,
+            log_end_time=log_end_time,
+        )
+        try:
+            dataset = _collect_offline_inspection_dataset(
+                tuple(paths),
+                log_time_window_days=effective_log_time_window_days,
+                log_start_time=effective_log_start_time,
+                log_end_time=effective_log_end_time,
+            )
+        except ValueError as exc:
+            return f"Error: {exc}"
+        handle = f"inspection_dataset_{len(dataset_store) + 1}"
+        dataset_store[handle] = dataset
+        payload = _summarize_inspection_dataset(
+            dataset,
+            dataset_handle=handle,
+            log_time_window_days=effective_log_time_window_days,
+            log_start_time=effective_log_start_time,
+            log_end_time=effective_log_end_time,
+        )
+        return json.dumps(payload, ensure_ascii=False, indent=2)
+
+    return _named_tool(
+        collect_offline_inspection_dataset,
+        "collect_offline_inspection_dataset",
+        (
+            "Collect and normalize offline Redis inspection evidence into a dataset_handle. "
+            "This tool only unpacks/parses evidence, groups systems/clusters/nodes, "
+            "applies deterministic log time-window filtering, and returns a dataset summary. "
+            "It does not render reports and does not perform log semantic judgement."
+        ),
+    )
+
+
+def _make_render_redis_inspection_report_tool(
+    context: ToolRuntimeContext,
+    dataset_store: dict[str, Any],
+    *,
+    tool_name: str,
+):
+    """Render an inspection report from a collected dataset or live read-only snapshot."""
+    request = context.request
+
+    def render_redis_inspection_report(
+        dataset_handle: str = "",
         input_paths: str = "",
         redis_host: str = "",
         redis_port: int | None = None,
@@ -268,41 +349,29 @@ def _make_redis_inspection_report_tool(
         output_mode: str = "",
         report_format: str = "",
         output_path: str = "",
+        reviewed_log_issues_json: str = "",
         log_time_window_days: int | None = None,
         log_start_time: str = "",
         log_end_time: str = "",
-        reviewed_log_issues_json: str = "",
     ) -> str:
-        explicit_paths = [Path(p.strip()).expanduser() for p in input_paths.split(",") if p.strip()]
-        request_paths = list(request.runtime_inputs.input_paths)
-        paths = explicit_paths or request_paths
+        if input_paths.strip():
+            return (
+                "Error: offline inspection rendering requires a dataset_handle. "
+                "Call collect_offline_inspection_dataset first."
+            )
         language = report_language or request.runtime_inputs.report_language
-
         try:
-            if paths:
-                effective_log_start_time = log_start_time or request.runtime_inputs.log_start_time
-                effective_log_end_time = log_end_time or request.runtime_inputs.log_end_time
-                effective_log_time_window_days = (
-                    log_time_window_days
-                    if log_time_window_days is not None
-                    else request.runtime_inputs.log_time_window_days
-                )
-                if (
-                    effective_log_time_window_days is None
-                    and not effective_log_start_time
-                    and not effective_log_end_time
-                ):
-                    effective_log_time_window_days = DEFAULT_INSPECTION_LOG_TIME_WINDOW_DAYS
-                for path in paths:
-                    if not path.exists():
-                        return f"Error: input path does not exist on host filesystem: {path}"
-                analysis = _analyze_offline_inspection(
-                    tuple(paths),
+            if dataset_handle.strip():
+                dataset = dataset_store.get(dataset_handle.strip())
+                if dataset is None:
+                    return f"Error: unknown inspection dataset_handle: {dataset_handle}"
+                reviewed_log_issues = _parse_reviewed_log_issues(reviewed_log_issues_json)
+                if reviewed_log_issues:
+                    dataset = replace(dataset, reviewed_log_issues=reviewed_log_issues)
+                analysis = _analyze_inspection_dataset(
+                    dataset,
                     language=language,
-                    log_time_window_days=effective_log_time_window_days,
-                    log_start_time=effective_log_start_time,
-                    log_end_time=effective_log_end_time,
-                    reviewed_log_issues=_parse_reviewed_log_issues(reviewed_log_issues_json),
+                    route="offline_inspection",
                 )
                 runtime_inputs = request.runtime_inputs
             else:
@@ -331,17 +400,17 @@ def _make_redis_inspection_report_tool(
         )
 
     return _named_tool(
-        redis_inspection_report,
-        "redis_inspection_report",
+        render_redis_inspection_report,
+        tool_name,
         (
-            "Analyze Redis inspection evidence and generate a summary or DOCX report. "
-            "Use local input_paths for offline inspection bundles/directories, or omit "
-            "input_paths to run a live read-only Redis inspection from redis_host/redis_port. "
-            "Parameters: input_paths (comma-separated files/directories/tar.gz bundles), "
+            "Render a Redis inspection summary or DOCX report from a dataset_handle "
+            "created by collect_offline_inspection_dataset, or from a live read-only "
+            "Redis target when no dataset_handle is supplied. "
+            "Parameters: dataset_handle, "
             "redis_host, redis_port, redis_db, report_language, output_mode, report_format, "
             "output_path (optional; omit output_path to use runtime default for docx), "
-            "log_time_window_days, log_start_time, log_end_time, reviewed_log_issues_json. "
-            "For log analysis, pass reviewed_log_issues_json after LLM semantic review of candidates."
+            "reviewed_log_issues_json. "
+            "For offline log analysis, pass reviewed_log_issues_json after LLM semantic review."
         ),
     )
 
@@ -362,19 +431,12 @@ def _make_redis_inspection_log_candidates_tool(
         paths = explicit_paths or list(request.runtime_inputs.input_paths)
         if not paths:
             return "Error: input_paths are required for offline log candidate review."
-        effective_log_start_time = log_start_time or request.runtime_inputs.log_start_time
-        effective_log_end_time = log_end_time or request.runtime_inputs.log_end_time
-        effective_log_time_window_days = (
-            log_time_window_days
-            if log_time_window_days is not None
-            else request.runtime_inputs.log_time_window_days
+        effective_log_time_window_days, effective_log_start_time, effective_log_end_time = _resolve_inspection_log_window(
+            request,
+            log_time_window_days=log_time_window_days,
+            log_start_time=log_start_time,
+            log_end_time=log_end_time,
         )
-        if (
-            effective_log_time_window_days is None
-            and not effective_log_start_time
-            and not effective_log_end_time
-        ):
-            effective_log_time_window_days = DEFAULT_INSPECTION_LOG_TIME_WINDOW_DAYS
         for path in paths:
             if not path.exists():
                 return f"Error: input path does not exist on host filesystem: {path}"
@@ -397,9 +459,32 @@ def _make_redis_inspection_log_candidates_tool(
             "This tool only performs deterministic evidence reduction: time filtering, "
             "timestamp parsing, deduplication, sampling, and cluster/node bucketing. "
             "It does not decide whether a candidate is anomalous. "
-            "After reviewing the JSON, call redis_inspection_report with reviewed_log_issues_json."
+            "After reviewing the JSON, call render_redis_inspection_report with reviewed_log_issues_json."
         ),
     )
+
+
+def _resolve_inspection_log_window(
+    request: NormalizedRequest,
+    *,
+    log_time_window_days: int | None,
+    log_start_time: str,
+    log_end_time: str,
+) -> tuple[int | None, str | None, str | None]:
+    effective_log_start_time = log_start_time or request.runtime_inputs.log_start_time
+    effective_log_end_time = log_end_time or request.runtime_inputs.log_end_time
+    effective_log_time_window_days = (
+        log_time_window_days
+        if log_time_window_days is not None
+        else request.runtime_inputs.log_time_window_days
+    )
+    if (
+        effective_log_time_window_days is None
+        and not effective_log_start_time
+        and not effective_log_end_time
+    ):
+        effective_log_time_window_days = DEFAULT_INSPECTION_LOG_TIME_WINDOW_DAYS
+    return effective_log_time_window_days, effective_log_start_time, effective_log_end_time
 
 
 # ---------------------------------------------------------------------------

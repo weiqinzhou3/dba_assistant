@@ -40,14 +40,23 @@ Use this skill when the user asks for any of the following:
 
 ### Offline Evidence Inspection
 
-Use `redis_inspection_report` with `input_paths` for local files, directories,
-mixed inputs, or `.tar.gz` evidence bundles. Supported evidence includes Redis
-INFO output, cluster nodes output, config snippets, host evidence, slowlog
-captures, and Redis log files.
+Use `collect_offline_inspection_dataset` with `input_paths` for local files,
+directories, mixed inputs, or `.tar.gz` evidence bundles. Supported evidence
+includes Redis INFO output, cluster nodes output, config snippets, host
+evidence, slowlog captures, and Redis log files.
 
 If the input evidence is missing or unsupported, return a missing evidence
 explanation. Do not guess topology, host facts, ports, or findings without
 evidence.
+
+The offline path is multi-tool:
+
+1. `collect_offline_inspection_dataset` parses evidence, applies deterministic
+   grouping, and returns a `dataset_handle`.
+2. If log analysis is requested, call `redis_inspection_log_candidates`, review
+   candidates with the LLM, and produce structured reviewed issues.
+3. Call `render_redis_inspection_report` with the `dataset_handle`,
+   `reviewed_log_issues_json` when available, and the requested output mode.
 
 When the user asks to analyze Redis logs, use a two-stage log path:
 

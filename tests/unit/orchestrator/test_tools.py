@@ -2,6 +2,7 @@ from pathlib import Path
 import json
 
 import pytest
+import yaml
 
 from dba_assistant.adaptors.redis_adaptor import RedisConnectionConfig
 from dba_assistant.application.request_models import NormalizedRequest, RdbOverrides, RuntimeInputs, Secrets
@@ -70,6 +71,9 @@ def test_build_all_tools_includes_local_rdb_without_connection() -> None:
     assert "analyze_local_rdb_stream" in names
     assert "analyze_preparsed_dataset" in names
     assert "redis_ping" in names
+    assert "collect_offline_inspection_dataset" in names
+    assert "redis_inspection_log_candidates" in names
+    assert "render_redis_inspection_report" in names
     assert "redis_inspection_report" in names
     assert "discover_remote_rdb" in names
     assert "ensure_remote_rdb_snapshot" in names
@@ -91,7 +95,9 @@ def test_build_all_tools_includes_redis_tools_with_connection() -> None:
     assert "redis_client_list" in names
     assert "redis_cluster_info" in names
     assert "redis_cluster_nodes" in names
+    assert "collect_offline_inspection_dataset" in names
     assert "redis_inspection_log_candidates" in names
+    assert "render_redis_inspection_report" in names
     assert "redis_inspection_report" in names
     assert "discover_remote_rdb" in names
     assert "ensure_remote_rdb_snapshot" in names
@@ -103,7 +109,7 @@ def test_report_tool_descriptions_do_not_require_model_invented_output_path() ->
     request = _make_request(runtime_inputs=RuntimeInputs(output_mode="summary", input_paths=()))
     tools = build_all_tools(request)
 
-    inspection_tool = next(t for t in tools if t.__name__ == "redis_inspection_report")
+    inspection_tool = next(t for t in tools if t.__name__ == "render_redis_inspection_report")
     rdb_tool = next(t for t in tools if t.__name__ == "analyze_local_rdb_stream")
 
     assert "output_path (file path, required for docx)" not in (inspection_tool.__doc__ or "").lower()
@@ -112,40 +118,92 @@ def test_report_tool_descriptions_do_not_require_model_invented_output_path() ->
     assert "omit output_path to use runtime default" in (rdb_tool.__doc__ or "").lower()
 
 
-def test_redis_inspection_report_tool_validates_offline_paths_before_analysis(monkeypatch) -> None:
-    from dba_assistant.core.reporter.report_model import AnalysisReport, ReportSectionModel, TextBlock
-
-    captured: dict[str, object] = {}
-
-    def fake_analyze_offline_inspection(paths, *, language="zh-CN"):
-        captured["paths"] = tuple(paths)
-        return AnalysisReport(
-            title="Redis 巡检报告",
-            sections=[ReportSectionModel(id="summary", title="摘要", blocks=[TextBlock(text="ok")])],
-            metadata={"route": "offline_inspection"},
-            language=language,
-        )
-
-    monkeypatch.setattr(
-        "dba_assistant.orchestrator.tools._analyze_offline_inspection",
-        fake_analyze_offline_inspection,
-    )
-    monkeypatch.setattr(
-        "dba_assistant.core.reporter.report_model.render_summary_text",
-        lambda report, *, language=None: "inspection summary",
-    )
-
+def test_collect_offline_inspection_dataset_validates_paths_before_collection() -> None:
     request = _make_request(runtime_inputs=RuntimeInputs(output_mode="summary", input_paths=()))
     tools = build_all_tools(request)
-    inspection_tool = next(t for t in tools if t.__name__ == "redis_inspection_report")
+    collect_tool = next(t for t in tools if t.__name__ == "collect_offline_inspection_dataset")
 
-    result = inspection_tool(input_paths="/tmp/definitely-missing-inspection-bundle")
+    result = collect_tool(input_paths="/tmp/definitely-missing-inspection-bundle")
 
     assert result == (
         "Error: input path does not exist on host filesystem: "
         "/tmp/definitely-missing-inspection-bundle"
     )
-    assert captured == {}
+
+
+def test_offline_inspection_uses_collect_review_then_render_tools(tmp_path: Path) -> None:
+    source = tmp_path / "inspection"
+    source.mkdir()
+    (source / "info.txt").write_text(
+        "\n".join(
+            [
+                "redis_version:7.0.15",
+                "role:master",
+                "tcp_port:6379",
+                "cluster_enabled:1",
+                "cluster_state:ok",
+                "used_memory:100",
+                "maxmemory:1000",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (source / "redis.log").write_text(
+        "2026-04-14 09:00:00 # OOM command not allowed when used memory > 'maxmemory'\n",
+        encoding="utf-8",
+    )
+
+    request = _make_request(runtime_inputs=RuntimeInputs(output_mode="summary", input_paths=()))
+    tools = build_all_tools(request)
+    collect_tool = next(t for t in tools if t.__name__ == "collect_offline_inspection_dataset")
+    candidates_tool = next(t for t in tools if t.__name__ == "redis_inspection_log_candidates")
+    render_tool = next(t for t in tools if t.__name__ == "render_redis_inspection_report")
+
+    collect_payload = json.loads(
+        collect_tool(
+            input_paths=str(source),
+            log_start_time="2026-04-01 00:00:00",
+            log_end_time="2026-04-30 23:59:59",
+        )
+    )
+    candidates_payload = json.loads(
+        candidates_tool(
+            input_paths=str(source),
+            log_start_time="2026-04-01 00:00:00",
+            log_end_time="2026-04-30 23:59:59",
+        )
+    )
+    reviewed_payload = json.dumps(
+        {
+            "issues": [
+                {
+                    "cluster_id": collect_payload["clusters"][0]["cluster_id"],
+                    "cluster_name": collect_payload["clusters"][0]["cluster_name"],
+                    "issue_name": "Redis 日志显示 OOM",
+                    "is_anomalous": True,
+                    "severity": "high",
+                    "why": "LLM reviewed OOM as memory pressure evidence.",
+                    "affected_nodes": [collect_payload["clusters"][0]["nodes"][0]["node_id"]],
+                    "supporting_samples": [candidates_payload["clusters"][0]["log_candidates"][0]["raw_message"]],
+                    "recommendation": "检查 maxmemory、业务写入峰值和淘汰策略。",
+                    "merge_key": "oom-memory-pressure",
+                    "category": "log",
+                    "confidence": "high",
+                }
+            ]
+        }
+    )
+
+    result = render_tool(
+        dataset_handle=collect_payload["dataset_handle"],
+        reviewed_log_issues_json=reviewed_payload,
+        output_mode="summary",
+        report_format="summary",
+    )
+
+    assert collect_payload["dataset_handle"].startswith("inspection_dataset_")
+    assert "Redis 日志显示 OOM" in result
+    assert "问题概览与整改优先级" in result
 
 
 def test_redis_inspection_log_candidates_tool_returns_neutral_review_payload(tmp_path: Path) -> None:
@@ -174,138 +232,132 @@ def test_redis_inspection_log_candidates_tool_returns_neutral_review_payload(tmp
     assert "abnormal" not in json.dumps(payload).lower()
 
 
-def test_redis_inspection_report_tool_passes_log_time_window_fields(monkeypatch, tmp_path: Path) -> None:
-    from dba_assistant.core.reporter.report_model import AnalysisReport, ReportSectionModel, TextBlock
-
+def test_log_candidates_tool_loads_review_schema_from_skill_asset(tmp_path: Path) -> None:
     source = tmp_path / "inspection"
     source.mkdir()
-    captured: dict[str, object] = {}
+    (source / "info.txt").write_text("redis_version:7.0.15\nrole:master\ntcp_port:6379\n", encoding="utf-8")
+    (source / "redis.log").write_text(
+        "2026-04-14 09:00:00 # OOM command not allowed\n",
+        encoding="utf-8",
+    )
+    schema_path = Path("skills/redis-inspection-report/assets/log_issue_schema.json")
+    expected_schema = json.loads(schema_path.read_text(encoding="utf-8"))
 
-    def fake_analyze_offline_inspection(
-        paths,
-        *,
-        language="zh-CN",
-        log_time_window_days=None,
-        log_start_time=None,
-        log_end_time=None,
-        reviewed_log_issues=(),
-    ):
-        captured["paths"] = tuple(paths)
-        captured["log_time_window_days"] = log_time_window_days
-        captured["log_start_time"] = log_start_time
-        captured["log_end_time"] = log_end_time
-        return AnalysisReport(
-            title="Redis 巡检报告",
-            sections=[ReportSectionModel(id="summary", title="摘要", blocks=[TextBlock(text="ok")])],
-            metadata={"route": "offline_inspection"},
-            language=language,
+    request = _make_request(runtime_inputs=RuntimeInputs(output_mode="summary", input_paths=()))
+    candidates_tool = next(t for t in build_all_tools(request) if t.__name__ == "redis_inspection_log_candidates")
+
+    payload = json.loads(
+        candidates_tool(
+            input_paths=str(source),
+            log_start_time="2026-04-01 00:00:00",
+            log_end_time="2026-04-30 23:59:59",
         )
+    )
 
-    monkeypatch.setattr(
-        "dba_assistant.orchestrator.tools._analyze_offline_inspection",
-        fake_analyze_offline_inspection,
-    )
-    monkeypatch.setattr(
-        "dba_assistant.core.reporter.report_model.render_summary_text",
-        lambda report, *, language=None: "inspection summary",
-    )
+    assert payload["review_output_schema"] == expected_schema
+
+
+def test_collect_offline_inspection_dataset_applies_explicit_log_time_window(tmp_path: Path) -> None:
+    source = tmp_path / "inspection"
+    source.mkdir()
+    (source / "info.txt").write_text("redis_version:7.0.15\nrole:master\ntcp_port:6379\n", encoding="utf-8")
 
     request = _make_request(runtime_inputs=RuntimeInputs(output_mode="summary", input_paths=()))
     tools = build_all_tools(request)
-    inspection_tool = next(t for t in tools if t.__name__ == "redis_inspection_report")
-
-    result = inspection_tool(
-        input_paths=str(source),
-        log_time_window_days=7,
-        log_start_time="2026-04-01T00:00:00+08:00",
-        log_end_time="2026-04-08T00:00:00+08:00",
+    collect_tool = next(t for t in tools if t.__name__ == "collect_offline_inspection_dataset")
+    payload = json.loads(
+        collect_tool(
+            input_paths=str(source),
+            log_time_window_days=7,
+            log_start_time="2026-04-01T00:00:00+08:00",
+            log_end_time="2026-04-08T00:00:00+08:00",
+        )
     )
 
-    assert "inspection" in result.lower()
-    assert captured["paths"] == (source,)
-    assert captured["log_time_window_days"] == 7
-    assert captured["log_start_time"] == "2026-04-01T00:00:00+08:00"
-    assert captured["log_end_time"] == "2026-04-08T00:00:00+08:00"
+    assert payload["input_sources"] == [str(source)]
+    assert payload["log_time_window"] == {
+        "log_time_window_days": 7,
+        "log_start_time": "2026-04-01T00:00:00+08:00",
+        "log_end_time": "2026-04-08T00:00:00+08:00",
+    }
 
 
-def test_redis_inspection_report_tool_applies_skill_default_30_day_log_window(
-    monkeypatch,
+def test_collect_offline_inspection_dataset_applies_skill_default_30_day_log_window(
     tmp_path: Path,
 ) -> None:
-    from dba_assistant.core.reporter.report_model import AnalysisReport, ReportSectionModel, TextBlock
+    source = tmp_path / "inspection"
+    source.mkdir()
+    (source / "info.txt").write_text("redis_version:7.0.15\nrole:master\ntcp_port:6379\n", encoding="utf-8")
+
+    request = _make_request(runtime_inputs=RuntimeInputs(output_mode="summary", input_paths=()))
+    collect_tool = next(t for t in build_all_tools(request) if t.__name__ == "collect_offline_inspection_dataset")
+
+    payload = json.loads(collect_tool(input_paths=str(source)))
+
+    assert payload["log_time_window"] == {
+        "log_time_window_days": 30,
+        "log_start_time": None,
+        "log_end_time": None,
+    }
+
+
+def test_problem_overview_columns_come_from_skill_table_schema_asset(tmp_path: Path) -> None:
+    from dba_assistant.capabilities.redis_inspection_report.analyzer import analyze_inspection_dataset
+    from dba_assistant.capabilities.redis_inspection_report.collectors.offline_evidence_collector import (
+        RedisInspectionOfflineCollector,
+        RedisInspectionOfflineInput,
+    )
 
     source = tmp_path / "inspection"
     source.mkdir()
-    captured: dict[str, object] = {}
-
-    def fake_analyze_offline_inspection(
-        paths,
-        *,
-        language="zh-CN",
-        log_time_window_days=None,
-        log_start_time=None,
-        log_end_time=None,
-        reviewed_log_issues=(),
-    ):
-        captured["log_time_window_days"] = log_time_window_days
-        captured["log_start_time"] = log_start_time
-        captured["log_end_time"] = log_end_time
-        return AnalysisReport(
-            title="Redis 巡检报告",
-            sections=[ReportSectionModel(id="summary", title="摘要", blocks=[TextBlock(text="ok")])],
-            metadata={"route": "offline_inspection"},
-            language=language,
-        )
-
-    monkeypatch.setattr(
-        "dba_assistant.orchestrator.tools._analyze_offline_inspection",
-        fake_analyze_offline_inspection,
+    (source / "info.txt").write_text(
+        "redis_version:7.0.15\nrole:master\ntcp_port:6379\nused_memory:920\nmaxmemory:1000\n",
+        encoding="utf-8",
     )
-    monkeypatch.setattr(
-        "dba_assistant.core.reporter.report_model.render_summary_text",
-        lambda report, *, language=None: "inspection summary",
+    expected_columns = yaml.safe_load(
+        Path("skills/redis-inspection-report/assets/table_schemas.yaml").read_text(encoding="utf-8")
+    )["problem_overview"]["columns"]
+
+    dataset = RedisInspectionOfflineCollector().collect(
+        RedisInspectionOfflineInput(sources=(source,), log_time_window_days=30)
     )
+    report = analyze_inspection_dataset(dataset)
+    problem_section = next(section for section in report.sections if section.id == "problem_overview")
+    problem_table = next(block for block in problem_section.blocks if hasattr(block, "columns"))
+
+    assert problem_table.columns == expected_columns
+
+
+def test_render_redis_inspection_report_consumes_dataset_handle(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "inspection"
+    source.mkdir()
+    (source / "info.txt").write_text("redis_version:7.0.15\nrole:master\ntcp_port:6379\n", encoding="utf-8")
 
     request = _make_request(runtime_inputs=RuntimeInputs(output_mode="summary", input_paths=()))
-    inspection_tool = next(t for t in build_all_tools(request) if t.__name__ == "redis_inspection_report")
+    tools = build_all_tools(request)
+    collect_tool = next(t for t in tools if t.__name__ == "collect_offline_inspection_dataset")
+    inspection_tool = next(t for t in tools if t.__name__ == "render_redis_inspection_report")
+    handle = json.loads(collect_tool(input_paths=str(source)))["dataset_handle"]
 
-    result = inspection_tool(input_paths=str(source))
+    result = inspection_tool(
+        dataset_handle=handle,
+        log_time_window_days=7,
+        output_mode="summary",
+        report_format="summary",
+    )
 
     assert "inspection" in result.lower()
-    assert captured["log_time_window_days"] == 30
-    assert captured["log_start_time"] is None
-    assert captured["log_end_time"] is None
 
 
 def test_redis_inspection_report_docx_without_output_path_defaults_to_tmp(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    from dba_assistant.core.reporter.report_model import AnalysisReport, ReportSectionModel, TextBlock
-
     source = tmp_path / "inspection"
     source.mkdir()
-
-    def fake_analyze_offline_inspection(
-        paths,
-        *,
-        language="zh-CN",
-        log_time_window_days=None,
-        log_start_time=None,
-        log_end_time=None,
-        reviewed_log_issues=(),
-    ):
-        return AnalysisReport(
-            title="Redis 巡检报告",
-            sections=[ReportSectionModel(id="summary", title="摘要", blocks=[TextBlock(text="ok")])],
-            metadata={"route": "offline_inspection"},
-            language=language,
-        )
-
-    monkeypatch.setattr(
-        "dba_assistant.orchestrator.tools._analyze_offline_inspection",
-        fake_analyze_offline_inspection,
-    )
+    (source / "info.txt").write_text("redis_version:7.0.15\nrole:master\ntcp_port:6379\n", encoding="utf-8")
     monkeypatch.setattr(
         "dba_assistant.core.reporter.output_path_policy._timestamp_slug",
         lambda: "20260414_010203",
@@ -314,63 +366,43 @@ def test_redis_inspection_report_docx_without_output_path_defaults_to_tmp(
     default_path.unlink(missing_ok=True)
 
     request = _make_request(runtime_inputs=RuntimeInputs(output_mode="summary", input_paths=()))
-    inspection_tool = next(t for t in build_all_tools(request) if t.__name__ == "redis_inspection_report")
+    tools = build_all_tools(request)
+    collect_tool = next(t for t in tools if t.__name__ == "collect_offline_inspection_dataset")
+    inspection_tool = next(t for t in tools if t.__name__ == "render_redis_inspection_report")
+    handle = json.loads(collect_tool(input_paths=str(source)))["dataset_handle"]
 
-    result = inspection_tool(input_paths=str(source), output_mode="report", report_format="docx")
+    result = inspection_tool(dataset_handle=handle, output_mode="report", report_format="docx")
 
     assert result == str(default_path)
     assert Path(result).exists()
 
 
 def test_redis_inspection_report_tool_passes_reviewed_log_issues_json(
-    monkeypatch,
     tmp_path: Path,
 ) -> None:
-    from dba_assistant.core.reporter.report_model import AnalysisReport, ReportSectionModel, TextBlock
-
     source = tmp_path / "inspection"
     source.mkdir()
-    captured: dict[str, object] = {}
-
-    def fake_analyze_offline_inspection(
-        paths,
-        *,
-        language="zh-CN",
-        log_time_window_days=None,
-        log_start_time=None,
-        log_end_time=None,
-        reviewed_log_issues=(),
-    ):
-        captured["reviewed_log_issues"] = reviewed_log_issues
-        return AnalysisReport(
-            title="Redis 巡检报告",
-            sections=[ReportSectionModel(id="summary", title="摘要", blocks=[TextBlock(text="ok")])],
-            metadata={"route": "offline_inspection"},
-            language=language,
-        )
-
-    monkeypatch.setattr(
-        "dba_assistant.orchestrator.tools._analyze_offline_inspection",
-        fake_analyze_offline_inspection,
-    )
-    monkeypatch.setattr(
-        "dba_assistant.core.reporter.report_model.render_summary_text",
-        lambda report, *, language=None: "inspection summary",
-    )
+    (source / "info.txt").write_text("redis_version:7.0.15\nrole:master\ntcp_port:6379\n", encoding="utf-8")
 
     request = _make_request(runtime_inputs=RuntimeInputs(output_mode="summary", input_paths=()))
-    inspection_tool = next(t for t in build_all_tools(request) if t.__name__ == "redis_inspection_report")
+    tools = build_all_tools(request)
+    collect_tool = next(t for t in tools if t.__name__ == "collect_offline_inspection_dataset")
+    inspection_tool = next(t for t in tools if t.__name__ == "render_redis_inspection_report")
+    collect_payload = json.loads(collect_tool(input_paths=str(source)))
+    handle = collect_payload["dataset_handle"]
+    cluster = collect_payload["clusters"][0]
+    node_id = cluster["nodes"][0]["node_id"]
     reviewed_payload = json.dumps(
         {
             "issues": [
                 {
-                    "cluster_id": "c1",
-                    "cluster_name": "c1",
+                    "cluster_id": cluster["cluster_id"],
+                    "cluster_name": cluster["cluster_name"],
                     "issue_name": "OOM",
                     "is_anomalous": True,
                     "severity": "high",
                     "why": "reviewed",
-                    "affected_nodes": ["n1"],
+                    "affected_nodes": [node_id],
                     "supporting_samples": ["OOM"],
                     "recommendation": "fix",
                     "merge_key": "oom",
@@ -382,15 +414,46 @@ def test_redis_inspection_report_tool_passes_reviewed_log_issues_json(
     )
 
     result = inspection_tool(
-        input_paths=str(source),
+        dataset_handle=handle,
         reviewed_log_issues_json=reviewed_payload,
+        output_mode="summary",
+        report_format="summary",
     )
 
-    assert "inspection" in result.lower()
-    reviewed = captured["reviewed_log_issues"]
-    assert reviewed[0].issue_name == "OOM"
-    assert reviewed[0].is_anomalous is True
-    assert reviewed[0].affected_nodes == ("n1",)
+    assert "OOM" in result
+    assert "reviewed" in result
+
+
+def test_render_redis_inspection_report_live_readonly_path_still_available(monkeypatch) -> None:
+    from dba_assistant.core.reporter.report_model import AnalysisReport, ReportSectionModel, TextBlock
+
+    captured: dict[str, object] = {}
+
+    def fake_analyze_remote_inspection(connection, *, language="zh-CN"):
+        captured["host"] = connection.host
+        captured["port"] = connection.port
+        return AnalysisReport(
+            title="Redis 巡检报告",
+            sections=[ReportSectionModel(id="summary", title="摘要", blocks=[TextBlock(text="live ok")])],
+            metadata={"route": "online_inspection"},
+            language=language,
+        )
+
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._analyze_remote_inspection",
+        fake_analyze_remote_inspection,
+    )
+    request = _make_request(runtime_inputs=RuntimeInputs(output_mode="summary", input_paths=()))
+    connection = RedisConnectionConfig(host="redis.example", port=6380)
+    render_tool = next(
+        t for t in build_all_tools(request, connection=connection)
+        if t.__name__ == "render_redis_inspection_report"
+    )
+
+    result = render_tool(redis_port=6380, output_mode="summary", report_format="summary")
+
+    assert "live ok" in result
+    assert captured == {"host": "redis.example", "port": 6380}
 
 
 def test_fetch_remote_rdb_via_ssh_tool_does_not_expose_ssh_secret_parameters() -> None:

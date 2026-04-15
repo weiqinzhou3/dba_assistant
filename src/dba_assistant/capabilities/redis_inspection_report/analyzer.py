@@ -11,6 +11,10 @@ from dba_assistant.capabilities.redis_inspection_report.types import (
     InspectionNode,
     ReviewedLogIssue,
 )
+from dba_assistant.capabilities.redis_inspection_report.skill_assets import (
+    outline_title,
+    table_schema,
+)
 from dba_assistant.core.reporter.report_model import (
     AnalysisReport,
     ReportSectionModel,
@@ -343,7 +347,7 @@ def _overview_section(
 ) -> ReportSectionModel:
     return ReportSectionModel(
         id="inspection_overview",
-        title="巡检概述",
+        title=outline_title(0, "巡检概述"),
         blocks=[
             TextBlock(
                 text=(
@@ -379,7 +383,7 @@ def _scope_section(
         rows = [["1", dataset.source_mode]]
     return ReportSectionModel(
         id="scope_input",
-        title="巡检范围与输入说明",
+        title=outline_title(1, "巡检范围与输入说明"),
         blocks=[
             TextBlock(text=f"本次巡检输入模式为 {dataset.source_mode}，识别到 {system_count} 个系统、{cluster_count} 个集群、{node_count} 个节点。"),
             TableBlock(title="输入来源", columns=["序号", "来源"], rows=rows),
@@ -420,7 +424,7 @@ def _architecture_section(dataset: InspectionDataset, findings: list[InspectionF
     )
     return ReportSectionModel(
         id="architecture_overview",
-        title="集群识别与架构总览",
+        title=outline_title(3, "集群识别与架构总览"),
         blocks=blocks,
     )
 
@@ -434,9 +438,14 @@ def _problem_overview_section(
     high_total = severity_counts["critical"] + severity_counts["high"]
     if not rows:
         rows = [["-", "未发现需要优先整改的明确问题", "-", "info", "当前证据未显示高/中风险", "保持例行巡检和容量监控。"]]
+    table_title, table_columns = table_schema(
+        "problem_overview",
+        fallback_title="集群级问题概览与整改优先级",
+        fallback_columns=["集群", "关键问题", "涉及节点", "风险等级", "影响", "优先整改建议"],
+    )
     return ReportSectionModel(
         id="problem_overview",
-        title="问题概览与整改优先级",
+        title=outline_title(2, "问题概览与整改优先级"),
         blocks=[
             TextBlock(
                 text=(
@@ -445,8 +454,8 @@ def _problem_overview_section(
                 )
             ),
             TableBlock(
-                title="集群级问题概览与整改优先级",
-                columns=["集群", "关键问题", "涉及节点", "风险等级", "影响", "优先整改建议"],
+                title=table_title,
+                columns=table_columns,
                 rows=rows,
             ),
         ],
@@ -529,7 +538,7 @@ def _method_section(dataset: InspectionDataset) -> ReportSectionModel:
     method = "离线证据包解析、节点归并、确定性证据归约、LLM 日志语义审阅、共享报告渲染" if dataset.source_mode == "offline" else "在线只读 Redis 探测、统一数据建模、确定性规则分析、共享报告渲染"
     return ReportSectionModel(
         id="inspection_method",
-        title="巡检目标及方法",
+        title=outline_title(4, "巡检目标及方法"),
         blocks=[
             TextBlock(text="巡检目标是识别 Redis 架构、配置、运行状态、主机环境和日志异常风险，并形成可审计的整改建议。"),
             TextBlock(text=f"本次采用方法：{method}。在线路径仅使用只读命令，不执行写入或自动修复。"),
@@ -540,7 +549,7 @@ def _method_section(dataset: InspectionDataset) -> ReportSectionModel:
 def _system_config_overview_section(findings: list[InspectionFinding]) -> ReportSectionModel:
     return ReportSectionModel(
         id="system_config",
-        title="系统配置检查",
+        title=outline_title(5, "系统配置检查"),
         blocks=[
             TextBlock(text=f"配置检查重点覆盖 maxmemory、淘汰策略、持久化配置等项目；相关风险项 {sum(1 for item in findings if item.category == 'redis')} 个。"),
         ],
@@ -592,7 +601,7 @@ def _system_config_cluster_sections(dataset: InspectionDataset) -> list[ReportSe
 def _os_overview_section(findings: list[InspectionFinding]) -> ReportSectionModel:
     return ReportSectionModel(
         id="os_inspection",
-        title="操作系统检查",
+        title=outline_title(6, "操作系统检查"),
         blocks=[
             TextBlock(text=f"操作系统检查覆盖平台、内核、透明大页、swap 等主机侧证据；相关风险项 {sum(1 for item in findings if item.category == 'os')} 个。"),
         ],
@@ -644,7 +653,7 @@ def _os_cluster_sections(dataset: InspectionDataset) -> list[ReportSectionModel]
 def _redis_overview_section(findings: list[InspectionFinding]) -> ReportSectionModel:
     return ReportSectionModel(
         id="redis_database",
-        title="Redis 数据库检查",
+        title=outline_title(7, "Redis 数据库检查"),
         blocks=[
             TextBlock(text=f"Redis 数据库检查覆盖架构、角色、版本、内存、持久化、key 空间、复制、Cluster 状态、慢日志和经审阅的日志问题；相关风险项 {sum(1 for item in findings if item.category in {'redis', 'log'})} 个。"),
         ],
@@ -711,7 +720,7 @@ def _risk_overview_section(findings: list[InspectionFinding]) -> ReportSectionMo
     severity_counts = Counter(finding.severity for finding in findings)
     return ReportSectionModel(
         id="risk_remediation",
-        title="风险与整改建议",
+        title=outline_title(8, "风险与整改建议"),
         blocks=[
             TableBlock(
                 title="风险等级汇总",
@@ -730,6 +739,11 @@ def _risk_overview_section(findings: list[InspectionFinding]) -> ReportSectionMo
 
 def _risk_cluster_sections(dataset: InspectionDataset, findings: list[InspectionFinding]) -> list[ReportSectionModel]:
     sections: list[ReportSectionModel] = []
+    table_title, table_columns = table_schema(
+        "detailed_risk_items",
+        fallback_title="风险与整改建议清单",
+        fallback_columns=["风险名称", "风险等级", "发现对象", "影响说明", "证据", "建议整改措施"],
+    )
     for cluster in _iter_clusters(dataset):
         cluster_findings = _findings_for_cluster(cluster, findings)
         rows = [
@@ -751,8 +765,8 @@ def _risk_cluster_sections(dataset: InspectionDataset, findings: list[Inspection
                 blocks=[
                     TextBlock(text=f"{cluster.name} 风险项按等级排序，整改建议需要结合原始证据复核后执行。"),
                     TableBlock(
-                        title="风险与整改建议清单",
-                        columns=["风险名称", "风险等级", "发现对象", "影响说明", "证据", "建议整改措施"],
+                        title=table_title,
+                        columns=table_columns,
                         rows=rows or [["未发现明确风险", "info", "-", "-", "-", "保持例行巡检和容量监控。"]],
                     ),
                 ],
@@ -783,7 +797,7 @@ def _appendix_section(dataset: InspectionDataset) -> ReportSectionModel:
     ]
     return ReportSectionModel(
         id="appendix",
-        title="附录",
+        title=outline_title(9, "附录"),
         blocks=[
             TextBlock(text="附录保留节点来源与关键标识，便于后续回溯证据。"),
             TableBlock(title="节点清单", columns=["集群", "节点", "主机名", "IP", "端口", "来源"], rows=rows or [["-", "-", "-", "-", "-", "-"]]),

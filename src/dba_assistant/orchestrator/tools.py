@@ -54,6 +54,7 @@ from dba_assistant.capabilities.redis_rdb_analysis.types import (
 from dba_assistant.capabilities.redis_inspection_report.service import (
     analyze_inspection as _analyze_inspection_dataset,
     analyze_remote_inspection as _analyze_remote_inspection,
+    build_log_review_payload as _build_log_review_payload,
     collect_offline_inspection_dataset as _collect_offline_inspection_dataset,
     collect_offline_log_review_payload as _collect_offline_log_review_payload,
     parse_reviewed_log_issues as _parse_reviewed_log_issues,
@@ -179,6 +180,7 @@ def build_all_tools(
     tools.append(
         _make_redis_inspection_log_candidates_tool(
             context,
+            inspection_datasets,
         )
     )
     tools.append(
@@ -417,20 +419,28 @@ def _make_render_redis_inspection_report_tool(
 
 def _make_redis_inspection_log_candidates_tool(
     context: ToolRuntimeContext,
+    dataset_store: dict[str, Any],
 ):
     """Collect neutral Redis log candidates for LLM semantic review."""
     request = context.request
 
     def redis_inspection_log_candidates(
+        dataset_handle: str = "",
         input_paths: str = "",
         log_time_window_days: int | None = None,
         log_start_time: str = "",
         log_end_time: str = "",
     ) -> str:
+        if dataset_handle.strip():
+            dataset = dataset_store.get(dataset_handle.strip())
+            if dataset is None:
+                return f"Error: unknown inspection dataset_handle: {dataset_handle}"
+            return json.dumps(_build_log_review_payload(dataset), ensure_ascii=False, indent=2)
+
         explicit_paths = [Path(p.strip()).expanduser() for p in input_paths.split(",") if p.strip()]
         paths = explicit_paths or list(request.runtime_inputs.input_paths)
         if not paths:
-            return "Error: input_paths are required for offline log candidate review."
+            return "Error: dataset_handle or input_paths are required for offline log candidate review."
         effective_log_time_window_days, effective_log_start_time, effective_log_end_time = _resolve_inspection_log_window(
             request,
             log_time_window_days=log_time_window_days,
@@ -459,6 +469,7 @@ def _make_redis_inspection_log_candidates_tool(
             "This tool only performs deterministic evidence reduction: time filtering, "
             "timestamp parsing, deduplication, sampling, and cluster/node bucketing. "
             "It does not decide whether a candidate is anomalous. "
+            "Prefer dataset_handle from collect_offline_inspection_dataset to avoid re-parsing evidence. "
             "After reviewing the JSON, call render_redis_inspection_report with reviewed_log_issues_json."
         ),
     )

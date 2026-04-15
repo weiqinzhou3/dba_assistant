@@ -168,9 +168,7 @@ def test_offline_inspection_uses_collect_review_then_render_tools(tmp_path: Path
     )
     candidates_payload = json.loads(
         candidates_tool(
-            input_paths=str(source),
-            log_start_time="2026-04-01 00:00:00",
-            log_end_time="2026-04-30 23:59:59",
+            dataset_handle=collect_payload["dataset_handle"],
         )
     )
     reviewed_payload = json.dumps(
@@ -204,6 +202,56 @@ def test_offline_inspection_uses_collect_review_then_render_tools(tmp_path: Path
     assert collect_payload["dataset_handle"].startswith("inspection_dataset_")
     assert "Redis 日志显示 OOM" in result
     assert "问题概览与整改优先级" in result
+
+
+def test_log_candidates_tool_uses_dataset_handle_without_recollecting(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "inspection"
+    source.mkdir()
+    (source / "info.txt").write_text("redis_version:7.0.15\nrole:master\ntcp_port:6379\n", encoding="utf-8")
+    (source / "redis.log").write_text(
+        "2026-04-14 09:00:00 # OOM command not allowed\n",
+        encoding="utf-8",
+    )
+
+    request = _make_request(runtime_inputs=RuntimeInputs(output_mode="summary", input_paths=()))
+    tools = build_all_tools(request)
+    collect_tool = next(t for t in tools if t.__name__ == "collect_offline_inspection_dataset")
+    candidates_tool = next(t for t in tools if t.__name__ == "redis_inspection_log_candidates")
+    handle = json.loads(collect_tool(input_paths=str(source)))["dataset_handle"]
+
+    def fail_recollect(*args, **kwargs):
+        raise AssertionError("dataset_handle path must not recollect raw evidence")
+
+    monkeypatch.setattr(
+        "dba_assistant.orchestrator.tools._collect_offline_log_review_payload",
+        fail_recollect,
+    )
+
+    payload = json.loads(candidates_tool(dataset_handle=handle))
+
+    assert payload["clusters"][0]["log_candidates"][0]["candidate_signal"] == "oom_signal"
+    assert payload["review_output_schema"]["properties"]["issues"]["type"] == "array"
+
+
+def test_collect_summary_includes_log_candidate_presence_and_total(tmp_path: Path) -> None:
+    source = tmp_path / "inspection"
+    source.mkdir()
+    (source / "info.txt").write_text("redis_version:7.0.15\nrole:master\ntcp_port:6379\n", encoding="utf-8")
+    (source / "redis.log").write_text(
+        "2026-04-14 09:00:00 # OOM command not allowed\n",
+        encoding="utf-8",
+    )
+
+    request = _make_request(runtime_inputs=RuntimeInputs(output_mode="summary", input_paths=()))
+    collect_tool = next(t for t in build_all_tools(request) if t.__name__ == "collect_offline_inspection_dataset")
+
+    payload = json.loads(collect_tool(input_paths=str(source)))
+
+    assert payload["has_log_candidates"] is True
+    assert payload["total_log_candidate_count"] == 1
 
 
 def test_redis_inspection_log_candidates_tool_returns_neutral_review_payload(tmp_path: Path) -> None:

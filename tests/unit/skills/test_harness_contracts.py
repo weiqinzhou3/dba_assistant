@@ -72,6 +72,8 @@ def test_inspection_skill_owns_defaults_parameters_and_output_contract() -> None
         "missing evidence",
         "deterministic evidence reduction",
         "collect_offline_inspection_dataset",
+        "dataset_handle",
+        "avoid re-parsing",
         "render_redis_inspection_report",
         "llm semantic review",
         "normal persistence",

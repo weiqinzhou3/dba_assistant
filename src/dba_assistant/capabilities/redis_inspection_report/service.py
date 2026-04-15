@@ -15,7 +15,6 @@ from dba_assistant.capabilities.redis_inspection_report.collectors.remote_redis_
     RedisInspectionRemoteCollector,
     RedisInspectionRemoteInput,
 )
-from dba_assistant.capabilities.redis_inspection_report.skill_assets import load_log_issue_schema
 from dba_assistant.capabilities.redis_inspection_report.types import (
     InspectionCluster,
     InspectionDataset,
@@ -25,6 +24,10 @@ from dba_assistant.capabilities.redis_inspection_report.types import (
 )
 from dba_assistant.core.observability import get_current_execution_session
 from dba_assistant.core.reporter.report_model import AnalysisReport
+from dba_assistant.skills_runtime.assets import load_skill_json_asset
+
+
+_SKILL_NAME = "redis-inspection-report"
 
 
 def analyze_offline_inspection(
@@ -77,8 +80,13 @@ def summarize_inspection_dataset(
     log_end_time: str | None = None,
 ) -> dict[str, Any]:
     clusters: list[dict[str, Any]] = []
+    total_log_candidate_count = 0
     for system in dataset.systems:
         for cluster in system.clusters:
+            cluster_log_candidate_count = 0
+            for node in cluster.nodes:
+                cluster_log_candidate_count += _log_candidate_count(node)
+            total_log_candidate_count += cluster_log_candidate_count
             clusters.append(
                 {
                     "system_id": system.system_id,
@@ -87,6 +95,7 @@ def summarize_inspection_dataset(
                     "cluster_name": cluster.name,
                     "cluster_type": cluster.cluster_type,
                     "node_count": len(cluster.nodes),
+                    "log_candidate_count": cluster_log_candidate_count,
                     "nodes": [
                         {
                             "node_id": node.node_id,
@@ -109,12 +118,42 @@ def summarize_inspection_dataset(
         "system_count": len(dataset.systems),
         "cluster_count": len(clusters),
         "node_count": sum(len(cluster.nodes) for system in dataset.systems for cluster in system.clusters),
+        "has_log_candidates": total_log_candidate_count > 0,
+        "total_log_candidate_count": total_log_candidate_count,
         "log_time_window": {
             "log_time_window_days": log_time_window_days,
             "log_start_time": log_start_time,
             "log_end_time": log_end_time,
         },
         "clusters": clusters,
+    }
+
+
+def build_log_review_payload(dataset: InspectionDataset) -> dict[str, Any]:
+    clusters: list[dict[str, Any]] = []
+    for system in dataset.systems:
+        for cluster in system.clusters:
+            candidates: list[dict[str, Any]] = []
+            for node in cluster.nodes:
+                raw_candidates = node.log_facts.get("log_candidates")
+                if not isinstance(raw_candidates, list):
+                    continue
+                candidates.extend(candidate for candidate in raw_candidates if isinstance(candidate, dict))
+            clusters.append(
+                {
+                    "system_id": system.system_id,
+                    "system_name": system.name,
+                    "cluster_id": cluster.cluster_id,
+                    "cluster_name": cluster.name,
+                    "candidate_count": sum(_log_candidate_count(node) for node in cluster.nodes),
+                    "log_candidates": candidates,
+                }
+            )
+    return {
+        "source_mode": dataset.source_mode,
+        "input_sources": list(dataset.input_sources),
+        "clusters": clusters,
+        "review_output_schema": load_skill_json_asset(_SKILL_NAME, "assets/log_issue_schema.json"),
     }
 
 
@@ -133,34 +172,7 @@ def collect_offline_log_review_payload(
         log_end_time=log_end_time,
         collector=collector,
     )
-    clusters: list[dict[str, Any]] = []
-    for system in dataset.systems:
-        for cluster in system.clusters:
-            candidates: list[dict[str, Any]] = []
-            for node in cluster.nodes:
-                raw_candidates = node.log_facts.get("log_candidates")
-                if not isinstance(raw_candidates, list):
-                    continue
-                candidates.extend(candidate for candidate in raw_candidates if isinstance(candidate, dict))
-            clusters.append(
-                {
-                    "system_id": system.system_id,
-                    "system_name": system.name,
-                    "cluster_id": cluster.cluster_id,
-                    "cluster_name": cluster.name,
-                    "candidate_count": sum(
-                        int(str(node.log_facts.get("log_candidate_count") or "0"))
-                        for node in cluster.nodes
-                    ),
-                    "log_candidates": candidates,
-                }
-            )
-    return {
-        "source_mode": dataset.source_mode,
-        "input_sources": list(dataset.input_sources),
-        "clusters": clusters,
-        "review_output_schema": load_log_issue_schema(),
-    }
+    return build_log_review_payload(dataset)
 
 
 def analyze_remote_inspection(
@@ -357,10 +369,19 @@ def _bool_value(value: Any) -> bool:
     return bool(value)
 
 
+def _log_candidate_count(node: InspectionNode) -> int:
+    value = node.log_facts.get("log_candidate_count")
+    try:
+        return int(str(value or "0"))
+    except ValueError:
+        return 0
+
+
 __all__ = [
     "analyze_inspection",
     "analyze_offline_inspection",
     "analyze_remote_inspection",
+    "build_log_review_payload",
     "collect_offline_inspection_dataset",
     "collect_offline_log_review_payload",
     "parse_reviewed_log_issues",

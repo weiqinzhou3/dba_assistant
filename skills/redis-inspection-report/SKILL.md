@@ -53,10 +53,15 @@ The offline path is multi-tool:
 
 1. `collect_offline_inspection_dataset` parses evidence, applies deterministic
    grouping, and returns a `dataset_handle`.
-2. If log analysis is requested, call `redis_inspection_log_candidates`, review
-   candidates with the LLM, and produce structured reviewed issues.
+2. If log analysis is requested, call
+   `redis_inspection_log_candidates(dataset_handle=...)`, review candidates
+   with the LLM, and produce structured reviewed issues.
 3. Call `render_redis_inspection_report` with the `dataset_handle`,
    `reviewed_log_issues_json` when available, and the requested output mode.
+
+For the same offline evidence, always prefer the `dataset_handle` returned by
+`collect_offline_inspection_dataset` when collecting log candidates. Avoid re-parsing
+raw evidence unless no dataset handle exists.
 
 When the user asks to analyze Redis logs, use a two-stage log path:
 

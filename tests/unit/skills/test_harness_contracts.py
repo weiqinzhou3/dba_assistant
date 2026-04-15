@@ -6,6 +6,8 @@ SYSTEM_PROMPT = ROOT / "src" / "dba_assistant" / "prompts" / "unified_system_pro
 RDB_SKILL = ROOT / "skills" / "redis-rdb-analysis" / "SKILL.md"
 INSPECTION_SKILL = ROOT / "skills" / "redis-inspection-report" / "SKILL.md"
 PROMPT_PARSER = ROOT / "src" / "dba_assistant" / "application" / "prompt_parser.py"
+INSPECTION_PACKAGE = ROOT / "skills" / "redis-inspection-report"
+RDB_PACKAGE = ROOT / "skills" / "redis-rdb-analysis"
 
 
 def test_unified_system_prompt_is_generic_and_not_rdb_or_inspection_sop() -> None:
@@ -73,9 +75,52 @@ def test_inspection_skill_owns_defaults_parameters_and_output_contract() -> None
         "normal persistence",
         "cluster-level merged issues",
         "detailed risk items",
+        "references/log_judgement_guide.md",
+        "assets/log_issue_schema.json",
         "do not invent",
     ):
         assert required in skill
+
+
+def test_inspection_skill_package_contains_references_assets_and_scripts() -> None:
+    required_files = {
+        "references/grouping_policy.md": ("cluster", "do not guess", "chapter 3", "chapter 9"),
+        "references/log_judgement_guide.md": ("normal aof", "rdb copy-on-write", "oom", "fork"),
+        "references/severity_policy.md": ("llm", "deterministic", "critical", "high"),
+        "references/report_writing_guide.md": ("artifact", "cluster", "chapter"),
+        "assets/report_outline.md": ("第三章", "第九章", "docx"),
+        "assets/table_schemas.yaml": ("problem_overview", "detailed_risk_items"),
+        "assets/log_issue_schema.json": ("is_anomalous", "merge_key", "supporting_samples"),
+        "assets/cluster_merge_schema.json": ("affected_nodes", "merged_issues"),
+        "assets/style_rules.md": ("highlight", "heading"),
+        "scripts/readonly_redis_probe_examples.sh": ("redis-cli", "readonly"),
+        "scripts/ssh_log_read_examples.sh": ("ssh", "tail", "read-only"),
+    }
+
+    for relative_path, expected_terms in required_files.items():
+        path = INSPECTION_PACKAGE / relative_path
+        assert path.exists(), relative_path
+        text = path.read_text(encoding="utf-8").lower()
+        for term in expected_terms:
+            assert term in text, f"{relative_path} missing {term}"
+
+
+def test_rdb_skill_package_contains_references_assets_and_scripts() -> None:
+    required_files = {
+        "references/strategy_policy.md": ("inspect_local_rdb", "direct stream", "mysql-backed"),
+        "references/mysql_staging_policy.md": ("larger than 1 gb", "refuses mysql", "approval"),
+        "references/docx_contract.md": ("docx", "artifact path", "output_path"),
+        "assets/report_outline.md": ("memory", "prefix", "big key"),
+        "assets/output_contract.json": ("artifact_path", "report_format", "docx"),
+        "scripts/mysql_queries.sql": ("select", "limit", "staging"),
+    }
+
+    for relative_path, expected_terms in required_files.items():
+        path = RDB_PACKAGE / relative_path
+        assert path.exists(), relative_path
+        text = path.read_text(encoding="utf-8").lower()
+        for term in expected_terms:
+            assert term in text, f"{relative_path} missing {term}"
 
 
 def test_prompt_parser_declares_non_semantic_boundary() -> None:

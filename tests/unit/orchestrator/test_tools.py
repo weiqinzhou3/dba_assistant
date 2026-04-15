@@ -99,6 +99,19 @@ def test_build_all_tools_includes_redis_tools_with_connection() -> None:
     assert "fetch_and_analyze_remote_rdb" not in names
 
 
+def test_report_tool_descriptions_do_not_require_model_invented_output_path() -> None:
+    request = _make_request(runtime_inputs=RuntimeInputs(output_mode="summary", input_paths=()))
+    tools = build_all_tools(request)
+
+    inspection_tool = next(t for t in tools if t.__name__ == "redis_inspection_report")
+    rdb_tool = next(t for t in tools if t.__name__ == "analyze_local_rdb_stream")
+
+    assert "output_path (file path, required for docx)" not in (inspection_tool.__doc__ or "").lower()
+    assert "output_path (file path, required for docx)" not in (rdb_tool.__doc__ or "").lower()
+    assert "omit output_path to use runtime default" in (inspection_tool.__doc__ or "").lower()
+    assert "omit output_path to use runtime default" in (rdb_tool.__doc__ or "").lower()
+
+
 def test_redis_inspection_report_tool_validates_offline_paths_before_analysis(monkeypatch) -> None:
     from dba_assistant.core.reporter.report_model import AnalysisReport, ReportSectionModel, TextBlock
 

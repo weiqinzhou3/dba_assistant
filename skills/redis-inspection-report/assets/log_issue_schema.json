@@ -1,0 +1,36 @@
+{
+  "type": "object",
+  "required": ["issues"],
+  "properties": {
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "issue_name",
+          "is_anomalous",
+          "severity",
+          "why",
+          "affected_nodes",
+          "supporting_samples",
+          "recommendation",
+          "merge_key",
+          "category",
+          "confidence"
+        ],
+        "properties": {
+          "issue_name": {"type": "string"},
+          "is_anomalous": {"type": "boolean"},
+          "severity": {"enum": ["critical", "high", "medium", "low", "info"]},
+          "why": {"type": "string"},
+          "affected_nodes": {"type": "array", "items": {"type": "string"}},
+          "supporting_samples": {"type": "array", "items": {"type": "string"}},
+          "recommendation": {"type": "string"},
+          "merge_key": {"type": "string"},
+          "category": {"const": "log"},
+          "confidence": {"enum": ["high", "medium", "low"]}
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "type": "object",
+  "required": ["report_format", "output_mode", "artifact_path"],
+  "properties": {
+    "report_format": {"enum": ["summary", "docx"]},
+    "output_mode": {"enum": ["summary", "report"]},
+    "artifact_path": {
+      "type": "string",
+      "description": "Generated DOCX path when report_format is docx."
+    },
+    "route": {
+      "enum": ["direct_stream", "mysql_backed", "remote_fetch_then_direct", "remote_fetch_then_mysql"]
+    }
+  }
+}

@@ -10,6 +10,15 @@ key prefixes, key types, TTL posture, big keys, focused prefixes, or a formal RD
 analysis report. Do not use this skill for Redis 巡检, health inspection, or
 runtime log review; use `redis-inspection-report` for those tasks.
 
+Keep this file as the task contract and SOP index. Use the supporting package
+files for heavier policy details:
+
+- `references/strategy_policy.md` for local direct stream, remote acquisition, and route selection.
+- `references/mysql_staging_policy.md` for MySQL-backed staging wording and refusal handling.
+- `references/docx_contract.md` for DOCX artifact and output_path ownership.
+- `assets/report_outline.md` and `assets/output_contract.json` for report and artifact structure.
+- `scripts/mysql_queries.sql` for example read queries against staged data.
+
 ## Trigger Conditions
 
 - The user provides a local `.rdb` file path or interface input file and asks for

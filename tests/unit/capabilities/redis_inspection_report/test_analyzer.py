@@ -100,8 +100,8 @@ def test_analyzer_builds_report_sections_and_findings_from_cluster_dataset() -> 
     assert top_level_titles == [
         "巡检概述",
         "巡检范围与输入说明",
+        "问题概览与整改优先级",
         "集群识别与架构总览",
-        "巡检结果总结",
         "巡检目标及方法",
         "系统配置检查",
         "操作系统检查",
@@ -122,8 +122,11 @@ def test_analyzer_builds_report_sections_and_findings_from_cluster_dataset() -> 
     assert all("系统" not in table.columns for table in main_tables)
     assert all("归并置信度" not in table.columns for table in main_tables)
     assert all("归并依据" not in table.columns for table in main_tables)
-    summary_section = next(section for section in report.sections if section.id == "inspection_summary")
-    assert any("高风险" in block.text for block in summary_section.blocks if hasattr(block, "text"))
+    problem_section = next(section for section in report.sections if section.id == "problem_overview")
+    assert any("高风险" in block.text for block in problem_section.blocks if hasattr(block, "text"))
+    problem_table = next(block for block in problem_section.blocks if hasattr(block, "columns"))
+    assert problem_table.title == "集群级问题概览与整改优先级"
+    assert problem_table.columns == ["集群", "关键问题", "涉及节点", "风险等级", "影响", "优先整改建议"]
     architecture_section = next(section for section in report.sections if section.id == "architecture_overview")
     architecture_table = next(block for block in architecture_section.blocks if hasattr(block, "columns"))
     assert architecture_table.columns == ["集群", "类型", "节点数", "Master 数", "Replica 数", "主要结论", "风险等级"]
@@ -308,8 +311,8 @@ def test_cluster_status_display_dash_for_non_cluster() -> None:
     assert _cluster_status_display(cluster, cluster.nodes[0]) == "-"
 
 
-def test_problem_overview_table_present_in_architecture_section() -> None:
-    """#8: Chapter 3 should contain a 问题概览与整改优先级 table."""
+def test_problem_overview_table_present_as_dedicated_chapter_three() -> None:
+    """Chapter 3 should contain the cluster-level 问题概览与整改优先级 table."""
     dataset = _make_simple_dataset(
         redis_facts={
             "used_memory": "920",
@@ -319,10 +322,10 @@ def test_problem_overview_table_present_in_architecture_section() -> None:
         },
     )
     report = analyze_inspection_dataset(dataset)
-    arch_section = next(s for s in report.sections if s.id == "architecture_overview")
-    table_titles = [b.title for b in arch_section.blocks if hasattr(b, "title")]
-    assert "问题概览与整改优先级" in table_titles
-    problem_table = next(b for b in arch_section.blocks if hasattr(b, "title") and b.title == "问题概览与整改优先级")
+    top_level_titles = [section.title for section in report.sections if section.level == 1]
+    assert top_level_titles[2] == "问题概览与整改优先级"
+    problem_section = next(s for s in report.sections if s.id == "problem_overview")
+    problem_table = next(b for b in problem_section.blocks if hasattr(b, "title") and b.title == "集群级问题概览与整改优先级")
     assert problem_table.columns == ["集群", "关键问题", "涉及节点", "风险等级", "影响", "优先整改建议"]
     assert len(problem_table.rows) >= 1
     assert problem_table.rows[0][0] == "test-cluster"
@@ -451,8 +454,8 @@ def test_problem_overview_merges_reviewed_log_issues_by_cluster_merge_key() -> N
     )
 
     report = analyze_inspection_dataset(dataset)
-    arch_section = next(s for s in report.sections if s.id == "architecture_overview")
-    problem_table = next(b for b in arch_section.blocks if getattr(b, "title", "") == "问题概览与整改优先级")
+    problem_section = next(s for s in report.sections if s.id == "problem_overview")
+    problem_table = next(b for b in problem_section.blocks if getattr(b, "title", "") == "集群级问题概览与整改优先级")
 
     merged_rows = [row for row in problem_table.rows if row[1] == "复制链路反复中断"]
     assert len(merged_rows) == 1

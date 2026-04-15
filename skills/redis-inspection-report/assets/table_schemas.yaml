@@ -1,0 +1,26 @@
+problem_overview:
+  title: 集群级问题概览与整改优先级
+  columns:
+    - 集群
+    - 关键问题
+    - 涉及节点
+    - 风险等级
+    - 影响
+    - 优先整改建议
+
+detailed_risk_items:
+  title: 风险与整改建议清单
+  columns:
+    - 风险名称
+    - 风险等级
+    - 发现对象
+    - 影响说明
+    - 证据
+    - 建议整改措施
+
+log_candidates:
+  title: Redis 日志候选摘要
+  columns:
+    - 节点
+    - 候选数
+    - 样本

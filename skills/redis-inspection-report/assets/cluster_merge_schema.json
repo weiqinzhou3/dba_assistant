@@ -1,0 +1,22 @@
+{
+  "type": "object",
+  "required": ["merged_issues"],
+  "properties": {
+    "merged_issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["cluster", "issue_name", "severity", "affected_nodes", "impact", "recommendation"],
+        "properties": {
+          "cluster": {"type": "string"},
+          "issue_name": {"type": "string"},
+          "severity": {"type": "string"},
+          "affected_nodes": {"type": "array", "items": {"type": "string"}},
+          "impact": {"type": "string"},
+          "recommendation": {"type": "string"},
+          "merge_key": {"type": "string"}
+        }
+      }
+    }
+  }
+}

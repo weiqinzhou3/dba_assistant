@@ -338,7 +338,8 @@ def _make_redis_inspection_report_tool(
             "Use local input_paths for offline inspection bundles/directories, or omit "
             "input_paths to run a live read-only Redis inspection from redis_host/redis_port. "
             "Parameters: input_paths (comma-separated files/directories/tar.gz bundles), "
-            "redis_host, redis_port, redis_db, report_language, output_mode, report_format, output_path, "
+            "redis_host, redis_port, redis_db, report_language, output_mode, report_format, "
+            "output_path (optional; omit output_path to use runtime default for docx), "
             "log_time_window_days, log_start_time, log_end_time, reviewed_log_issues_json. "
             "For log analysis, pass reviewed_log_issues_json after LLM semantic review of candidates."
         ),
@@ -508,7 +509,7 @@ def _make_analyze_local_rdb_stream_tool(
             "report_language (optional BCP47 code like 'zh-CN' or 'en-US'), "
             "output_mode ('summary' or 'report'), "
             "report_format ('summary' or 'docx'), "
-            "output_path (file path, required for docx), "
+            "output_path (optional file path; omit output_path to use runtime default for docx), "
             "focus_prefixes (optional, comma-separated key prefixes like 'cache:*,session:*')."
         ),
     )

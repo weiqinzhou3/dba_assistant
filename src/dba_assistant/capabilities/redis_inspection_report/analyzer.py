@@ -66,8 +66,8 @@ def _build_report_sections(
     sections: list[ReportSectionModel] = [
         _overview_section(dataset, system_count, cluster_count, node_count, findings, severity_counts),
         _scope_section(dataset, system_count, cluster_count, node_count),
+        _problem_overview_section(dataset, findings, severity_counts),
         _architecture_section(dataset, findings),
-        _summary_section(findings, severity_counts),
         _method_section(dataset),
         _system_config_overview_section(findings),
     ]
@@ -418,22 +418,38 @@ def _architecture_section(dataset: InspectionDataset, findings: list[InspectionF
             rows=rows or [["-", "-", "0", "0", "0", "未识别到 Redis 集群证据", "info"]],
         )
     )
-    problem_rows = _problem_overview_rows(dataset, findings)
-    if problem_rows:
-        blocks.append(
-            TextBlock(text="以下按集群维度汇总关键问题与整改优先级，便于非开发人员快速掌握巡检结论和整改方向。")
-        )
-        blocks.append(
-            TableBlock(
-                title="问题概览与整改优先级",
-                columns=["集群", "关键问题", "涉及节点", "风险等级", "影响", "优先整改建议"],
-                rows=problem_rows,
-            )
-        )
     return ReportSectionModel(
         id="architecture_overview",
         title="集群识别与架构总览",
         blocks=blocks,
+    )
+
+
+def _problem_overview_section(
+    dataset: InspectionDataset,
+    findings: list[InspectionFinding],
+    severity_counts: Counter,
+) -> ReportSectionModel:
+    rows = _problem_overview_rows(dataset, findings)
+    high_total = severity_counts["critical"] + severity_counts["high"]
+    if not rows:
+        rows = [["-", "未发现需要优先整改的明确问题", "-", "info", "当前证据未显示高/中风险", "保持例行巡检和容量监控。"]]
+    return ReportSectionModel(
+        id="problem_overview",
+        title="问题概览与整改优先级",
+        blocks=[
+            TextBlock(
+                text=(
+                    f"本章按集群维度归并问题。本次巡检共发现 {len(findings)} 个风险项，"
+                    f"其中高风险 {high_total} 项，中风险 {severity_counts['medium']} 项。"
+                )
+            ),
+            TableBlock(
+                title="集群级问题概览与整改优先级",
+                columns=["集群", "关键问题", "涉及节点", "风险等级", "影响", "优先整改建议"],
+                rows=rows,
+            ),
+        ],
     )
 
 
@@ -506,25 +522,6 @@ def _merge_cluster_findings(findings: list[InspectionFinding]) -> list[Inspectio
             item.risk_name,
             item.target,
         ),
-    )
-
-
-def _summary_section(findings: list[InspectionFinding], severity_counts: Counter) -> ReportSectionModel:
-    rows = [
-        ["critical", str(severity_counts["critical"])],
-        ["high", str(severity_counts["high"])],
-        ["medium", str(severity_counts["medium"])],
-        ["low", str(severity_counts["low"])],
-        ["info", str(severity_counts["info"])],
-    ]
-    high_total = severity_counts["critical"] + severity_counts["high"]
-    return ReportSectionModel(
-        id="inspection_summary",
-        title="巡检结果总结",
-        blocks=[
-            TextBlock(text=f"本次巡检共发现 {len(findings)} 个风险项，其中高风险 {high_total} 项，中风险 {severity_counts['medium']} 项。"),
-            TableBlock(title="风险等级统计", columns=["风险等级", "数量"], rows=rows),
-        ],
     )
 
 

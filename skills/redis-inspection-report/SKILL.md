@@ -12,6 +12,17 @@ analysis, and formal Redis inspection reports.
 Do not use this skill for Redis RDB keyspace, memory distribution, prefix, TTL,
 or big-key analysis. Use `redis-rdb-analysis` for RDB dump analysis.
 
+Keep this file as the task contract and SOP index. Use the supporting package
+files for heavier judgement rules and report structure:
+
+- `references/grouping_policy.md` for cluster grouping and Chapter 3/Chapter 9 responsibilities.
+- `references/log_judgement_guide.md` for normal-vs-anomalous log judgement.
+- `references/severity_policy.md` for LLM-owned and deterministic severity rules.
+- `references/report_writing_guide.md` for formal report writing constraints.
+- `assets/report_outline.md` and `assets/table_schemas.yaml` for report structure.
+- `assets/log_issue_schema.json` and `assets/cluster_merge_schema.json` for structured LLM outputs.
+- `assets/style_rules.md` for DOCX style and highlighting expectations.
+
 ## Trigger Conditions
 
 Use this skill when the user asks for any of the following:
@@ -45,7 +56,7 @@ When the user asks to analyze Redis logs, use a two-stage log path:
    time window, deduplicate repeated lines, count frequencies, sample bounded
    evidence, and bucket candidates by node and cluster.
 2. LLM semantic review: inspect the candidate JSON and produce structured
-   `reviewed_log_issues` with `issue_name`, `is_anomalous`, `severity`, `why`,
+   `llm_reviewed_log_issues` / `reviewed_log_issues` with `issue_name`, `is_anomalous`, `severity`, `why`,
    `affected_nodes`, `supporting_samples`, `recommendation`, `merge_key`,
    `category`, and `confidence`.
 
@@ -117,10 +128,11 @@ tool arguments.
 - DOCX mode must generate a DOCX artifact.
 - On success, the final response must include the generated artifact path.
 - Do not provide only an inline summary as a substitute for DOCX output.
-- Chapter 3 uses cluster-level merged issues. For log-derived problems, merge by
+- Chapter 3 is `问题概览与整改优先级` and uses cluster-level merged issues.
+  For log-derived problems, merge by
   `merge_key` first, then by cluster, issue name, severity, impact, and
   recommendation.
-- Chapter 9 shows the detailed risk items from the same reviewed issue set. It
+- Chapter 9 is `风险与整改建议` and shows the detailed risk items from the same reviewed issue set. It
   must not run a second programmatic log-anomaly rule.
 
 ## Risk and Approval Constraints

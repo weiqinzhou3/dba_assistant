@@ -41,6 +41,7 @@ def test_load_app_config_reads_repository_default_shape(tmp_path: Path) -> None:
           mysql_connect_timeout_seconds: 7.5
           mysql_read_timeout_seconds: 18.0
           mysql_write_timeout_seconds: 35.0
+          cli_streaming: true
         agent:
           filesystem_backend:
             kind: filesystem
@@ -77,6 +78,7 @@ def test_load_app_config_reads_repository_default_shape(tmp_path: Path) -> None:
     assert config.runtime.mysql_connect_timeout_seconds == 7.5
     assert config.runtime.mysql_read_timeout_seconds == 18.0
     assert config.runtime.mysql_write_timeout_seconds == 35.0
+    assert config.runtime.cli_streaming is True
     assert config.agent.filesystem_backend.kind == "filesystem"
     assert config.agent.filesystem_backend.root_dir == Path("/var/dba-agent")
     assert config.agent.filesystem_backend.virtual_mode is False

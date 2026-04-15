@@ -124,9 +124,13 @@ def test_analyzer_builds_report_sections_and_findings_from_cluster_dataset() -> 
     assert all("归并依据" not in table.columns for table in main_tables)
     problem_section = next(section for section in report.sections if section.id == "problem_overview")
     assert any("高风险" in block.text for block in problem_section.blocks if hasattr(block, "text"))
-    problem_table = next(block for block in problem_section.blocks if hasattr(block, "columns"))
-    assert problem_table.title == "集群级问题概览与整改优先级"
-    assert problem_table.columns == ["集群", "关键问题", "涉及节点", "风险等级", "影响", "优先整改建议"]
+    problem_tables = [block for block in problem_section.blocks if hasattr(block, "columns")]
+    assert len(problem_tables) <= 1
+    assert any(
+        "cluster-a" in block.text and "Redis 日志显示 OOM 与复制异常" in block.text
+        for block in problem_section.blocks
+        if hasattr(block, "text")
+    )
     architecture_section = next(section for section in report.sections if section.id == "architecture_overview")
     architecture_table = next(block for block in architecture_section.blocks if hasattr(block, "columns"))
     assert architecture_table.columns == ["集群", "类型", "节点数", "Master 数", "Replica 数", "主要结论", "风险等级"]
@@ -145,22 +149,26 @@ def test_analyzer_builds_report_sections_and_findings_from_cluster_dataset() -> 
     ]
     assert all(len(block.columns) <= 4 for block in redis_cluster_section.blocks if hasattr(block, "columns"))
     risk_cluster_section = next(section for section in report.sections if section.id == "risk_remediation__cluster-a")
-    risk_rows = [
-        row
-        for block in risk_cluster_section.blocks
-        if hasattr(block, "rows")
-        for row in block.rows
-    ]
-    rows = risk_rows
-    assert all(len(row) == 6 and all(str(cell).strip() for cell in row) for row in rows)
-    assert any(row[0] == "Redis Cluster 状态异常" and row[1] == "high" for row in rows)
-    assert any(row[0] == "Redis 版本不一致" and row[1] == "medium" for row in rows)
-    assert any(row[0] == "Redis 持久化最近一次保存失败" for row in rows)
-    assert any(row[0] == "Redis 复制链路异常" for row in rows)
-    assert any(row[0] == "主机 Swap 已使用" for row in rows)
-    assert sum(1 for row in rows if row[0] == "Redis 日志显示 OOM 与复制异常") == 1
-    assert any(row[0] == "Redis 日志显示 OOM 与复制异常" and "OOM" in row[4] for row in rows)
-    assert any("OOM" in row[4] for row in rows)
+    assert all(not hasattr(block, "columns") for block in risk_cluster_section.blocks)
+    risk_text = "\n".join(
+        block.text
+        for section in report.sections
+        if section.id.startswith("risk_remediation__cluster-a")
+        for block in section.blocks
+        if hasattr(block, "text")
+    )
+    assert "风险等级：high" in risk_text
+    assert "Redis Cluster 状态异常" in risk_text
+    assert "Redis 版本不一致" in risk_text
+    assert "Redis 持久化最近一次保存失败" in risk_text
+    assert "Redis 复制链路异常" in risk_text
+    assert "主机 Swap 已使用" in risk_text
+    assert risk_text.count("Redis 日志显示 OOM 与复制异常") == 1
+    assert "Review：" in risk_text
+    assert "Samples：" in risk_text
+    assert "Confidence：high" in risk_text
+    assert "review=" not in risk_text
+    assert "samples=" not in risk_text
 
 
 # ---------------------------------------------------------------------------
@@ -311,8 +319,8 @@ def test_cluster_status_display_dash_for_non_cluster() -> None:
     assert _cluster_status_display(cluster, cluster.nodes[0]) == "-"
 
 
-def test_problem_overview_table_present_as_dedicated_chapter_three() -> None:
-    """Chapter 3 should contain the cluster-level 问题概览与整改优先级 table."""
+def test_problem_overview_is_executive_summary_not_wide_table() -> None:
+    """Chapter 3 should be executive summary text, with at most a small priority table."""
     dataset = _make_simple_dataset(
         redis_facts={
             "used_memory": "920",
@@ -325,10 +333,13 @@ def test_problem_overview_table_present_as_dedicated_chapter_three() -> None:
     top_level_titles = [section.title for section in report.sections if section.level == 1]
     assert top_level_titles[2] == "问题概览与整改优先级"
     problem_section = next(s for s in report.sections if s.id == "problem_overview")
-    problem_table = next(b for b in problem_section.blocks if hasattr(b, "title") and b.title == "集群级问题概览与整改优先级")
-    assert problem_table.columns == ["集群", "关键问题", "涉及节点", "风险等级", "影响", "优先整改建议"]
-    assert len(problem_table.rows) >= 1
-    assert problem_table.rows[0][0] == "test-cluster"
+    text_blocks = [b.text for b in problem_section.blocks if hasattr(b, "text")]
+    tables = [b for b in problem_section.blocks if hasattr(b, "columns")]
+    assert any("test-cluster" in text and "Redis 内存水位过高" in text for text in text_blocks)
+    assert all("..." not in text for text in text_blocks)
+    assert len(tables) <= 1
+    if tables:
+        assert tables[0].columns == ["优先级", "集群", "风险等级", "关键问题", "优先动作"]
 
 
 def test_redis_table_titles_have_no_hardcoded_number_prefix() -> None:
@@ -380,9 +391,9 @@ def test_normal_log_candidates_do_not_create_findings_without_reviewed_anomaly()
 
     report = analyze_inspection_dataset(dataset)
 
-    risk_rows = _risk_rows(report)
-    assert not any("正常持久化后台任务" in row[0] for row in risk_rows)
-    assert not any("Redis 错误日志存在异常事件" in row[0] for row in risk_rows)
+    risk_text = _risk_text(report)
+    assert "正常持久化后台任务" not in risk_text
+    assert "Redis 错误日志存在异常事件" not in risk_text
 
 
 def test_reviewed_log_issue_drives_findings() -> None:
@@ -414,9 +425,11 @@ def test_reviewed_log_issue_drives_findings() -> None:
 
     report = analyze_inspection_dataset(dataset)
 
-    risk_rows = _risk_rows(report)
-    assert any(row[0] == "Redis 日志显示 OOM 与 fork 失败" and row[1] == "high" for row in risk_rows)
-    assert any("LLM review" in row[4] or "OOM" in row[4] for row in risk_rows)
+    risk_text = _risk_text(report)
+    assert "Redis 日志显示 OOM 与 fork 失败" in risk_text
+    assert "风险等级：high" in risk_text
+    assert "LLM review" in risk_text
+    assert "OOM command not allowed" in risk_text
 
 
 def test_problem_overview_merges_reviewed_log_issues_by_cluster_merge_key() -> None:
@@ -455,19 +468,111 @@ def test_problem_overview_merges_reviewed_log_issues_by_cluster_merge_key() -> N
 
     report = analyze_inspection_dataset(dataset)
     problem_section = next(s for s in report.sections if s.id == "problem_overview")
-    problem_table = next(b for b in problem_section.blocks if getattr(b, "title", "") == "集群级问题概览与整改优先级")
+    problem_text = "\n".join(b.text for b in problem_section.blocks if hasattr(b, "text"))
 
-    merged_rows = [row for row in problem_table.rows if row[1] == "复制链路反复中断"]
-    assert len(merged_rows) == 1
-    assert "10.0.0.1:6379" in merged_rows[0][2]
-    assert "10.0.0.2:6379" in merged_rows[0][2]
+    assert problem_text.count("复制链路反复中断") == 1
+    assert "10.0.0.1:6379" in problem_text
+    assert "10.0.0.2:6379" in problem_text
 
 
-def _risk_rows(report):
-    risk_cluster_section = next(section for section in report.sections if section.id.startswith("risk_remediation__"))
-    return [
-        row
-        for block in risk_cluster_section.blocks
-        if hasattr(block, "rows")
-        for row in block.rows
+def test_reviewed_log_issue_cluster_scope_does_not_leak_foreign_nodes() -> None:
+    cluster_a = InspectionCluster(
+        cluster_id="cluster-a",
+        name="glp-redis",
+        cluster_type="redis-cluster",
+        nodes=(
+            InspectionNode(
+                node_id="10.0.0.1:6379",
+                hostname="a",
+                ip="10.0.0.1",
+                port=6379,
+                role="master",
+                version="7.0",
+                source_path="/e/a",
+                redis_facts={"used_memory": "100", "maxmemory": "1000"},
+            ),
+        ),
+    )
+    cluster_b = InspectionCluster(
+        cluster_id="cluster-b",
+        name="other-redis",
+        cluster_type="redis-cluster",
+        nodes=(
+            InspectionNode(
+                node_id="10.0.0.9:6379",
+                hostname="b",
+                ip="10.0.0.9",
+                port=6379,
+                role="master",
+                version="7.0",
+                source_path="/e/b",
+                redis_facts={"used_memory": "100", "maxmemory": "1000"},
+            ),
+        ),
+    )
+    dataset = InspectionDataset(
+        systems=(
+            InspectionSystem(
+                system_id="sys-1",
+                name="System",
+                clusters=(cluster_a, cluster_b),
+            ),
+        ),
+        source_mode="offline",
+        input_sources=("/evidence",),
+        reviewed_log_issues=(
+            ReviewedLogIssue(
+                cluster_id="cluster-a",
+                cluster_name="glp-redis",
+                issue_name="日志显示复制链路异常",
+                is_anomalous=True,
+                severity="high",
+                why="reviewed as a cluster-a replication issue.",
+                affected_nodes=("10.0.0.1:6379", "10.0.0.9:6379"),
+                supporting_samples=("MASTER timeout",),
+                recommendation="检查 cluster-a 主从网络。",
+                merge_key="replication-break",
+                category="log",
+                confidence="high",
+            ),
+        ),
+    )
+
+    report = analyze_inspection_dataset(dataset)
+
+    glp_section = next(section for section in report.sections if section.id == "risk_remediation__glp-redis")
+    other_section = next(section for section in report.sections if section.id == "risk_remediation__other-redis")
+    assert all(not hasattr(block, "columns") for block in glp_section.blocks)
+    assert all(not hasattr(block, "columns") for block in other_section.blocks)
+    glp_text = "\n".join(
+        block.text
+        for section in report.sections
+        if section.id.startswith("risk_remediation__glp-redis")
+        for block in section.blocks
+        if hasattr(block, "text")
+    )
+    other_text = "\n".join(
+        block.text
+        for section in report.sections
+        if section.id.startswith("risk_remediation__other-redis")
+        for block in section.blocks
+        if hasattr(block, "text")
+    )
+    assert "日志显示复制链路异常" in glp_text
+    assert "10.0.0.1:6379" in glp_text
+    assert "10.0.0.9:6379" not in glp_text
+    assert "日志显示复制链路异常" not in other_text
+
+
+def _risk_text(report):
+    risk_sections = [
+        section
+        for section in report.sections
+        if section.id.startswith("risk_remediation__")
     ]
+    return "\n".join(
+        block.text
+        for section in risk_sections
+        for block in section.blocks
+        if hasattr(block, "text")
+    )

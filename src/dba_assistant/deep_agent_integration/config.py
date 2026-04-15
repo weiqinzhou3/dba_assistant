@@ -54,6 +54,7 @@ class RuntimeConfig:
     mysql_connect_timeout_seconds: float = 5.0
     mysql_read_timeout_seconds: float = 15.0
     mysql_write_timeout_seconds: float = 30.0
+    cli_streaming: bool = False
 
 
 @dataclass(frozen=True)
@@ -158,6 +159,7 @@ def _load_runtime_config(data: dict[str, Any]) -> RuntimeConfig:
         mysql_connect_timeout_seconds=float(data.get("mysql_connect_timeout_seconds", 5.0)),
         mysql_read_timeout_seconds=float(data.get("mysql_read_timeout_seconds", 15.0)),
         mysql_write_timeout_seconds=float(data.get("mysql_write_timeout_seconds", 30.0)),
+        cli_streaming=_optional_bool(data, "cli_streaming", False),
     )
 
 

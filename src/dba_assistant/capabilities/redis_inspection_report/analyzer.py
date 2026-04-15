@@ -277,11 +277,19 @@ def _node_findings(cluster: InspectionCluster, node: InspectionNode) -> list[Ins
 
 
 def _reviewed_log_issue_findings(dataset: InspectionDataset) -> list[InspectionFinding]:
+    cluster_lookup = _build_cluster_lookup(dataset)
     grouped: dict[tuple[str, str], list[ReviewedLogIssue]] = {}
     for issue in dataset.reviewed_log_issues:
         if not issue.is_anomalous:
             continue
-        cluster_key = issue.cluster_id or issue.cluster_name or "unknown-cluster"
+        cluster = _resolve_reviewed_issue_cluster(issue, cluster_lookup)
+        cluster_key = (
+            cluster.cluster_id
+            if cluster is not None
+            else issue.cluster_id
+            or issue.cluster_name
+            or "unknown-cluster"
+        )
         merge_key = issue.merge_key or "|".join(
             [
                 issue.cluster_name,
@@ -296,6 +304,13 @@ def _reviewed_log_issue_findings(dataset: InspectionDataset) -> list[InspectionF
     findings: list[InspectionFinding] = []
     for (_cluster_key, merge_key), issues in grouped.items():
         primary = min(issues, key=lambda item: SEVERITY_ORDER.get(item.severity, 99))
+        cluster = _resolve_reviewed_issue_cluster(primary, cluster_lookup)
+        valid_nodes = {node.node_id for node in cluster.nodes} if cluster is not None else set()
+        known_nodes = {
+            key.removeprefix("node:")
+            for key in cluster_lookup
+            if key.startswith("node:")
+        }
         affected_nodes = tuple(
             sorted(
                 {
@@ -303,6 +318,7 @@ def _reviewed_log_issue_findings(dataset: InspectionDataset) -> list[InspectionF
                     for issue in issues
                     for node in issue.affected_nodes
                     if str(node).strip()
+                    and (not known_nodes or node not in known_nodes or node in valid_nodes)
                 }
             )
         )
@@ -325,7 +341,8 @@ def _reviewed_log_issue_findings(dataset: InspectionDataset) -> list[InspectionF
             InspectionFinding(
                 risk_name=primary.issue_name,
                 severity=primary.severity,
-                target=", ".join(affected_nodes) or primary.cluster_name or primary.cluster_id,
+                target=", ".join(affected_nodes)
+                or (cluster.name if cluster is not None else primary.cluster_name or primary.cluster_id),
                 evidence="; ".join(evidence_parts) or "-",
                 impact=primary.why or "日志候选经 LLM semantic review 判定为需要关注的异常。",
                 recommendation=" / ".join(recommendations) or primary.recommendation or "结合原始日志时间线和运行状态复核。",
@@ -333,6 +350,8 @@ def _reviewed_log_issue_findings(dataset: InspectionDataset) -> list[InspectionF
                 merge_key=merge_key,
                 affected_nodes=affected_nodes,
                 source="llm_log_review",
+                cluster_id=cluster.cluster_id if cluster is not None else primary.cluster_id or None,
+                cluster_name=cluster.name if cluster is not None else primary.cluster_name or None,
             )
         )
     return findings
@@ -435,54 +454,94 @@ def _problem_overview_section(
     findings: list[InspectionFinding],
     severity_counts: Counter,
 ) -> ReportSectionModel:
-    rows = _problem_overview_rows(dataset, findings)
     high_total = severity_counts["critical"] + severity_counts["high"]
-    if not rows:
-        rows = [["-", "未发现需要优先整改的明确问题", "-", "info", "当前证据未显示高/中风险", "保持例行巡检和容量监控。"]]
-    table_title, table_columns = _table_schema(
-        "problem_overview",
-        fallback_title="集群级问题概览与整改优先级",
-        fallback_columns=["集群", "关键问题", "涉及节点", "风险等级", "影响", "优先整改建议"],
-    )
-    return ReportSectionModel(
-        id="problem_overview",
-        title=_outline_title(2, "问题概览与整改优先级"),
-        blocks=[
-            TextBlock(
-                text=(
-                    f"本章按集群维度归并问题。本次巡检共发现 {len(findings)} 个风险项，"
-                    f"其中高风险 {high_total} 项，中风险 {severity_counts['medium']} 项。"
+    summaries = _problem_overview_summaries(dataset, findings)
+    high_clusters = [item["cluster"] for item in summaries if item["severity"] in {"critical", "high"}]
+    medium_clusters = [item["cluster"] for item in summaries if item["severity"] == "medium"]
+    blocks: list[TextBlock | TableBlock] = [
+        TextBlock(
+            text=(
+                f"本章面向管理视角，只汇总需要优先决策的集群级问题，不展开大段证据。"
+                f"本次巡检共发现 {len(findings)} 个风险项，其中高风险 {high_total} 项，"
+                f"中风险 {severity_counts['medium']} 项。"
+            )
+        )
+    ]
+    if high_clusters:
+        blocks.append(TextBlock(text=f"高风险集群：{', '.join(high_clusters)}。"))
+    if medium_clusters:
+        blocks.append(TextBlock(text=f"中风险集群：{', '.join(medium_clusters)}。"))
+    if not summaries:
+        blocks.append(TextBlock(text="未发现需要优先整改的明确高/中风险集群；建议保持例行巡检和容量监控。"))
+    else:
+        table_title, table_columns = _table_schema(
+            "problem_overview",
+            fallback_title="优先级速览",
+            fallback_columns=["优先级", "集群", "风险等级", "关键问题", "优先动作"],
+        )
+        for item in summaries:
+            blocks.append(
+                TextBlock(
+                    text=(
+                        f"集群：{item['cluster']}。\n"
+                        f"风险等级：{item['severity']}。\n"
+                        f"关键问题：{item['problems']}。\n"
+                        f"涉及对象：{item['targets']}。\n"
+                        f"优先动作：{item['action']}。"
+                    )
                 )
-            ),
+            )
+        blocks.append(
             TableBlock(
                 title=table_title,
                 columns=table_columns,
-                rows=rows,
-            ),
-        ],
+                rows=[
+                    [
+                        str(index),
+                        item["cluster"],
+                        item["severity"],
+                        item["problems"],
+                        item["action"],
+                    ]
+                    for index, item in enumerate(summaries[:8], start=1)
+                ],
+            )
+        )
+    return ReportSectionModel(
+        id="problem_overview",
+        title=_outline_title(2, "问题概览与整改优先级"),
+        blocks=blocks,
     )
 
 
-def _problem_overview_rows(
+def _problem_overview_summaries(
     dataset: InspectionDataset,
     findings: list[InspectionFinding],
-) -> list[list[str]]:
-    rows: list[list[str]] = []
+) -> list[dict[str, str]]:
+    summaries: list[dict[str, str]] = []
     for cluster in _iter_clusters(dataset):
         cluster_findings = _findings_for_cluster(cluster, findings)
         significant = [f for f in cluster_findings if f.severity in {"critical", "high", "medium"}]
         if not significant:
             continue
-        for finding in _merge_cluster_findings(significant):
-            rows.append([
-                cluster.name,
-                finding.risk_name,
-                ", ".join(finding.affected_nodes) if finding.affected_nodes else finding.target,
-                finding.severity,
-                _shorten(finding.impact, limit=60),
-                _shorten(finding.recommendation, limit=60),
-            ])
-    return rows
+        merged = _merge_cluster_findings(significant)
+        highest = _highest_severity(merged)
+        summaries.append(
+            {
+                "cluster": cluster.name,
+                "severity": highest,
+                "problems": "；".join(finding.risk_name for finding in merged),
+                "targets": "；".join(_finding_target(finding) for finding in merged),
+                "action": "；".join(finding.recommendation for finding in merged),
+            }
+        )
+    return sorted(
+        summaries,
+        key=lambda item: (
+            SEVERITY_ORDER.get(item["severity"], 99),
+            item["cluster"],
+        ),
+    )
 
 
 def _merge_cluster_findings(findings: list[InspectionFinding]) -> list[InspectionFinding]:
@@ -523,6 +582,8 @@ def _merge_cluster_findings(findings: list[InspectionFinding]) -> list[Inspectio
                 merge_key=primary.merge_key,
                 affected_nodes=affected_nodes,
                 source=primary.source,
+                cluster_id=primary.cluster_id,
+                cluster_name=primary.cluster_name,
             )
         )
     return sorted(
@@ -740,39 +801,37 @@ def _risk_overview_section(findings: list[InspectionFinding]) -> ReportSectionMo
 
 def _risk_cluster_sections(dataset: InspectionDataset, findings: list[InspectionFinding]) -> list[ReportSectionModel]:
     sections: list[ReportSectionModel] = []
-    table_title, table_columns = _table_schema(
-        "detailed_risk_items",
-        fallback_title="风险与整改建议清单",
-        fallback_columns=["风险名称", "风险等级", "发现对象", "影响说明", "证据", "建议整改措施"],
-    )
     for cluster in _iter_clusters(dataset):
         cluster_findings = _findings_for_cluster(cluster, findings)
-        rows = [
-            [
-                finding.risk_name,
-                finding.severity,
-                finding.target,
-                finding.impact,
-                finding.evidence,
-                finding.recommendation,
-            ]
-            for finding in cluster_findings
-        ]
         sections.append(
             ReportSectionModel(
                 id=_cluster_section_id("risk_remediation", cluster),
                 title=cluster.name,
                 level=2,
                 blocks=[
-                    TextBlock(text=f"{cluster.name} 风险项按等级排序，整改建议需要结合原始证据复核后执行。"),
-                    TableBlock(
-                        title=table_title,
-                        columns=table_columns,
-                        rows=rows or [["未发现明确风险", "info", "-", "-", "-", "保持例行巡检和容量监控。"]],
-                    ),
+                    TextBlock(text=f"{cluster.name} 风险项按等级排序，以下条目分别列出对象、影响、证据和整改动作。"),
                 ],
             )
         )
+        if not cluster_findings:
+            sections.append(
+                ReportSectionModel(
+                    id=f"{_cluster_section_id('risk_remediation', cluster)}__no-explicit-risk",
+                    title="未发现明确风险",
+                    level=3,
+                    blocks=[TextBlock(text="风险等级：info。\n风险描述：当前证据未显示明确风险。\n建议整改措施：保持例行巡检和容量监控。")],
+                )
+            )
+            continue
+        for finding in cluster_findings:
+            sections.append(
+                ReportSectionModel(
+                    id=f"{_cluster_section_id('risk_remediation', cluster)}__{_slug(finding.risk_name)}",
+                    title=finding.risk_name,
+                    level=3,
+                    blocks=[TextBlock(text=_risk_detail_text(finding))],
+                )
+            )
     return sections
 
 
@@ -912,12 +971,89 @@ def _findings_for_cluster(
     findings: list[InspectionFinding],
 ) -> list[InspectionFinding]:
     targets = {cluster.name, *(node.node_id for node in cluster.nodes)}
-    return [
-        finding
-        for finding in findings
-        if finding.target in targets
-        or any(node in targets for node in finding.affected_nodes)
-    ]
+    cluster_ids = {cluster.cluster_id, cluster.name}
+    scoped: list[InspectionFinding] = []
+    for finding in findings:
+        if finding.cluster_id or finding.cluster_name:
+            if finding.cluster_id in cluster_ids or finding.cluster_name in cluster_ids:
+                scoped.append(finding)
+            continue
+        if finding.target in targets or any(node in targets for node in finding.affected_nodes):
+            scoped.append(finding)
+    return scoped
+
+
+def _build_cluster_lookup(dataset: InspectionDataset) -> dict[str, InspectionCluster]:
+    lookup: dict[str, InspectionCluster] = {}
+    for cluster in _iter_clusters(dataset):
+        if cluster.cluster_id:
+            lookup[cluster.cluster_id] = cluster
+        if cluster.name:
+            lookup[cluster.name] = cluster
+        for node in cluster.nodes:
+            if node.node_id:
+                lookup[f"node:{node.node_id}"] = cluster
+    return lookup
+
+
+def _resolve_reviewed_issue_cluster(
+    issue: ReviewedLogIssue,
+    cluster_lookup: dict[str, InspectionCluster],
+) -> InspectionCluster | None:
+    if issue.cluster_id and issue.cluster_id in cluster_lookup:
+        return cluster_lookup[issue.cluster_id]
+    if issue.cluster_name and issue.cluster_name in cluster_lookup:
+        return cluster_lookup[issue.cluster_name]
+    for node in issue.affected_nodes:
+        cluster = cluster_lookup.get(f"node:{node}")
+        if cluster is not None:
+            return cluster
+    return None
+
+
+def _finding_target(finding: InspectionFinding) -> str:
+    return ", ".join(finding.affected_nodes) if finding.affected_nodes else finding.target or "-"
+
+
+def _risk_detail_text(finding: InspectionFinding) -> str:
+    return "\n".join(
+        [
+            f"风险等级：{finding.severity}。",
+            f"风险描述：{finding.risk_name}。",
+            f"涉及对象：{_finding_target(finding)}。",
+            f"影响说明：{finding.impact}",
+            _evidence_text(finding.evidence),
+            f"建议整改措施：{finding.recommendation}",
+        ]
+    )
+
+
+def _evidence_text(evidence: str) -> str:
+    if not evidence or evidence == "-":
+        return "证据：-"
+    fields = _split_review_evidence(evidence)
+    if not fields:
+        return f"证据：{evidence}"
+    lines = ["证据："]
+    if fields.get("review"):
+        lines.append(f"Review：{fields['review']}")
+    if fields.get("samples"):
+        lines.append(f"Samples：{fields['samples']}")
+    if fields.get("confidence"):
+        lines.append(f"Confidence：{fields['confidence']}")
+    return "\n".join(lines)
+
+
+def _split_review_evidence(evidence: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for part in evidence.split("; "):
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        key = key.strip().lower()
+        if key in {"review", "samples", "confidence"}:
+            fields[key] = value.strip()
+    return fields
 
 
 def _highest_severity(findings: list[InspectionFinding]) -> str:

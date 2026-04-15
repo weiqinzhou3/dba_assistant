@@ -8,7 +8,6 @@ from dba_assistant.core.observability import (
     reset_observability_state,
     start_execution_session,
 )
-from dba_assistant.core.reporter.report_model import TableBlock
 from dba_assistant.core.reporter.generate_analysis_report import generate_analysis_report
 from dba_assistant.core.reporter.types import OutputMode, ReportFormat, ReportOutputConfig
 from dba_assistant.deep_agent_integration.config import ObservabilityConfig
@@ -37,15 +36,15 @@ def test_analyze_offline_inspection_collects_analyzes_and_returns_report(tmp_pat
     assert report.metadata["route"] == "offline_inspection"
     assert report.metadata["source_mode"] == "offline"
     assert report.metadata["node_count"] == "1"
-    risk_rows = [
-        row
+    risk_text = "\n".join(
+        block.text
         for section in report.sections
         if section.id.startswith("risk_remediation__")
         for block in section.blocks
-        if isinstance(block, TableBlock)
-        for row in block.rows
-    ]
-    assert any(row[0] == "Redis 内存水位过高" for row in risk_rows)
+        if hasattr(block, "text")
+    )
+    assert "Redis 内存水位过高" in risk_text
+    assert "风险等级：high" in risk_text
 
 
 def test_offline_inspection_records_audit_phases_through_existing_observability(

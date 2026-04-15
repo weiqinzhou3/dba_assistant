@@ -29,6 +29,34 @@ def test_cli_ask_delegates_initial_turn_to_interface_adapter(monkeypatch, capsys
     assert captured["thread_id"].startswith("cli-session-")
 
 
+def test_cli_ask_streaming_prints_tool_events_and_final_result(monkeypatch, capsys) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_handle_request(request, *, approval_handler, thread_id=None, event_handler=None):
+        captured["event_handler"] = event_handler
+        assert event_handler is not None
+        event_handler({"type": "tool_start", "tool_name": "redis_info"})
+        event_handler({"type": "tool_end", "tool_name": "redis_info"})
+        normalized = type(
+            "Normalized",
+            (),
+            {"runtime_inputs": type("RI", (), {"input_paths": (), "mysql_host": None, "mysql_port": None, "mysql_user": None, "mysql_database": None, "mysql_table": None})()},
+        )()
+        return "streamed final result", normalized
+
+    monkeypatch.setattr(cli, "handle_request", fake_handle_request)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "exit")
+
+    exit_code = cli.main(["ask", "inspect redis", "--stream"])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "[tool:start] redis_info" in output
+    assert "[tool:end] redis_info" in output
+    assert "streamed final result" in output
+    assert captured["event_handler"] is not None
+
+
 def test_cli_ask_threads_all_flags_to_interface_request(monkeypatch, tmp_path, capsys) -> None:
     captured: dict[str, object] = {}
     source = tmp_path / "dump.rdb"

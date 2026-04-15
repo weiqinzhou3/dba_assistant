@@ -9,6 +9,7 @@ import argparse
 import uuid
 from pathlib import Path
 
+from dba_assistant.deep_agent_integration.config import load_app_config
 from dba_assistant.interface.adapter import handle_request
 from dba_assistant.interface.hitl import CliApprovalHandler
 from dba_assistant.interface.types import InterfaceRequest
@@ -37,7 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
     ask_parser.add_argument("--output", default=None, type=Path)
     ask_parser.add_argument(
         "--input-kind",
-        choices=("local_rdb", "precomputed", "preparsed_mysql", "remote_redis"),
+        choices=("local_rdb", "precomputed", "preparsed_mysql", "remote_redis", "redis_inspection"),
         default=None,
     )
     ask_parser.add_argument(
@@ -70,6 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
     ask_parser.add_argument("--mysql-table", default=None)
     ask_parser.add_argument("--mysql-query", default=None)
     ask_parser.add_argument("--mysql-stage-batch-size", default=None, type=_positive_int)
+    ask_parser.add_argument("--stream", action="store_true")
     return parser
 
 
@@ -108,6 +110,7 @@ def main(argv: list[str] | None = None) -> int:
 
         approval_handler = CliApprovalHandler()
         thread_id = f"cli-session-{uuid.uuid4()}"
+        streaming_enabled = args.stream or _config_cli_streaming_enabled(args.config)
         
         # State to carry across turns
         current_input_paths = list(args.input)
@@ -136,11 +139,19 @@ def main(argv: list[str] | None = None) -> int:
         if args.prompt:
             # Execute the first turn if a prompt was provided
             print("\n--- DBA Assistant: Thinking... ---")
-            result, last_norm = handle_request(
-                initial_request, 
-                approval_handler=approval_handler,
-                thread_id=thread_id,
-            )
+            if streaming_enabled:
+                result, last_norm = handle_request(
+                    initial_request,
+                    approval_handler=approval_handler,
+                    thread_id=thread_id,
+                    event_handler=_print_cli_event,
+                )
+            else:
+                result, last_norm = handle_request(
+                    initial_request,
+                    approval_handler=approval_handler,
+                    thread_id=thread_id,
+                )
             print(f"\n{result}")
             _update_state(last_norm)
 
@@ -171,11 +182,19 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 
                 print("\n--- Thinking... ---")
-                result, last_norm = handle_request(
-                    follow_up, 
-                    approval_handler=approval_handler,
-                    thread_id=thread_id,
-                )
+                if streaming_enabled:
+                    result, last_norm = handle_request(
+                        follow_up,
+                        approval_handler=approval_handler,
+                        thread_id=thread_id,
+                        event_handler=_print_cli_event,
+                    )
+                else:
+                    result, last_norm = handle_request(
+                        follow_up,
+                        approval_handler=approval_handler,
+                        thread_id=thread_id,
+                    )
                 print(f"\n{result}")
                 _update_state(last_norm)
                 
@@ -189,6 +208,25 @@ def main(argv: list[str] | None = None) -> int:
 
     parser.error(f"Unsupported command: {args.command}")
     return 2
+
+
+def _config_cli_streaming_enabled(config_path: str | None) -> bool:
+    try:
+        config = load_app_config(config_path)
+    except Exception:
+        return False
+    return bool(getattr(config.runtime, "cli_streaming", False))
+
+
+def _print_cli_event(event: dict[str, object]) -> None:
+    event_type = str(event.get("type") or "")
+    tool_name = str(event.get("tool_name") or "")
+    if event_type == "tool_start" and tool_name:
+        print(f"[tool:start] {tool_name}", flush=True)
+    elif event_type == "tool_end" and tool_name:
+        print(f"[tool:end] {tool_name}", flush=True)
+    elif event_type == "tool_error" and tool_name:
+        print(f"[tool:error] {tool_name}: {event.get('error')}", flush=True)
 
 
 if __name__ == "__main__":

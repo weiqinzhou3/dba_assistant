@@ -155,10 +155,25 @@ def test_build_unified_agent_wires_tools_and_model(monkeypatch) -> None:
     monkeypatch.setattr(agent_module, "get_memory_sources", lambda: ["/AGENTS.md"])
     monkeypatch.setattr(agent_module, "get_skill_sources", lambda: ["/skills"])
     monkeypatch.setattr(agent_module, "build_runtime_checkpointer", lambda: "fake-checkpointer")
+
+    def ensure_remote_rdb_snapshot():
+        return None
+
+    def fetch_remote_rdb_via_ssh():
+        return None
+
+    def stage_local_rdb_to_mysql():
+        return None
+
+    fake_tools = [
+        ensure_remote_rdb_snapshot,
+        fetch_remote_rdb_via_ssh,
+        stage_local_rdb_to_mysql,
+    ]
     monkeypatch.setattr(
         agent_module,
         "build_all_tools",
-        lambda req, config=None, connection=None, mysql_connection=None, remote_rdb_state=None, approval_handler=None: ["tool1", "tool2"],
+        lambda req, config=None, connection=None, mysql_connection=None, remote_rdb_state=None, approval_handler=None: fake_tools,
     )
     monkeypatch.setattr(agent_module, "_load_system_prompt", lambda: "prompt from file")
 
@@ -177,7 +192,7 @@ def test_build_unified_agent_wires_tools_and_model(monkeypatch) -> None:
     assert agent == "fake-agent"
     assert captured["name"] == "dba-assistant"
     assert captured["model"] == "fake-model"
-    assert captured["tools"] == ["tool1", "tool2"]
+    assert captured["tools"] == fake_tools
     assert captured["backend"] == "fake-backend"
     assert captured["filesystem_backend_config"] == config.agent.filesystem_backend
     assert captured["memory"] == ["/AGENTS.md"]

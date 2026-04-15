@@ -2,7 +2,6 @@ from pathlib import Path
 import json
 
 import pytest
-import yaml
 
 from dba_assistant.adaptors.redis_adaptor import RedisConnectionConfig
 from dba_assistant.application.request_models import NormalizedRequest, RdbOverrides, RuntimeInputs, Secrets
@@ -88,16 +87,83 @@ def test_build_all_tools_includes_local_rdb_without_connection() -> None:
     assert "analyze_local_rdb_stream" in names
     assert "analyze_preparsed_dataset" in names
     assert "redis_ping" in names
-    assert "collect_offline_inspection_dataset" in names
-    assert "redis_inspection_log_candidates" in names
-    assert "review_redis_log_candidates" in names
-    assert "render_redis_inspection_report" in names
-    assert "redis_inspection_report" in names
+    assert "collect_offline_inspection_dataset" not in names
+    assert "redis_inspection_log_candidates" not in names
+    assert "review_redis_log_candidates" not in names
+    assert "render_redis_inspection_report" not in names
+    assert "redis_inspection_report" not in names
     assert "discover_remote_rdb" in names
     assert "ensure_remote_rdb_snapshot" in names
     assert "fetch_remote_rdb_via_ssh" in names
     assert "mysql_read_query" in names
     assert "stage_rdb_rows_to_mysql" in names
+
+
+def test_inspection_request_exposes_only_inspection_and_readonly_redis_tools(tmp_path: Path) -> None:
+    evidence_dir = tmp_path / "inspection"
+    evidence_dir.mkdir()
+    request = _make_request(
+        prompt="生成 Redis 巡检报告",
+        runtime_inputs=RuntimeInputs(
+            output_mode="summary",
+            input_kind="redis_inspection",
+            input_paths=(evidence_dir,),
+        ),
+    )
+
+    tools = build_all_tools(request)
+    names = {t.__name__ for t in tools}
+
+    assert {
+        "redis_ping",
+        "redis_info",
+        "redis_config_get",
+        "redis_slowlog_get",
+        "redis_client_list",
+        "redis_cluster_info",
+        "redis_cluster_nodes",
+        "collect_offline_inspection_dataset",
+        "redis_inspection_log_candidates",
+        "review_redis_log_candidates",
+        "render_redis_inspection_report",
+        "redis_inspection_report",
+    }.issubset(names)
+    assert "stage_local_rdb_to_mysql" not in names
+    assert "stage_rdb_rows_to_mysql" not in names
+    assert "analyze_staged_rdb" not in names
+    assert "load_preparsed_dataset_from_mysql" not in names
+    assert "analyze_preparsed_dataset" not in names
+    assert "analyze_local_rdb_stream" not in names
+    assert "discover_remote_rdb" not in names
+    assert "ensure_remote_rdb_snapshot" not in names
+    assert "fetch_remote_rdb_via_ssh" not in names
+    assert "mysql_read_query" not in names
+
+
+def test_rdb_request_keeps_rdb_mysql_and_remote_rdb_tools() -> None:
+    request = _make_request(
+        prompt="analyze this RDB through MySQL staging if needed",
+        runtime_inputs=RuntimeInputs(
+            output_mode="summary",
+            input_kind="local_rdb",
+            input_paths=(Path("/tmp/dump.rdb"),),
+        ),
+    )
+
+    tools = build_all_tools(request)
+    names = {t.__name__ for t in tools}
+
+    assert "inspect_local_rdb" in names
+    assert "analyze_local_rdb_stream" in names
+    assert "stage_local_rdb_to_mysql" in names
+    assert "stage_rdb_rows_to_mysql" in names
+    assert "analyze_staged_rdb" in names
+    assert "load_preparsed_dataset_from_mysql" in names
+    assert "analyze_preparsed_dataset" in names
+    assert "discover_remote_rdb" in names
+    assert "ensure_remote_rdb_snapshot" in names
+    assert "fetch_remote_rdb_via_ssh" in names
+    assert "collect_offline_inspection_dataset" not in names
 
 
 def test_build_all_tools_includes_redis_tools_with_connection() -> None:
@@ -113,11 +179,11 @@ def test_build_all_tools_includes_redis_tools_with_connection() -> None:
     assert "redis_client_list" in names
     assert "redis_cluster_info" in names
     assert "redis_cluster_nodes" in names
-    assert "collect_offline_inspection_dataset" in names
-    assert "redis_inspection_log_candidates" in names
-    assert "review_redis_log_candidates" in names
-    assert "render_redis_inspection_report" in names
-    assert "redis_inspection_report" in names
+    assert "collect_offline_inspection_dataset" not in names
+    assert "redis_inspection_log_candidates" not in names
+    assert "review_redis_log_candidates" not in names
+    assert "render_redis_inspection_report" not in names
+    assert "redis_inspection_report" not in names
     assert "discover_remote_rdb" in names
     assert "ensure_remote_rdb_snapshot" in names
     assert "fetch_remote_rdb_via_ssh" in names
@@ -190,6 +256,7 @@ def test_offline_inspection_uses_collect_review_then_render_tools(tmp_path: Path
             dataset_handle=collect_payload["dataset_handle"],
         )
     )
+    sample_message = candidates_payload["preview"][0]["samples"][0]["raw_message"]
     reviewed_payload = json.dumps(
         {
             "issues": [
@@ -201,7 +268,7 @@ def test_offline_inspection_uses_collect_review_then_render_tools(tmp_path: Path
                     "severity": "high",
                     "why": "LLM reviewed OOM as memory pressure evidence.",
                     "affected_nodes": [collect_payload["clusters"][0]["nodes"][0]["node_id"]],
-                    "supporting_samples": [candidates_payload["clusters"][0]["log_candidates"][0]["raw_message"]],
+                    "supporting_samples": [sample_message],
                     "recommendation": "检查 maxmemory、业务写入峰值和淘汰策略。",
                     "merge_key": "oom-memory-pressure",
                     "category": "log",
@@ -219,6 +286,7 @@ def test_offline_inspection_uses_collect_review_then_render_tools(tmp_path: Path
     )
 
     assert collect_payload["dataset_handle"].startswith("inspection_dataset_")
+    assert candidates_payload["log_candidates_handle"].startswith("inspection_log_candidates_")
     assert "Redis 日志显示 OOM" in result
     assert "问题概览与整改优先级" in result
 
@@ -290,8 +358,11 @@ def test_offline_inspection_uses_explicit_review_tool_before_render(
             log_end_time="2026-04-30 23:59:59",
         )
     )
-    candidates_json = candidates_tool(dataset_handle=collect_payload["dataset_handle"])
-    reviewed_json = review_tool(log_candidates_json=candidates_json, report_language="zh-CN")
+    candidates_summary = json.loads(candidates_tool(dataset_handle=collect_payload["dataset_handle"]))
+    reviewed_json = review_tool(
+        log_candidates_handle=candidates_summary["log_candidates_handle"],
+        report_language="zh-CN",
+    )
     result = render_tool(
         dataset_handle=collect_payload["dataset_handle"],
         reviewed_log_issues_json=reviewed_json,
@@ -301,13 +372,18 @@ def test_offline_inspection_uses_explicit_review_tool_before_render(
 
     assert review_calls[0]["model"] == "review-model"
     assert json.loads(review_calls[0]["log_candidates_json"])["clusters"][0]["log_candidates"]
+    assert "clusters" not in candidates_summary
+    assert candidates_summary["candidate_count"] == 1
     assert "Redis 日志显示 OOM" in result
     assert "问题概览与整改优先级" in result
     assert "风险与整改建议" in result
     assert "review tool judged OOM as anomalous" in result
 
 
-def test_review_redis_log_candidates_tool_does_not_call_generic_filesystem_tools(monkeypatch) -> None:
+def test_review_redis_log_candidates_tool_does_not_call_generic_filesystem_tools(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
     called = {"review": False}
 
     def fake_review(log_candidates_json, *, model, focus_topics="", report_language="zh-CN"):
@@ -322,13 +398,24 @@ def test_review_redis_log_candidates_tool_does_not_call_generic_filesystem_tools
     for name in ("ls", "glob", "grep", "read_file"):
         monkeypatch.setitem(build_all_tools.__globals__, name, forbidden)
 
+    source = tmp_path / "inspection"
+    source.mkdir()
+    (source / "info.txt").write_text("redis_version:7.0.15\nrole:master\ntcp_port:6379\n", encoding="utf-8")
+    (source / "redis.log").write_text("2026-04-14 09:00:00 # OOM command not allowed\n", encoding="utf-8")
+
     request = _make_request(runtime_inputs=RuntimeInputs(output_mode="summary", input_paths=()))
-    review_tool = next(
-        t for t in build_all_tools(request, config=_make_config())
-        if t.__name__ == "review_redis_log_candidates"
+    tools = build_all_tools(request, config=_make_config())
+    candidates_tool = next(t for t in tools if t.__name__ == "redis_inspection_log_candidates")
+    review_tool = next(t for t in tools if t.__name__ == "review_redis_log_candidates")
+    candidates_summary = json.loads(
+        candidates_tool(
+            input_paths=str(source),
+            log_start_time="2026-04-01 00:00:00",
+            log_end_time="2026-04-30 23:59:59",
+        )
     )
 
-    result = json.loads(review_tool(log_candidates_json='{"clusters": []}'))
+    result = json.loads(review_tool(log_candidates_handle=candidates_summary["log_candidates_handle"]))
 
     assert called["review"] is True
     assert result == {"issues": []}
@@ -362,8 +449,10 @@ def test_log_candidates_tool_uses_dataset_handle_without_recollecting(
 
     payload = json.loads(candidates_tool(dataset_handle=handle))
 
-    assert payload["clusters"][0]["log_candidates"][0]["candidate_signal"] == "oom_signal"
-    assert payload["review_output_schema"]["properties"]["issues"]["type"] == "array"
+    assert payload["log_candidates_handle"].startswith("inspection_log_candidates_")
+    assert payload["candidate_count"] == 1
+    assert payload["preview"][0]["samples"][0]["candidate_signal"] == "oom_signal"
+    assert "clusters" not in payload
 
 
 def test_collect_summary_includes_log_candidate_presence_and_total(tmp_path: Path) -> None:
@@ -384,7 +473,7 @@ def test_collect_summary_includes_log_candidate_presence_and_total(tmp_path: Pat
     assert payload["total_log_candidate_count"] == 1
 
 
-def test_redis_inspection_log_candidates_tool_returns_neutral_review_payload(tmp_path: Path) -> None:
+def test_redis_inspection_log_candidates_tool_returns_handle_and_neutral_preview(tmp_path: Path) -> None:
     source = tmp_path / "inspection"
     source.mkdir()
     (source / "info.txt").write_text("redis_version:7.0.15\nrole:master\ntcp_port:6379\n", encoding="utf-8")
@@ -404,13 +493,19 @@ def test_redis_inspection_log_candidates_tool_returns_neutral_review_payload(tmp
         )
     )
 
-    candidate = payload["clusters"][0]["log_candidates"][0]
+    candidate = payload["preview"][0]["samples"][0]
+    assert payload["log_candidates_handle"].startswith("inspection_log_candidates_")
+    assert payload["cluster_count"] == 1
+    assert payload["candidate_count"] == 1
     assert candidate["candidate_signal"] == "persistence_signal"
-    assert "review_output_schema" in payload
+    assert "clusters" not in payload
     assert "abnormal" not in json.dumps(payload).lower()
 
 
-def test_log_candidates_tool_loads_review_schema_from_skill_asset(tmp_path: Path) -> None:
+def test_review_handle_path_loads_full_payload_and_schema_from_skill_asset(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
     source = tmp_path / "inspection"
     source.mkdir()
     (source / "info.txt").write_text("redis_version:7.0.15\nrole:master\ntcp_port:6379\n", encoding="utf-8")
@@ -422,17 +517,58 @@ def test_log_candidates_tool_loads_review_schema_from_skill_asset(tmp_path: Path
     expected_schema = json.loads(schema_path.read_text(encoding="utf-8"))
 
     request = _make_request(runtime_inputs=RuntimeInputs(output_mode="summary", input_paths=()))
-    candidates_tool = next(t for t in build_all_tools(request) if t.__name__ == "redis_inspection_log_candidates")
+    captured: dict[str, object] = {}
 
-    payload = json.loads(
+    def fake_review(log_candidates_json, *, model, focus_topics="", report_language="zh-CN"):
+        captured["payload"] = json.loads(log_candidates_json)
+        return '{"issues": []}'
+
+    monkeypatch.setattr("dba_assistant.orchestrator.tools._review_redis_log_candidates", fake_review)
+    monkeypatch.setattr("dba_assistant.orchestrator.tools.build_model", lambda model_config: "review-model")
+
+    tools = build_all_tools(request, config=_make_config())
+    candidates_tool = next(t for t in tools if t.__name__ == "redis_inspection_log_candidates")
+    review_tool = next(t for t in tools if t.__name__ == "review_redis_log_candidates")
+
+    summary = json.loads(
         candidates_tool(
             input_paths=str(source),
             log_start_time="2026-04-01 00:00:00",
             log_end_time="2026-04-30 23:59:59",
         )
     )
+    review_tool(log_candidates_handle=summary["log_candidates_handle"])
 
-    assert payload["review_output_schema"] == expected_schema
+    assert captured["payload"]["review_output_schema"] == expected_schema
+    assert captured["payload"]["clusters"][0]["log_candidates"][0]["candidate_signal"] == "oom_signal"
+
+
+def test_log_candidates_summary_avoids_returning_large_raw_payload(tmp_path: Path) -> None:
+    source = tmp_path / "inspection"
+    source.mkdir()
+    (source / "info.txt").write_text("redis_version:7.0.15\nrole:master\ntcp_port:6379\n", encoding="utf-8")
+    (source / "redis.log").write_text(
+        "\n".join(
+            f"2026-04-14 09:00:{index:02d} # OOM command not allowed huge-event-{index}"
+            for index in range(60)
+        ),
+        encoding="utf-8",
+    )
+
+    request = _make_request(runtime_inputs=RuntimeInputs(output_mode="summary", input_paths=()))
+    candidates_tool = next(t for t in build_all_tools(request) if t.__name__ == "redis_inspection_log_candidates")
+
+    raw_result = candidates_tool(
+        input_paths=str(source),
+        log_start_time="2026-04-01 00:00:00",
+        log_end_time="2026-04-30 23:59:59",
+    )
+    payload = json.loads(raw_result)
+
+    assert payload["candidate_count"] == 60
+    assert payload["log_candidates_handle"].startswith("inspection_log_candidates_")
+    assert "huge-event-59" not in raw_result
+    assert len(raw_result) < 5000
 
 
 def test_collect_offline_inspection_dataset_applies_explicit_log_time_window(tmp_path: Path) -> None:
@@ -492,10 +628,6 @@ def test_problem_overview_columns_come_from_skill_table_schema_asset(tmp_path: P
         "redis_version:7.0.15\nrole:master\ntcp_port:6379\nused_memory:920\nmaxmemory:1000\n",
         encoding="utf-8",
     )
-    expected_columns = yaml.safe_load(
-        Path("skills/redis-inspection-report/assets/table_schemas.yaml").read_text(encoding="utf-8")
-    )["problem_overview"]["columns"]
-
     dataset = RedisInspectionOfflineCollector().collect(
         RedisInspectionOfflineInput(sources=(source,), log_time_window_days=30)
     )
@@ -503,7 +635,8 @@ def test_problem_overview_columns_come_from_skill_table_schema_asset(tmp_path: P
     problem_section = next(section for section in report.sections if section.id == "problem_overview")
     problem_table = next(block for block in problem_section.blocks if hasattr(block, "columns"))
 
-    assert problem_table.columns == expected_columns
+    assert problem_table.title == "优先级速览"
+    assert problem_table.columns == ["优先级", "集群", "风险等级", "关键问题", "优先动作"]
 
 
 def test_render_redis_inspection_report_consumes_dataset_handle(

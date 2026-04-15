@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from deepagents import create_deep_agent
@@ -51,6 +51,7 @@ def build_unified_agent(
     request: NormalizedRequest,
     config: AppConfig,
     approval_handler: HumanApprovalHandler,
+    event_handler: Callable[[dict[str, Any]], None] | None = None,
 ) -> object:
     """Build the unified Deep Agent with all available tools."""
     connection = _build_connection(request, config)
@@ -64,6 +65,7 @@ def build_unified_agent(
         mysql_connection=mysql_connection,
         remote_rdb_state=remote_rdb_state,
         approval_handler=approval_handler,
+        event_handler=event_handler,
     )
 
     model = build_model(config.model)
@@ -83,6 +85,12 @@ def build_unified_agent(
             "allowed_decisions": ["approve", "reject"],
             "description": _build_mysql_staging_interrupt_description(request),
         },
+    }
+    tool_names = {getattr(tool, "__name__", "") for tool in tools}
+    interrupt_on = {
+        tool_name: spec
+        for tool_name, spec in interrupt_on.items()
+        if tool_name in tool_names
     }
     agent = create_deep_agent(
         name="dba-assistant",
@@ -108,9 +116,13 @@ def run_orchestrated(
     config: AppConfig,
     approval_handler: HumanApprovalHandler,
     thread_id: str | None = None,
+    event_handler: Callable[[dict[str, Any]], None] | None = None,
 ) -> str:
     """Run the unified Deep Agent and return the final output."""
-    agent = build_unified_agent(request, config, approval_handler)
+    if event_handler is None:
+        agent = build_unified_agent(request, config, approval_handler)
+    else:
+        agent = build_unified_agent(request, config, approval_handler, event_handler=event_handler)
     user_message = _build_user_message(request)
     run_config = {"configurable": {"thread_id": thread_id or f"dba-assistant-{uuid4()}"}}
     result = agent.invoke(
@@ -126,7 +138,9 @@ def run_orchestrated(
                 session = get_current_execution_session()
                 if session is not None:
                     session.mark_status("denied", detail="user rejected approval request")
-                return "Operation denied by user."
+                output = "Operation denied by user."
+                _emit_final_output(event_handler, output)
+                return output
             result = agent.invoke(Command(resume=resume_payload), config=run_config)
 
         if not _should_force_runtime_approval(agent, request, result):
@@ -138,10 +152,12 @@ def run_orchestrated(
                     "failure",
                     detail="model asked for approval in plain text instead of using interrupt_on",
                 )
-            return (
+            output = (
                 "Internal policy violation: the model asked for approval in plain text "
                 "instead of invoking the approval-gated tool fetch_remote_rdb_via_ssh."
             )
+            _emit_final_output(event_handler, output)
+            return output
         approval_retry_count += 1
         result = agent.invoke(
             {
@@ -160,7 +176,17 @@ def run_orchestrated(
         )
 
     final_output = extract_agent_output(result)
-    return _finalize_runtime_output(request, final_output)
+    output = _finalize_runtime_output(request, final_output)
+    _emit_final_output(event_handler, output)
+    return output
+
+
+def _emit_final_output(
+    event_handler: Callable[[dict[str, Any]], None] | None,
+    output: str,
+) -> None:
+    if event_handler is not None:
+        event_handler({"type": "final_output", "content": output})
 
 
 def _build_all_tools_compatible(
@@ -171,11 +197,16 @@ def _build_all_tools_compatible(
         return build_all_tools(request, **kwargs)
     except TypeError as exc:
         message = str(exc)
-        if "approval_handler" not in message and "config" not in message:
+        if (
+            "approval_handler" not in message
+            and "config" not in message
+            and "event_handler" not in message
+        ):
             raise
         compatible_kwargs = dict(kwargs)
         compatible_kwargs.pop("approval_handler", None)
         compatible_kwargs.pop("config", None)
+        compatible_kwargs.pop("event_handler", None)
         return build_all_tools(request, **compatible_kwargs)
 
 

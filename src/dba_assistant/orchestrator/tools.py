@@ -12,7 +12,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from dba_assistant.adaptors.mysql_adaptor import (
     MySQLAdaptor,
@@ -109,6 +109,7 @@ class ToolRuntimeContext:
     mysql_read_timeout_seconds: float = 15.0
     mysql_write_timeout_seconds: float = 30.0
     model_config: Any | None = None
+    event_handler: Callable[[dict[str, Any]], None] | None = None
 
 def build_all_tools(
     request: NormalizedRequest,
@@ -118,6 +119,7 @@ def build_all_tools(
     mysql_connection: MySQLConnectionConfig | None = None,
     remote_rdb_state: dict[str, Any] | None = None,
     approval_handler: HumanApprovalHandler | None = None,
+    event_handler: Callable[[dict[str, Any]], None] | None = None,
 ) -> list:
     """Build the complete tool list available to the unified agent."""
     runtime_config = getattr(config, "runtime", None)
@@ -139,106 +141,143 @@ def build_all_tools(
             getattr(runtime_config, "mysql_write_timeout_seconds", 30.0)
         ),
         model_config=getattr(config, "model", None),
+        event_handler=event_handler,
     )
     tools: list = []
     inspection_datasets: dict[str, Any] = {}
-
-    # Local RDB analysis & inspection
-    tools.append(
-        _make_inspect_local_rdb_tool()
-    )
-    tools.append(
-        _make_analyze_local_rdb_stream_tool(
-            context,
-        )
-    )
-    tools.append(
-        _make_analyze_staged_rdb_tool(
-            context,
-        )
-    )
-    tools.append(
-        _make_stage_local_rdb_to_mysql_tool(
-            context,
-        )
-    )
-    tools.append(
-        _make_analyze_preparsed_dataset_tool(
-            context,
-        )
-    )
+    inspection_log_candidate_payloads: dict[str, Any] = {}
+    profile = _select_tool_capability_profile(request)
 
     adaptor = RedisAdaptor()
     shared_remote_rdb_state = remote_rdb_state if remote_rdb_state is not None else {}
-    tools.extend(
-        make_redis_inspection_tools(
-            context,
-            adaptor,
-            resolve_connection=_resolve_request_with_redis_connection,
-        )
-    )
-    tools.append(
-        _make_collect_offline_inspection_dataset_tool(
-            context,
-            inspection_datasets,
-        )
-    )
-    tools.append(
-        _make_redis_inspection_log_candidates_tool(
-            context,
-            inspection_datasets,
-        )
-    )
-    tools.append(
-        _make_review_redis_log_candidates_tool(
-            context,
-        )
-    )
-    tools.append(
-        _make_render_redis_inspection_report_tool(
-            context,
-            inspection_datasets,
-            tool_name="render_redis_inspection_report",
-        )
-    )
-    tools.append(
-        _make_render_redis_inspection_report_tool(
-            context,
-            inspection_datasets,
-            tool_name="redis_inspection_report",
-        )
-    )
-    tools.append(
-        _make_discover_remote_rdb_tool(
-            context,
-            adaptor,
-            remote_rdb_state=shared_remote_rdb_state,
-        )
-    )
-    tools.append(
-        _make_ensure_remote_rdb_snapshot_tool(
-            context,
-            adaptor,
-            remote_rdb_state=shared_remote_rdb_state,
-        )
-    )
-    tools.append(
-        _make_fetch_remote_rdb_via_ssh_tool(
-            context,
-        )
-    )
 
-    tools.extend(
-        _make_mysql_tools(
-            context,
+    if profile in {"rdb", "all"}:
+        tools.append(_make_inspect_local_rdb_tool())
+        tools.append(_make_analyze_local_rdb_stream_tool(context))
+        tools.append(_make_analyze_staged_rdb_tool(context))
+        tools.append(_make_stage_local_rdb_to_mysql_tool(context))
+        tools.append(_make_analyze_preparsed_dataset_tool(context))
+
+    if profile in {"rdb", "inspection", "all"}:
+        tools.extend(
+            make_redis_inspection_tools(
+                context,
+                adaptor,
+                resolve_connection=_resolve_request_with_redis_connection,
+            )
         )
-    )
+
+    if profile in {"inspection", "all"}:
+        tools.append(
+            _make_collect_offline_inspection_dataset_tool(
+                context,
+                inspection_datasets,
+            )
+        )
+        tools.append(
+            _make_redis_inspection_log_candidates_tool(
+                context,
+                inspection_datasets,
+                inspection_log_candidate_payloads,
+            )
+        )
+        tools.append(
+            _make_review_redis_log_candidates_tool(
+                context,
+                inspection_log_candidate_payloads,
+            )
+        )
+        tools.append(
+            _make_render_redis_inspection_report_tool(
+                context,
+                inspection_datasets,
+                tool_name="render_redis_inspection_report",
+            )
+        )
+        tools.append(
+            _make_render_redis_inspection_report_tool(
+                context,
+                inspection_datasets,
+                tool_name="redis_inspection_report",
+            )
+        )
+
+    if profile in {"rdb", "all"}:
+        tools.append(
+            _make_discover_remote_rdb_tool(
+                context,
+                adaptor,
+                remote_rdb_state=shared_remote_rdb_state,
+            )
+        )
+        tools.append(
+            _make_ensure_remote_rdb_snapshot_tool(
+                context,
+                adaptor,
+                remote_rdb_state=shared_remote_rdb_state,
+            )
+        )
+        tools.append(
+            _make_fetch_remote_rdb_via_ssh_tool(
+                context,
+            )
+        )
+        tools.extend(
+            _make_mysql_tools(
+                context,
+            )
+        )
 
     # Generic input collection tool
     if approval_handler is not None:
         tools.append(make_ask_user_for_config_tool(approval_handler))
 
-    return [_instrument_tool(tool) for tool in tools]
+    return [_instrument_tool(tool, event_handler=context.event_handler) for tool in tools]
+
+
+def _select_tool_capability_profile(request: NormalizedRequest) -> str:
+    runtime = request.runtime_inputs
+    input_kind = (runtime.input_kind or "").strip().lower()
+    path_mode = (runtime.path_mode or "").strip().lower()
+    prompt = f"{request.raw_prompt}\n{request.prompt}".lower()
+
+    if input_kind in {"redis_inspection", "inspection"}:
+        return "inspection"
+    if path_mode in {"redis_inspection", "inspection", "redis_inspection_report"}:
+        return "inspection"
+    if _prompt_requests_inspection(prompt) and not _prompt_requests_rdb_analysis(prompt):
+        return "inspection"
+    if runtime.input_paths and _input_paths_look_like_inspection_sources(runtime.input_paths):
+        if input_kind not in {"local_rdb", "precomputed", "preparsed_mysql"}:
+            return "inspection"
+
+    if input_kind in {"local_rdb", "precomputed", "preparsed_mysql", "remote_redis"}:
+        return "rdb"
+    if path_mode in {"auto", "database_backed_analysis", "preparsed_dataset_analysis", "direct_rdb_analysis"}:
+        return "rdb"
+    if runtime.remote_rdb_path or runtime.require_fresh_rdb_snapshot or runtime.ssh_host:
+        return "rdb"
+    if runtime.mysql_host or runtime.mysql_table or runtime.mysql_query:
+        return "rdb"
+    if any(_path_looks_like_rdb(path) for path in runtime.input_paths):
+        return "rdb"
+    return "all"
+
+
+def _prompt_requests_inspection(prompt: str) -> bool:
+    return any(token in prompt for token in ("inspection", "巡检", "体检"))
+
+
+def _prompt_requests_rdb_analysis(prompt: str) -> bool:
+    return any(token in prompt for token in ("rdb", "dump.rdb", "database_backed_analysis", "preparsed_mysql"))
+
+
+def _input_paths_look_like_inspection_sources(paths: tuple[Path, ...]) -> bool:
+    return any(not _path_looks_like_rdb(path) for path in paths)
+
+
+def _path_looks_like_rdb(path: Path) -> bool:
+    return path.suffix.lower() == ".rdb"
 
 
 # ---------------------------------------------------------------------------
@@ -432,6 +471,7 @@ def _make_render_redis_inspection_report_tool(
 def _make_redis_inspection_log_candidates_tool(
     context: ToolRuntimeContext,
     dataset_store: dict[str, Any],
+    log_candidate_store: dict[str, Any],
 ):
     """Collect neutral Redis log candidates for LLM semantic review."""
     request = context.request
@@ -447,7 +487,13 @@ def _make_redis_inspection_log_candidates_tool(
             dataset = dataset_store.get(dataset_handle.strip())
             if dataset is None:
                 return f"Error: unknown inspection dataset_handle: {dataset_handle}"
-            return json.dumps(_build_log_review_payload(dataset), ensure_ascii=False, indent=2)
+            payload = _build_log_review_payload(dataset)
+            handle = _store_inspection_log_candidate_payload(log_candidate_store, payload)
+            summary = _summarize_log_candidate_payload(
+                payload,
+                log_candidates_handle=handle,
+            )
+            return json.dumps(summary, ensure_ascii=False, indent=2)
 
         explicit_paths = [Path(p.strip()).expanduser() for p in input_paths.split(",") if p.strip()]
         paths = explicit_paths or list(request.runtime_inputs.input_paths)
@@ -472,7 +518,12 @@ def _make_redis_inspection_log_candidates_tool(
             )
         except ValueError as exc:
             return f"Error: {exc}"
-        return json.dumps(payload, ensure_ascii=False, indent=2)
+        handle = _store_inspection_log_candidate_payload(log_candidate_store, payload)
+        summary = _summarize_log_candidate_payload(
+            payload,
+            log_candidates_handle=handle,
+        )
+        return json.dumps(summary, ensure_ascii=False, indent=2)
 
     return _named_tool(
         redis_inspection_log_candidates,
@@ -483,28 +534,49 @@ def _make_redis_inspection_log_candidates_tool(
             "timestamp parsing, deduplication, sampling, and cluster/node bucketing. "
             "It does not decide whether a candidate is anomalous. "
             "Prefer dataset_handle from collect_offline_inspection_dataset to avoid re-parsing evidence. "
-            "After reviewing the JSON, call render_redis_inspection_report with reviewed_log_issues_json."
+            "It stores the full candidate payload internally and returns a lightweight "
+            "log_candidates_handle plus bounded preview. "
+            "Next call review_redis_log_candidates with log_candidates_handle; do not pass "
+            "large candidate payloads back through tool arguments."
         ),
     )
 
 
-def _make_review_redis_log_candidates_tool(context: ToolRuntimeContext):
+def _make_review_redis_log_candidates_tool(
+    context: ToolRuntimeContext,
+    log_candidate_store: dict[str, Any],
+):
     """Run LLM semantic review over a log candidate payload."""
     request = context.request
 
     def review_redis_log_candidates(
-        log_candidates_json: str,
+        log_candidates_handle: str = "",
         focus_topics: str = "",
         report_language: str = "",
+        log_candidates_json: str = "",
     ) -> str:
-        if not log_candidates_json.strip():
-            return "Error: log_candidates_json is required."
+        log_candidates_payload: Any
+        if log_candidates_handle.strip():
+            log_candidates_payload = log_candidate_store.get(log_candidates_handle.strip())
+            if log_candidates_payload is None:
+                return f"Error: unknown log_candidates_handle: {log_candidates_handle}"
+            effective_log_candidates_json = json.dumps(
+                log_candidates_payload,
+                ensure_ascii=False,
+            )
+        else:
+            if not log_candidates_json.strip():
+                return (
+                    "Error: log_candidates_handle is required. "
+                    "Call redis_inspection_log_candidates first and pass its handle."
+                )
+            effective_log_candidates_json = log_candidates_json
         if context.model_config is None:
             return "Error: model configuration is required for Redis log semantic review."
         try:
             model = build_model(context.model_config)
             return _review_redis_log_candidates(
-                log_candidates_json,
+                effective_log_candidates_json,
                 model=model,
                 focus_topics=focus_topics,
                 report_language=report_language or request.runtime_inputs.report_language,
@@ -519,12 +591,109 @@ def _make_review_redis_log_candidates_tool(context: ToolRuntimeContext):
         "review_redis_log_candidates",
         (
             "Review Redis log candidates with an LLM and return reviewed_log_issues_json. "
-            "Input must be the JSON returned by redis_inspection_log_candidates. "
-            "This tool directly consumes log_candidates_json and does not access filesystem "
+            "Prefer log_candidates_handle returned by redis_inspection_log_candidates. "
+            "Do not pass large candidate payload strings back through tool arguments. "
+            "The legacy log_candidates_json argument is only for small compatibility cases. "
+            "This tool loads the stored candidate payload by handle and does not access filesystem "
             "tools such as ls, glob, grep, or read_file. "
-            "Parameters: log_candidates_json, focus_topics, report_language."
+            "Parameters: log_candidates_handle, focus_topics, report_language."
         ),
     )
+
+
+def _store_inspection_log_candidate_payload(
+    store: dict[str, Any],
+    payload: dict[str, Any],
+) -> str:
+    handle = f"inspection_log_candidates_{len(store) + 1}"
+    store[handle] = payload
+    return handle
+
+
+def _summarize_log_candidate_payload(
+    payload: dict[str, Any],
+    *,
+    log_candidates_handle: str,
+) -> dict[str, Any]:
+    clusters = payload.get("clusters")
+    if not isinstance(clusters, list):
+        clusters = []
+    return {
+        "log_candidates_handle": log_candidates_handle,
+        "source_mode": payload.get("source_mode"),
+        "input_sources": payload.get("input_sources") or [],
+        "cluster_count": len(clusters),
+        "candidate_count": _total_log_candidate_count(clusters),
+        "preview": _log_candidate_preview(clusters),
+        "next_step": (
+            "Call review_redis_log_candidates(log_candidates_handle=...) "
+            "with this handle; do not pass the full candidate payload as a tool argument."
+        ),
+    }
+
+
+def _total_log_candidate_count(clusters: list[Any]) -> int:
+    total = 0
+    for cluster in clusters:
+        if not isinstance(cluster, dict):
+            continue
+        value = cluster.get("candidate_count")
+        try:
+            total += int(value)
+        except (TypeError, ValueError):
+            candidates = cluster.get("log_candidates")
+            total += len(candidates) if isinstance(candidates, list) else 0
+    return total
+
+
+def _log_candidate_preview(
+    clusters: list[Any],
+    *,
+    max_clusters: int = 5,
+    max_samples_per_cluster: int = 3,
+) -> list[dict[str, Any]]:
+    preview: list[dict[str, Any]] = []
+    for cluster in clusters[:max_clusters]:
+        if not isinstance(cluster, dict):
+            continue
+        candidates = cluster.get("log_candidates")
+        if not isinstance(candidates, list):
+            candidates = []
+        preview.append(
+            {
+                "cluster_id": cluster.get("cluster_id") or "",
+                "cluster_name": cluster.get("cluster_name") or "",
+                "candidate_count": _cluster_candidate_count(cluster, candidates),
+                "samples": [
+                    _candidate_preview_item(candidate)
+                    for candidate in candidates[:max_samples_per_cluster]
+                    if isinstance(candidate, dict)
+                ],
+            }
+        )
+    return preview
+
+
+def _cluster_candidate_count(cluster: dict[str, Any], candidates: list[Any]) -> int:
+    value = cluster.get("candidate_count")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return len(candidates)
+
+
+def _candidate_preview_item(candidate: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "node_id": candidate.get("node_id") or "",
+        "timestamp": candidate.get("timestamp"),
+        "candidate_signal": candidate.get("candidate_signal") or "",
+        "raw_message": candidate.get("raw_message") or "",
+        "count": candidate.get("count", candidate.get("repeated_count", 1)),
+        "repeated_count": candidate.get("repeated_count", candidate.get("count", 1)),
+        "source_path": candidate.get("source_path") or "",
+        "parse_confidence": candidate.get("parse_confidence") or "",
+        "time_window_applied": candidate.get("time_window_applied"),
+    }
 
 
 def _resolve_inspection_log_window(
@@ -873,7 +1042,11 @@ def _make_stage_local_rdb_to_mysql_tool(
     )
 
 
-def _instrument_tool(tool):
+def _instrument_tool(
+    tool,
+    *,
+    event_handler: Callable[[dict[str, Any]], None] | None = None,
+):
     if getattr(tool, "_dba_observed_tool", False):
         return tool
 
@@ -883,11 +1056,36 @@ def _instrument_tool(tool):
     def wrapped_tool(*args, **kwargs):
         bound = signature.bind_partial(*args, **kwargs)
         bound.apply_defaults()
-        return observe_tool_call(
-            getattr(tool, "__name__", "tool_execution"),
-            dict(bound.arguments),
-            lambda: tool(*args, **kwargs),
-        )
+        tool_name = getattr(tool, "__name__", "tool_execution")
+        if event_handler is not None:
+            event_handler({"type": "tool_start", "tool_name": tool_name})
+        started = time.perf_counter()
+        try:
+            result = observe_tool_call(
+                tool_name,
+                dict(bound.arguments),
+                lambda: tool(*args, **kwargs),
+            )
+        except Exception as exc:
+            if event_handler is not None:
+                event_handler(
+                    {
+                        "type": "tool_error",
+                        "tool_name": tool_name,
+                        "elapsed_seconds": round(time.perf_counter() - started, 6),
+                        "error": str(exc),
+                    }
+                )
+            raise
+        if event_handler is not None:
+            event_handler(
+                {
+                    "type": "tool_end",
+                    "tool_name": tool_name,
+                    "elapsed_seconds": round(time.perf_counter() - started, 6),
+                }
+            )
+        return result
 
     wrapped_tool.__signature__ = signature
     wrapped_tool._dba_observed_tool = True

@@ -118,10 +118,13 @@ class DocxReporter(IReporter[AnalysisResult | AnalysisReport]):
                 minor_index = 0
                 sub_index = 0
                 self._render_major_heading(document, major_index, section.title, language=language)
-            else:
+            elif section.level == 2:
                 minor_index += 1
                 sub_index = 0
                 self._render_minor_heading(document, major_index, minor_index, section.title)
+            else:
+                sub_index += 1
+                self._render_sub_heading(document, major_index, minor_index, sub_index, section.title)
             for block in section.blocks:
                 if isinstance(block, TextBlock):
                     add_body_paragraph(document, block.text)
@@ -150,6 +153,9 @@ class DocxReporter(IReporter[AnalysisResult | AnalysisReport]):
 
     def _render_minor_heading(self, document: Document, major: int, minor: int, title: str) -> None:
         add_heading(document, f"{major}.{minor} {title}", level=2)
+
+    def _render_sub_heading(self, document: Document, major: int, minor: int, sub: int, title: str) -> None:
+        add_heading(document, f"{major}.{minor}.{sub} {title}", level=3)
 
     def _prepare_summary_and_sections(self, report: AnalysisReport) -> tuple[str | None, list]:
         summary_text = report.summary

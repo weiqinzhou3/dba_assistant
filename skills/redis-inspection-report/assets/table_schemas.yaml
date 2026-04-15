@@ -1,19 +1,18 @@
 problem_overview:
-  title: 集群级问题概览与整改优先级
+  title: 优先级速览
   columns:
+    - 优先级
     - 集群
-    - 关键问题
-    - 涉及节点
     - 风险等级
-    - 影响
-    - 优先整改建议
+    - 关键问题
+    - 优先动作
 
 detailed_risk_items:
-  title: 风险与整改建议清单
-  columns:
-    - 风险名称
+  presentation: paragraph_risk_entries
+  fields:
     - 风险等级
-    - 发现对象
+    - 风险描述
+    - 涉及对象
     - 影响说明
     - 证据
     - 建议整改措施

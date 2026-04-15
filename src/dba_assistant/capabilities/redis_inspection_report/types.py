@@ -16,6 +16,8 @@ class InspectionFinding:
     merge_key: str | None = None
     affected_nodes: tuple[str, ...] = ()
     source: str = "deterministic_rule"
+    cluster_id: str | None = None
+    cluster_name: str | None = None
 
 
 @dataclass(frozen=True)

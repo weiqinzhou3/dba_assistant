@@ -21,6 +21,6 @@ def test_shared_asset_loader_reads_inspection_json_yaml_and_text_assets() -> Non
     titles = load_numbered_outline_titles("redis-inspection-report", "assets/report_outline.md")
 
     assert schema["properties"]["issues"]["type"] == "array"
-    assert tables["problem_overview"]["columns"][0] == "集群"
+    assert tables["problem_overview"]["columns"][0] == "优先级"
     assert "问题概览与整改优先级" in outline_text
     assert titles[2] == "问题概览与整改优先级"

@@ -6,7 +6,7 @@ Handles request normalization, HITL delegation, and artifact formatting.
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Any
+from typing import Any, Callable
 
 from dba_assistant.application.prompt_parser import normalize_raw_request
 from dba_assistant.application.request_models import (
@@ -26,6 +26,7 @@ def handle_request(
     *,
     approval_handler: HumanApprovalHandler,
     thread_id: str | None = None,
+    event_handler: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[str, NormalizedRequest]:
     """Unified entry point for all interfaces."""
     config = load_app_config(request.config_path)
@@ -46,12 +47,21 @@ def handle_request(
         normalized_request=normalized,
         raw_request_summary=raw_request_summary,
     ):
-        result = run_orchestrated(
-            normalized,
-            config=config,
-            approval_handler=audited_handler,
-            thread_id=thread_id,
-        )
+        if event_handler is None:
+            result = run_orchestrated(
+                normalized,
+                config=config,
+                approval_handler=audited_handler,
+                thread_id=thread_id,
+            )
+        else:
+            result = run_orchestrated(
+                normalized,
+                config=config,
+                approval_handler=audited_handler,
+                thread_id=thread_id,
+                event_handler=event_handler,
+            )
         return result, normalized
 
 

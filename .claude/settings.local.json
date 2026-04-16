@@ -11,7 +11,12 @@
       "Bash(python3.11 -m pytest tests/unit/capabilities/redis_inspection_report/ tests/unit/core/reporter/test_output_path_policy.py -x --tb=short)",
       "Bash(python3.11 -m pytest tests/unit/capabilities/redis_inspection_report/ tests/unit/core/reporter/test_output_path_policy.py tests/unit/core/reporter/test_docx_reporter.py -x --tb=long)",
       "Bash(python3.11 -m pytest tests/unit/orchestrator/test_tools.py -x --tb=short)",
-      "Bash(python3.11 -m pytest tests/ -x --tb=short)"
+      "Bash(python3.11 -m pytest tests/ -x --tb=short)",
+      "Bash(python -m pytest tests/unit/orchestrator/test_large_rdb_mysql_refusal_and_docx.py -v)",
+      "Bash(python -m pytest tests/unit/orchestrator/test_tools.py -v -k \"test_\" --co)",
+      "Bash(python -m pytest tests/unit/capabilities/redis_rdb_analysis/test_rdb_analysis_service.py -v --co)",
+      "Bash(python3.11 -m pytest tests/unit/capabilities/redis_rdb_analysis/test_rdb_analysis_service.py -v --co)",
+      "Bash(python3.11:*)"
     ]
   }
 }

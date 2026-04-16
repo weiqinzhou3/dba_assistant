@@ -53,7 +53,12 @@ For files larger than 1 GB:
   `analyze_staged_rdb`.
 - If the user refuses MySQL or says direct analysis / just analyze it / no
   MySQL, warn once about memory or partial-analysis risk, then immediately proceed
-  with `analyze_local_rdb_stream`. Do not repeat negotiation.
+  by calling `analyze_local_rdb_stream` with `mysql_staging_refused=true`. Do not
+  repeat negotiation.
+- Once the user declines MySQL staging, the runtime enforces this decision:
+  `stage_local_rdb_to_mysql`, `analyze_staged_rdb`, `analyze_preparsed_dataset`,
+  and MySQL-related `ask_user_for_config` calls will be blocked for the rest of
+  the session. Do not attempt to work around this guard.
 - MySQL staging consent is not a substitute for runtime approval. After the user
   chooses staging, call the approval-gated tool and let the runtime interrupt
   collect approval.
@@ -104,6 +109,10 @@ If the user asks for Word, DOCX, Doc, 文档, 报告, or a formal RDB report:
   apply the repository output-path policy.
 - After the tool succeeds, the final response must include the generated DOCX
   artifact path. Do not replace DOCX output with an inline-only summary.
+- Runtime enforcement: the analysis tools detect DOCX requests in the original
+  prompt and force `report` mode with `docx` format even if the LLM omits these
+  parameters. A postcondition verifies that a `.docx` artifact exists on disk
+  before returning success.
 
 ## Success Criteria
 

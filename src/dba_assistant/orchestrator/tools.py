@@ -10,6 +10,7 @@ from functools import wraps
 import inspect
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -150,13 +151,14 @@ def build_all_tools(
 
     adaptor = RedisAdaptor()
     shared_remote_rdb_state = remote_rdb_state if remote_rdb_state is not None else {}
+    rdb_session_state: dict[str, Any] = {}
 
     if profile in {"rdb", "all"}:
-        tools.append(_make_inspect_local_rdb_tool())
-        tools.append(_make_analyze_local_rdb_stream_tool(context))
-        tools.append(_make_analyze_staged_rdb_tool(context))
-        tools.append(_make_stage_local_rdb_to_mysql_tool(context))
-        tools.append(_make_analyze_preparsed_dataset_tool(context))
+        tools.append(_make_inspect_local_rdb_tool(rdb_session_state))
+        tools.append(_make_analyze_local_rdb_stream_tool(context, rdb_session_state))
+        tools.append(_make_analyze_staged_rdb_tool(context, rdb_session_state))
+        tools.append(_make_stage_local_rdb_to_mysql_tool(context, rdb_session_state))
+        tools.append(_make_analyze_preparsed_dataset_tool(context, rdb_session_state))
 
     if profile in {"rdb", "inspection", "all"}:
         tools.extend(
@@ -230,7 +232,7 @@ def build_all_tools(
 
     # Generic input collection tool
     if approval_handler is not None:
-        tools.append(make_ask_user_for_config_tool(approval_handler))
+        tools.append(make_ask_user_for_config_tool(approval_handler, rdb_session_state=rdb_session_state))
 
     return [_instrument_tool(tool, event_handler=context.event_handler) for tool in tools]
 
@@ -281,10 +283,51 @@ def _path_looks_like_rdb(path: Path) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Session state: large-RDB MySQL refusal and DOCX output enforcement
+# ---------------------------------------------------------------------------
+
+_MYSQL_REFUSAL_PATTERNS = [
+    re.compile(r"不[要用需].*mysql", re.IGNORECASE),
+    re.compile(r"no\s*mysql", re.IGNORECASE),
+    re.compile(r"直接分析"),
+    re.compile(r"不[要用需].*staging", re.IGNORECASE),
+    re.compile(r"skip\s*mysql", re.IGNORECASE),
+    re.compile(r"without\s*mysql", re.IGNORECASE),
+    re.compile(r"不[要用需].*数据库"),
+    re.compile(r"just\s+analyze", re.IGNORECASE),
+]
+
+_MYSQL_CONFIG_KEYWORDS = frozenset({"mysql", "数据库", "database", "staging"})
+
+_DOCX_REQUEST_TOKENS = frozenset({"word", "docx", "doc", "文档", "报告"})
+
+_MYSQL_REFUSAL_GUARD_MESSAGE = (
+    "MySQL staging was declined for this session. "
+    "Use analyze_local_rdb_stream for direct analysis of the local RDB file."
+)
+
+
+def _is_mysql_refusal(text: str) -> bool:
+    """Detect explicit user refusal of MySQL-backed staging."""
+    return any(pattern.search(text) for pattern in _MYSQL_REFUSAL_PATTERNS)
+
+
+def _is_mysql_related_question(question: str) -> bool:
+    lower = question.lower()
+    return any(token in lower for token in _MYSQL_CONFIG_KEYWORDS)
+
+
+def _prompt_requests_docx_output(prompt: str) -> bool:
+    """Detect if the user prompt explicitly requests DOCX/Word output."""
+    lower = prompt.lower()
+    return any(token in lower for token in _DOCX_REQUEST_TOKENS)
+
+
+# ---------------------------------------------------------------------------
 # Local RDB inspection (Phase 3)
 # ---------------------------------------------------------------------------
 
-def _make_inspect_local_rdb_tool():
+def _make_inspect_local_rdb_tool(rdb_session_state: dict[str, Any]):
     """Tool to provide file metadata to the LLM."""
 
     def inspect_local_rdb(input_paths: str) -> str:
@@ -293,9 +336,13 @@ def _make_inspect_local_rdb_tool():
             return "Error: no input paths provided."
 
         results = []
+        any_large = False
         for path in paths:
             exists = path.exists()
             size = path.stat().st_size if exists and path.is_file() else 0
+            is_large = size > LARGE_RDB_WARNING_BYTES
+            if is_large:
+                any_large = True
             results.append(
                 {
                     "path": str(path),
@@ -303,7 +350,13 @@ def _make_inspect_local_rdb_tool():
                     "is_file": path.is_file() if exists else False,
                     "size_bytes": size,
                     "size_human": _human_readable_size(size),
+                    "large_file": is_large,
                 }
+            )
+        if any_large:
+            rdb_session_state["large_rdb_detected"] = True
+            rdb_session_state.setdefault("large_rdb_paths", []).extend(
+                str(r["path"]) for r in results if r.get("large_file")
             )
         return json.dumps(results, indent=2)
 
@@ -312,8 +365,10 @@ def _make_inspect_local_rdb_tool():
         "inspect_local_rdb",
         (
             "Inspect local Redis RDB dump files to see metadata before analysis. "
-            "Returns JSON with existence, size, and file status. "
+            "Returns JSON with existence, size, file status, and large_file flag. "
             "Use this BEFORE analysis to decide if a file is too large for direct analysis. "
+            "If the user declines MySQL staging for large files, proceed directly "
+            "with analyze_local_rdb_stream (set mysql_staging_refused=true). "
             "Parameter: input_paths (comma-separated file paths)."
         ),
     )
@@ -725,6 +780,7 @@ def _resolve_inspection_log_window(
 
 def _make_analyze_local_rdb_stream_tool(
     context: ToolRuntimeContext,
+    rdb_session_state: dict[str, Any],
 ):
     """Combined analyze + report tool for local RDB files (streaming)."""
     request = context.request
@@ -737,7 +793,11 @@ def _make_analyze_local_rdb_stream_tool(
         report_format: str = "",
         output_path: str = "",
         focus_prefixes: str = "",
+        mysql_staging_refused: bool = False,
     ) -> str:
+        # Latch MySQL refusal into session state so other tools respect it.
+        if mysql_staging_refused:
+            rdb_session_state["mysql_staging_refused"] = True
         paths = [Path(p.strip()).expanduser() for p in input_paths.split(",") if p.strip()]
         if not paths:
             return "Error: no input paths provided."
@@ -787,6 +847,16 @@ def _make_analyze_local_rdb_stream_tool(
             or request.runtime_inputs.report_format
             or ("summary" if effective_output_mode == "summary" else "docx")
         )
+
+        # Hard guard: force DOCX when the original prompt demands it.
+        prompt_wants_docx = (
+            _prompt_requests_docx_output(request.prompt)
+            or _prompt_requests_docx_output(request.raw_prompt)
+        )
+        if prompt_wants_docx and effective_report_format != "docx":
+            effective_output_mode = "report"
+            effective_report_format = "docx"
+
         runtime_inputs = ensure_report_output_path(
             replace(
                 request.runtime_inputs,
@@ -809,6 +879,15 @@ def _make_analyze_local_rdb_stream_tool(
             language=runtime_inputs.report_language,
         )
         artifact = _generate(analysis, config)
+
+        # Postcondition: when DOCX was requested, verify the artifact path.
+        if fmt is ReportFormat.DOCX:
+            if artifact.output_path is not None and artifact.output_path.exists():
+                return str(artifact.output_path)
+            if artifact.output_path is not None:
+                return f"Error: DOCX generation completed but artifact not found at {artifact.output_path}"
+            return "Error: DOCX output was requested but no artifact path was generated by the reporter."
+
         if artifact.content is not None:
             return artifact.content
         if artifact.output_path is not None:
@@ -820,20 +899,23 @@ def _make_analyze_local_rdb_stream_tool(
         "analyze_local_rdb_stream",
         (
             "Analyze local Redis RDB dump files using direct streaming and generate a report. "
-            "Best for small to medium files (<= 1GB). "
+            "Works for all file sizes. For large files (> 1GB) when the user declines MySQL staging, "
+            "set mysql_staging_refused=true. "
             "Parameters: input_paths (comma-separated file paths), "
             "profile_name ('generic' or 'rcs'), "
             "report_language (optional BCP47 code like 'zh-CN' or 'en-US'), "
             "output_mode ('summary' or 'report'), "
             "report_format ('summary' or 'docx'), "
             "output_path (optional file path; omit output_path to use runtime default for docx), "
-            "focus_prefixes (optional, comma-separated key prefixes like 'cache:*,session:*')."
+            "focus_prefixes (optional, comma-separated key prefixes like 'cache:*,session:*'), "
+            "mysql_staging_refused (set true when user declines MySQL staging for large files)."
         ),
     )
 
 
 def _make_analyze_staged_rdb_tool(
     context: ToolRuntimeContext,
+    rdb_session_state: dict[str, Any],
 ):
     """Analyze RDB data already staged in MySQL."""
     request = context.request
@@ -852,6 +934,8 @@ def _make_analyze_staged_rdb_tool(
         output_path: str = "",
         focus_prefixes: str = "",
     ) -> str:
+        if rdb_session_state.get("mysql_staging_refused"):
+            return _MYSQL_REFUSAL_GUARD_MESSAGE
         if not mysql_table:
             return "Error: mysql_table is required for staged analysis."
         resolved_request = _resolve_request_with_mysql_context(
@@ -905,6 +989,7 @@ def _make_analyze_staged_rdb_tool(
             output_mode=output_mode or resolved_request.runtime_inputs.output_mode or "summary",
             report_format=report_format or resolved_request.runtime_inputs.report_format or "summary",
             output_path=Path(output_path) if output_path else resolved_request.runtime_inputs.output_path,
+            prompt=request.prompt or request.raw_prompt,
         )
 
     return _named_tool(
@@ -922,6 +1007,7 @@ def _make_analyze_staged_rdb_tool(
 
 def _make_stage_local_rdb_to_mysql_tool(
     context: ToolRuntimeContext,
+    rdb_session_state: dict[str, Any],
 ):
     """Stage local RDB files into MySQL for heavy-duty analysis."""
     request = context.request
@@ -935,6 +1021,8 @@ def _make_stage_local_rdb_to_mysql_tool(
         mysql_database: str = "",
         mysql_stage_batch_size: int | None = None,
     ) -> str:
+        if rdb_session_state.get("mysql_staging_refused"):
+            return _MYSQL_REFUSAL_GUARD_MESSAGE
         mysql_adaptor = MySQLAdaptor()
         resolved_request = _resolve_request_with_mysql_context(
             context,
@@ -1094,6 +1182,7 @@ def _instrument_tool(
 
 def _make_analyze_preparsed_dataset_tool(
     context: ToolRuntimeContext,
+    rdb_session_state: dict[str, Any],
 ):
     """Analyze preparsed datasets from local files or MySQL-backed sources."""
     request = context.request
@@ -1114,6 +1203,8 @@ def _make_analyze_preparsed_dataset_tool(
         output_path: str = "",
         focus_prefixes: str = "",
     ) -> str:
+        if rdb_session_state.get("mysql_staging_refused"):
+            return _MYSQL_REFUSAL_GUARD_MESSAGE
         overrides: dict[str, object] = {}
         if focus_prefixes:
             overrides["focus_prefixes"] = tuple(
@@ -1189,6 +1280,7 @@ def _make_analyze_preparsed_dataset_tool(
             output_mode=output_mode or resolved_request.runtime_inputs.output_mode or "summary",
             report_format=report_format or resolved_request.runtime_inputs.report_format or "summary",
             output_path=Path(output_path) if output_path else resolved_request.runtime_inputs.output_path,
+            prompt=request.prompt or request.raw_prompt,
         )
 
     return _named_tool(

@@ -1,12 +1,18 @@
 {
   "type": "object",
   "required": ["issues"],
+  "additionalProperties": false,
   "properties": {
     "issues": {
       "type": "array",
+      "minItems": 1,
+      "description": "Per chunk conclusion items. The runtime validates every cluster x issue family chunk, then deterministically removes non-anomalous items from the final reviewed_log_issues_json.",
       "items": {
         "type": "object",
+        "additionalProperties": false,
         "required": [
+          "cluster_id",
+          "cluster_name",
           "issue_name",
           "is_anomalous",
           "severity",
@@ -19,6 +25,8 @@
           "confidence"
         ],
         "properties": {
+          "cluster_id": {"type": "string"},
+          "cluster_name": {"type": "string"},
           "issue_name": {"type": "string"},
           "is_anomalous": {"type": "boolean"},
           "severity": {"enum": ["critical", "high", "medium", "low", "info"]},

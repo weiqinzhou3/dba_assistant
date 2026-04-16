@@ -2,11 +2,14 @@ from dba_assistant.capabilities.redis_inspection_report.analyzer import (
     analyze_inspection_dataset,
     _keyspace_summary,
     _cluster_status_display,
+    _merge_cluster_risk_entries,
+    _risk_detail_block,
 )
 from dba_assistant.core.reporter.report_model import InfoTableBlock, TableBlock, TextBlock
 from dba_assistant.capabilities.redis_inspection_report.types import (
     InspectionCluster,
     InspectionDataset,
+    InspectionFinding,
     InspectionNode,
     InspectionSystem,
     ReviewedLogIssue,
@@ -166,7 +169,7 @@ def test_analyzer_builds_report_sections_and_findings_from_cluster_dataset() -> 
     assert "主机 Swap 已使用" in risk_text
     risk_titles = [section.title for section in report.sections if section.id.startswith("risk_remediation__cluster-a")]
     assert risk_titles.count("Redis 日志显示 OOM 与复制异常") == 1
-    assert "Review：" in risk_text
+    assert "Review：" not in risk_text
     assert "Samples：" in risk_text
     assert "Confidence：high" in risk_text
     assert "review=" not in risk_text
@@ -355,6 +358,7 @@ def test_problem_overview_is_executive_summary_not_wide_table() -> None:
     )
     assert priority_table.columns == ["序号", "集群", "风险等级", "关键问题"]
     assert priority_table.show_title is False
+    assert priority_table.table_kind == "summary_priority_table"
     assert priority_table.rows[0][1] == "test-cluster"
     assert "Redis 内存水位过高" in priority_table.rows[0][3]
     direction_text = _section_text([problem_sections[3]])
@@ -381,6 +385,7 @@ def test_problem_overview_node_direction_entries_are_numbered_info_tables() -> N
         for section in direction_entry_sections
     )
     first_table = direction_entry_sections[0].blocks[0]
+    assert first_table.table_kind == "issue_scope_table"
     assert [row.label for row in first_table.rows] == ["问题类型", "涉及集群", "涉及节点", "优先处置方向"]
     assert "trade-redis" in _info_row_text(first_table, "涉及集群")
     assert "\n" in _info_row_text(first_table, "优先处置方向")
@@ -560,6 +565,7 @@ def test_problem_overview_priority_table_lists_all_significant_clusters() -> Non
     priority_section = next(section for section in report.sections if section.id == "problem_overview__priority")
     priority_table = next(block for block in priority_section.blocks if isinstance(block, TableBlock))
     assert priority_table.title == "优先级速览"
+    assert priority_table.table_kind == "summary_priority_table"
     assert len(priority_table.rows) == 13
     assert {row[1] for row in priority_table.rows} == {f"cluster-{index}" for index in range(13)}
 
@@ -645,18 +651,72 @@ def test_log_risk_keeps_review_samples_and_confidence_naturally() -> None:
         "风险描述",
         "涉及对象",
         "影响说明",
-        "Review",
         "证据",
         "整改建议",
     ]
     text = _section_text([section])
-    assert "Review：AOF rewrite was reviewed as too frequent" in text
+    assert "Review：" not in text
     assert "Samples：" in text
     assert "Background append only file rewriting started" in text
     assert "Confidence：high" in text
     assert "review=" not in text
     assert "samples=" not in text
     assert "检查 AOF rewrite 触发阈值\n" in text
+
+
+def test_log_risk_hides_review_when_normalized_same_as_impact_but_keeps_evidence() -> None:
+    entry = _merge_cluster_risk_entries(
+        [
+            InspectionFinding(
+                risk_name="AOF重写频繁触发",
+                severity="medium",
+                target="10.0.0.1:6379",
+                evidence="review= AOF rewrite was reviewed as too frequent. ; samples=Background rewrite; confidence=high",
+                impact="AOF rewrite was reviewed as too frequent。",
+                recommendation="检查 AOF rewrite 触发阈值；评估写入峰值。",
+                category="log",
+                source="llm_log_review",
+            )
+        ]
+    )[0]
+
+    block = _risk_detail_block(entry)
+
+    assert [row.label for row in block.rows] == [
+        "风险等级",
+        "风险描述",
+        "涉及对象",
+        "影响说明",
+        "证据",
+        "整改建议",
+    ]
+    evidence = _info_row_text(block, "证据")
+    assert "Samples：Background rewrite" in evidence
+    assert "Confidence：high" in evidence
+
+
+def test_log_risk_keeps_review_when_it_has_distinct_analysis() -> None:
+    entry = _merge_cluster_risk_entries(
+        [
+            InspectionFinding(
+                risk_name="Redis集群节点故障与恢复",
+                severity="high",
+                target="10.0.0.1:6379",
+                evidence="review=Fault was repeated after recovery and needs failover timeline review; samples=failover started; confidence=medium",
+                impact="Redis cluster node failure can affect slot availability.",
+                recommendation="复核故障节点；检查槽位和复制状态。",
+                category="log",
+                source="llm_log_review",
+            )
+        ]
+    )[0]
+
+    block = _risk_detail_block(entry)
+
+    assert "Review" in [row.label for row in block.rows]
+    assert "Fault was repeated after recovery" in _info_row_text(block, "Review")
+    assert "Samples：failover started" in _info_row_text(block, "证据")
+    assert "Confidence：medium" in _info_row_text(block, "证据")
 
 
 def test_risk_remediation_entries_are_info_tables_with_evidence_and_optional_review() -> None:
@@ -677,9 +737,31 @@ def test_risk_remediation_entries_are_info_tables_with_evidence_and_optional_rev
         for section in risk_entry_sections
     )
     swap_table = next(section.blocks[0] for section in risk_entry_sections if section.title == "主机 Swap 已使用")
+    assert swap_table.table_kind == "risk_detail_table"
     assert _info_row_text(swap_table, "证据")
     assert _info_row_text(swap_table, "整改建议").count("\n") >= 1
     assert all(row.label != "Review" for row in swap_table.rows)
+
+
+def test_log_candidate_summary_table_uses_log_candidate_layout_kind() -> None:
+    dataset = _make_simple_dataset(
+        log_facts={
+            "log_candidates": [
+                {"candidate_signal": "persistence_signal", "raw_message": "Background append only file rewriting started"},
+            ],
+            "log_candidate_count": "1",
+        }
+    )
+
+    report = analyze_inspection_dataset(dataset)
+
+    redis_section = next(section for section in report.sections if section.id == "redis_database__test-cluster")
+    log_table = next(
+        block
+        for block in redis_section.blocks
+        if isinstance(block, TableBlock) and block.title == "Redis 日志候选摘要"
+    )
+    assert log_table.table_kind == "log_candidate_summary_table"
 
 
 def test_reviewed_log_issue_cluster_scope_does_not_leak_foreign_nodes() -> None:

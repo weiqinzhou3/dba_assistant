@@ -670,11 +670,11 @@ def test_redis_inspection_report_docx_without_output_path_uses_runtime_artifact_
     source.mkdir()
     (source / "info.txt").write_text("redis_version:7.0.15\nrole:master\ntcp_port:6379\n", encoding="utf-8")
     monkeypatch.setattr(
-        "dba_assistant.core.reporter.output_path_policy._timestamp_slug",
-        lambda: "20260414_010203",
+        "dba_assistant.core.reporter.output_path_policy._date_slug",
+        lambda: "20260414",
     )
     artifact_dir = tmp_path / "configured-artifacts"
-    default_path = artifact_dir / "dba_assistant_redis_inspection_20260414_010203.docx"
+    default_path = artifact_dir / "redis_inspection_report_20260414.docx"
     default_path.unlink(missing_ok=True)
 
     request = _make_request(

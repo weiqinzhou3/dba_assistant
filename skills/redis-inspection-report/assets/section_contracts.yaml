@@ -5,6 +5,7 @@ chapter_3:
     - id: priority_overview
       title: 优先级速览
       presentation: table
+      table_kind: summary_priority_table
       display_mode: all
       top_n: null
       suppress_repeated_table_title: true
@@ -16,6 +17,7 @@ chapter_3:
     - id: node_direction
       title: 涉及节点与优先处置方向
       presentation: info_table_per_problem_type
+      table_kind: issue_scope_table
       grouping: by_problem_type
       fields:
         - 问题类型
@@ -80,6 +82,7 @@ chapter_9:
     - 9.x.y 风险名称
   merge_rule: same_cluster_same_risk_name
   presentation: info_table_per_risk_item
+  table_kind: risk_detail_table
   fields:
     - 风险等级
     - 风险描述

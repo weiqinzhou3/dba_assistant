@@ -144,7 +144,7 @@ tool arguments.
 - If the user asks for Word, DOCX, Doc, 正式报告, 文档, or 报告 and gives no output
   path, do not require the user to provide output_path. Omit `output_path` and
   let runtime/tool default to the configured `paths.artifact_dir`, with a file
-  name shaped like `dba_assistant_redis_inspection_<timestamp>.docx`.
+  name shaped like `redis_inspection_report_YYYYMMDD.docx`.
 
 ## Output Contract
 

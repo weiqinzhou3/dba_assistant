@@ -65,7 +65,7 @@ def test_inspection_skill_owns_defaults_parameters_and_output_contract() -> None
         "log_end_time",
         "default to the last 30 days",
         "configured `paths.artifact_dir`",
-        "dba_assistant_redis_inspection_<timestamp>.docx",
+        "redis_inspection_report_yyyymmdd.docx",
         "do not require the user to provide output_path",
         "docx mode must generate",
         "artifact path",

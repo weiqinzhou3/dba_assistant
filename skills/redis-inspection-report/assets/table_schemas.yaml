@@ -1,5 +1,6 @@
 problem_overview:
   title: 优先级速览
+  table_kind: summary_priority_table
   columns:
     - 序号
     - 集群
@@ -8,6 +9,7 @@ problem_overview:
 
 detailed_risk_items:
   presentation: info_table_per_risk_item
+  table_kind: risk_detail_table
   merge_rule: same_cluster_same_risk_name
   fields:
     - 风险等级
@@ -28,6 +30,7 @@ detailed_risk_items:
 
 log_candidates:
   title: Redis 日志候选摘要
+  table_kind: log_candidate_summary_table
   columns:
     - 节点
     - 候选数

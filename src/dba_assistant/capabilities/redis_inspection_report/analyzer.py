@@ -500,6 +500,7 @@ def _problem_overview_sections(
                     columns=table_columns,
                     rows=table_rows,
                     show_title=False,
+                    table_kind="summary_priority_table",
                 )
             ],
         ),
@@ -571,6 +572,7 @@ def _problem_direction_sections(
                 level=3,
                 blocks=[
                     InfoTableBlock(
+                        table_kind="issue_scope_table",
                         rows=[
                             InfoTableRow(label="问题类型", text="未发现明确优先问题"),
                             InfoTableRow(label="涉及集群", text="-"),
@@ -597,6 +599,7 @@ def _problem_direction_sections(
                 level=3,
                 blocks=[
                     InfoTableBlock(
+                        table_kind="issue_scope_table",
                         rows=[
                             InfoTableRow(label="问题类型", text=risk_name),
                             InfoTableRow(label="涉及集群", text=", ".join(clusters) or "-"),
@@ -846,6 +849,7 @@ def _redis_cluster_sections(dataset: InspectionDataset) -> list[ReportSectionMod
                         title="Redis 日志候选摘要",
                         columns=["节点", "候选数", "样本"],
                         rows=_log_rows(cluster),
+                        table_kind="log_candidate_summary_table",
                     ),
                 ],
             )
@@ -897,6 +901,7 @@ def _risk_cluster_sections(dataset: InspectionDataset, findings: list[Inspection
                     level=3,
                     blocks=[
                         InfoTableBlock(
+                            table_kind="risk_detail_table",
                             rows=[
                                 InfoTableRow(label="风险等级", text="info"),
                                 InfoTableRow(label="风险描述", text="当前证据未显示明确风险。"),
@@ -1120,6 +1125,7 @@ def _merge_cluster_risk_entries(findings: list[InspectionFinding]) -> list[dict[
             for item in items
             for action in _split_actions(item.recommendation)
         )
+        impact_text = " / ".join(impacts) or primary.impact
         evidence_lines = _risk_evidence_lines(items, is_log_review=is_log_review)
         review_text = ""
         if is_log_review:
@@ -1131,16 +1137,18 @@ def _merge_cluster_risk_entries(findings: list[InspectionFinding]) -> list[dict[
                     if fields.get("review")
                 )
             )
+        display_review = is_log_review and _review_has_distinct_analysis(review_text, impact_text)
         entries.append(
             {
                 "risk_name": risk_name,
                 "severity": primary.severity,
                 "targets": targets,
-                "impact": " / ".join(impacts) or primary.impact,
+                "impact": impact_text,
                 "recommendations": recommendations or [primary.recommendation],
                 "evidence_lines": evidence_lines,
                 "is_log_review": is_log_review,
-                "review": review_text or primary.impact,
+                "display_review": display_review,
+                "review": review_text,
             }
         )
 
@@ -1156,7 +1164,7 @@ def _merge_cluster_risk_entries(findings: list[InspectionFinding]) -> list[dict[
 def _risk_detail_block(entry: dict[str, object]) -> InfoTableBlock:
     rows: list[InfoTableRow] = []
     for field in _chapter9_field_order():
-        if field == "Review" and not entry.get("is_log_review"):
+        if field == "Review" and not entry.get("display_review"):
             continue
         if field == "风险等级":
             rows.append(InfoTableRow(label=field, text=str(entry["severity"])))
@@ -1178,7 +1186,7 @@ def _risk_detail_block(entry: dict[str, object]) -> InfoTableBlock:
                     bullet=True,
                 )
             )
-    return InfoTableBlock(rows=rows)
+    return InfoTableBlock(rows=rows, table_kind="risk_detail_table")
 
 
 def _risk_evidence_lines(items: list[InspectionFinding], *, is_log_review: bool) -> list[str]:
@@ -1217,9 +1225,21 @@ def _is_log_review_finding(finding: InspectionFinding) -> bool:
     return finding.source == "llm_log_review" or bool(_split_review_evidence(finding.evidence))
 
 
+def _review_has_distinct_analysis(review_text: str, impact_text: str) -> bool:
+    normalized_review = _normalize_review_for_comparison(review_text)
+    if not normalized_review:
+        return False
+    return normalized_review != _normalize_review_for_comparison(impact_text)
+
+
+def _normalize_review_for_comparison(value: str) -> str:
+    text = re.sub(r"\s+", " ", str(value).replace("\u3000", " ").strip())
+    return text.rstrip(".。;；!！?？").strip()
+
+
 def _split_review_evidence(evidence: str) -> dict[str, str]:
     fields: dict[str, str] = {}
-    for part in evidence.split("; "):
+    for part in re.split(r"\s*;\s*", evidence):
         if "=" not in part:
             continue
         key, value = part.split("=", 1)

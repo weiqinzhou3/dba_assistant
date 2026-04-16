@@ -159,7 +159,12 @@ class DocxReporter(IReporter[AnalysisResult | AnalysisReport]):
                     cells = docx_table.add_row().cells
                     for index, value in enumerate(row):
                         cells[index].text = value
-                style_table(docx_table, language=language, table_style_module=table_style_module)
+                style_table(
+                    docx_table,
+                    language=language,
+                    table_style_module=table_style_module,
+                    table_kind=block.table_kind,
+                )
         return major_index
 
     def _render_info_table_block(
@@ -174,7 +179,12 @@ class DocxReporter(IReporter[AnalysisResult | AnalysisReport]):
             cells = docx_table.rows[index].cells
             cells[0].text = row.label
             self._set_cell_lines(cells[1], row.text.splitlines() or ["-"], bullet=row.bullet)
-        style_info_table(docx_table, language=language, table_style_module=table_style_module)
+        style_info_table(
+            docx_table,
+            language=language,
+            table_style_module=table_style_module,
+            table_kind=block.table_kind,
+        )
 
     def _set_cell_lines(self, cell, lines: list[str], *, bullet: bool) -> None:
         cell.text = ""

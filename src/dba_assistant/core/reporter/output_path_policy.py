@@ -38,6 +38,9 @@ def default_report_output_path(
     target_dir = (base_dir or DEFAULT_ARTIFACT_DIR).expanduser()
     target_dir.mkdir(parents=True, exist_ok=True)
 
+    if _is_redis_inspection_report(report_slug):
+        return target_dir / f"redis_inspection_report_{_date_slug()}.docx"
+
     stem = f"{_report_stem(report_slug)}_{_timestamp_slug()}"
     candidate = target_dir / f"{stem}.docx"
     counter = 2
@@ -75,10 +78,18 @@ def ensure_report_output_path(
 
 
 def _report_stem(report_slug: str) -> str:
-    normalized = report_slug.strip().lower().replace("-", "_")
-    if normalized in {"inspection", "redis_inspection", "redis_inspection_report"}:
-        return "dba_assistant_redis_inspection"
+    if _is_redis_inspection_report(report_slug):
+        return "redis_inspection_report"
     return "dba_assistant_report"
+
+
+def _is_redis_inspection_report(report_slug: str) -> bool:
+    normalized = report_slug.strip().lower().replace("-", "_")
+    return normalized in {"inspection", "redis_inspection", "redis_inspection_report"}
+
+
+def _date_slug() -> str:
+    return datetime.now().strftime("%Y%m%d")
 
 
 def _timestamp_slug() -> str:

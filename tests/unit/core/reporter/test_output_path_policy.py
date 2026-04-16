@@ -30,13 +30,16 @@ def test_default_report_output_path_uses_central_artifact_directory_and_docx_suf
 
 def test_default_report_output_path_uses_inspection_filename_for_inspection_reports(monkeypatch) -> None:
     monkeypatch.setattr(
-        "dba_assistant.core.reporter.output_path_policy._timestamp_slug",
-        lambda: "20260406_123456",
+        "dba_assistant.core.reporter.output_path_policy._date_slug",
+        lambda: "20260406",
     )
 
     path = default_report_output_path("docx", report_slug="inspection")
 
-    assert path == DEFAULT_ARTIFACT_DIR / "dba_assistant_redis_inspection_20260406_123456.docx"
+    assert path == DEFAULT_ARTIFACT_DIR / "redis_inspection_report_20260406.docx"
+    assert "7days" not in path.name
+    assert "offline" not in path.name
+    assert "summary" not in path.name
 
 
 def test_default_report_output_path_avoids_overwriting_existing_file(tmp_path, monkeypatch) -> None:

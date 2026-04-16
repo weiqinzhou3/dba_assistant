@@ -501,6 +501,7 @@ def test_docx_reporter_renders_info_table_with_shaded_bold_left_column_and_multi
                 level=3,
                 blocks=[
                     InfoTableBlock(
+                        table_kind="risk_detail_table",
                         rows=[
                             InfoTableRow(label="风险等级", text="medium"),
                             InfoTableRow(label="证据", text="10.158.64.52:6379：SwapTotal...\n10.158.64.53:6379：SwapTotal..."),
@@ -539,6 +540,133 @@ def test_docx_reporter_renders_info_table_with_shaded_bold_left_column_and_multi
     assert _cell_with_text_has_shading(document_xml, "风险等级", "D9E2F3")
 
 
+def test_docx_reporter_applies_info_table_width_presets(tmp_path: Path) -> None:
+    output_path = tmp_path / "info-table-widths.docx"
+    report = AnalysisReport(
+        title="Redis 巡检报告",
+        sections=[
+            ReportSectionModel(id="problem_overview", title="问题概览与整改优先级", level=1),
+            ReportSectionModel(id="problem_overview__node_direction", title="涉及节点与优先处置方向", level=2),
+            ReportSectionModel(
+                id="problem_overview__node_direction__swap",
+                title="主机 Swap 已使用",
+                level=3,
+                blocks=[
+                    InfoTableBlock(
+                        table_kind="issue_scope_table",
+                        rows=[
+                            InfoTableRow(label="问题类型", text="主机 Swap 已使用"),
+                            InfoTableRow(label="优先处置方向", text="确认内存余量\n必要时扩容", bullet=True),
+                        ],
+                    )
+                ],
+            ),
+            ReportSectionModel(id="risk", title="风险与整改建议", level=1),
+            ReportSectionModel(id="risk__cluster", title="trade-redis", level=2),
+            ReportSectionModel(
+                id="risk__cluster__swap",
+                title="主机 Swap 已使用",
+                level=3,
+                blocks=[
+                    InfoTableBlock(
+                        table_kind="risk_detail_table",
+                        rows=[
+                            InfoTableRow(label="风险等级", text="medium"),
+                            InfoTableRow(label="整改建议", text="确认内存余量\n必要时扩容", bullet=True),
+                        ],
+                    )
+                ],
+            ),
+        ],
+        language="zh-CN",
+    )
+
+    DocxReporter().render(
+        report,
+        ReportOutputConfig(
+            output_path=output_path,
+            mode=OutputMode.REPORT,
+            format=ReportFormat.DOCX,
+            template_name="inspection",
+            language="zh-CN",
+        ),
+    )
+
+    _, document_xml = _read_docx_xml(output_path)
+    issue_widths = _table_first_row_cell_widths(document_xml, table_index=0)
+    risk_widths = _table_first_row_cell_widths(document_xml, table_index=1)
+
+    assert issue_widths[0] < issue_widths[1]
+    assert risk_widths[0] < risk_widths[1]
+    assert issue_widths[0] != issue_widths[1]
+    assert risk_widths[0] != risk_widths[1]
+    assert _table_has_fixed_layout(document_xml, table_index=0)
+    assert _table_has_fixed_layout(document_xml, table_index=1)
+
+
+def test_docx_reporter_applies_semantic_width_presets_to_priority_and_log_tables(
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "semantic-table-widths.docx"
+    report = AnalysisReport(
+        title="Redis 巡检报告",
+        sections=[
+            ReportSectionModel(id="problem_overview", title="问题概览与整改优先级", level=1),
+            ReportSectionModel(
+                id="problem_overview__priority",
+                title="优先级速览",
+                level=2,
+                blocks=[
+                    TableBlock(
+                        title="优先级速览",
+                        columns=["序号", "集群", "风险等级", "关键问题"],
+                        rows=[["1", "trade-redis", "medium", "主机 Swap 已使用；Redis 未配置 maxmemory"]],
+                        show_title=False,
+                        table_kind="summary_priority_table",
+                    )
+                ],
+            ),
+            ReportSectionModel(id="redis_database", title="Redis 数据库检查", level=1),
+            ReportSectionModel(
+                id="redis_database__trade",
+                title="trade-redis",
+                level=2,
+                blocks=[
+                    TableBlock(
+                        title="Redis 日志候选摘要",
+                        columns=["节点", "候选数", "样本"],
+                        rows=[["10.158.64.52:6379", "3", "Background append only file rewriting started"]],
+                        table_kind="log_candidate_summary_table",
+                    )
+                ],
+            ),
+        ],
+        language="zh-CN",
+    )
+
+    DocxReporter().render(
+        report,
+        ReportOutputConfig(
+            output_path=output_path,
+            mode=OutputMode.REPORT,
+            format=ReportFormat.DOCX,
+            template_name="inspection",
+            language="zh-CN",
+        ),
+    )
+
+    _, document_xml = _read_docx_xml(output_path)
+    priority_widths = _table_first_row_cell_widths(document_xml, table_index=0)
+    log_widths = _table_first_row_cell_widths(document_xml, table_index=1)
+
+    assert priority_widths[3] > priority_widths[2]
+    assert priority_widths[3] == max(priority_widths)
+    assert priority_widths[0] == min(priority_widths)
+    assert log_widths[2] > log_widths[1]
+    assert log_widths[2] == max(log_widths)
+    assert log_widths[1] == min(log_widths)
+
+
 def test_docx_reporter_numbers_problem_direction_info_table_entries(tmp_path: Path) -> None:
     output_path = tmp_path / "problem-direction-numbering.docx"
     report = AnalysisReport(
@@ -567,6 +695,7 @@ def test_docx_reporter_numbers_problem_direction_info_table_entries(tmp_path: Pa
                 level=3,
                 blocks=[
                     InfoTableBlock(
+                        table_kind="issue_scope_table",
                         rows=[
                             InfoTableRow(label="问题类型", text="主机 Swap 已使用"),
                             InfoTableRow(label="涉及集群", text="trade-redis"),
@@ -604,12 +733,13 @@ def test_default_output_path_for_inspection_defaults_to_configured_artifact_poli
     from dba_assistant.core.reporter.output_path_policy import DEFAULT_ARTIFACT_DIR, default_report_output_path
 
     monkeypatch.setattr(
-        "dba_assistant.core.reporter.output_path_policy._timestamp_slug",
-        lambda: "20260414_120000",
+        "dba_assistant.core.reporter.output_path_policy._date_slug",
+        lambda: "20260414",
     )
     path = default_report_output_path("docx", report_slug="inspection")
     assert path.parent == DEFAULT_ARTIFACT_DIR
-    assert "dba_assistant_redis_inspection" in str(path)
+    assert path.name == "redis_inspection_report_20260414.docx"
+    assert "7days" not in path.name
 
 
 def _read_docx_xml(output_path: Path) -> tuple[str, str]:
@@ -628,6 +758,26 @@ def _bold_run_exists(document_xml: str, text: str) -> bool:
         if run.find("./w:rPr/w:b", WORD_NS) is not None:
             return True
     return False
+
+
+def _table_first_row_cell_widths(document_xml: str, *, table_index: int) -> list[int]:
+    root = ET.fromstring(document_xml)
+    tables = root.findall(".//w:tbl", WORD_NS)
+    first_row = tables[table_index].find("./w:tr", WORD_NS)
+    assert first_row is not None
+    widths: list[int] = []
+    for cell in first_row.findall("./w:tc", WORD_NS):
+        width = cell.find("./w:tcPr/w:tcW", WORD_NS)
+        assert width is not None
+        widths.append(int(width.attrib[f"{{{WORD_NS['w']}}}w"]))
+    return widths
+
+
+def _table_has_fixed_layout(document_xml: str, *, table_index: int) -> bool:
+    root = ET.fromstring(document_xml)
+    tables = root.findall(".//w:tbl", WORD_NS)
+    layout = tables[table_index].find("./w:tblPr/w:tblLayout", WORD_NS)
+    return layout is not None and layout.attrib.get(f"{{{WORD_NS['w']}}}type") == "fixed"
 
 
 def _cell_with_text_has_shading(document_xml: str, text: str, fill: str) -> bool:

@@ -30,6 +30,7 @@ class InfoTableRow:
 @dataclass(frozen=True)
 class InfoTableBlock:
     rows: list[InfoTableRow]
+    table_kind: str | None = None
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,7 @@ class TableBlock:
     columns: list[str]
     rows: list[list[str]]
     show_title: bool = True
+    table_kind: str | None = None
 
 
 @dataclass(frozen=True)

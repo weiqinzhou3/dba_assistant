@@ -30,6 +30,12 @@ class ParagraphSpec:
     line_spacing: float = 1.35
 
 
+@dataclass(frozen=True)
+class TableWidthPreset:
+    kind: str
+    column_widths_inches: tuple[float, ...]
+
+
 def apply_document_theme(document: Document, *, language: str) -> None:
     _apply_page_layout(document)
     theme = _theme_for(language)
@@ -80,13 +86,13 @@ def add_table_title(document: Document, text: str) -> None:
     document.add_paragraph(text, style="DBA Table Title")
 
 
-def style_table(table, *, language: str, table_style_module: ModuleType) -> None:
+def style_table(table, *, language: str, table_style_module: ModuleType, table_kind: str | None = None) -> None:
     theme = _theme_for(language)
     table.style = table_style_module.DEFAULT_DOCX_TABLE_STYLE
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     table.autofit = False
     _set_fixed_layout(table)
-    _apply_column_widths(table, table_style_module)
+    _apply_column_widths(table, table_style_module, table_kind=table_kind)
 
     for row_index, row in enumerate(table.rows):
         is_header = row_index == 0
@@ -104,12 +110,20 @@ def style_table(table, *, language: str, table_style_module: ModuleType) -> None
                     _apply_cell_shading(cell, table_style_module.DOCX_TABLE_HEADER_FILL)
 
 
-def style_info_table(table, *, language: str, table_style_module: ModuleType, label_fill: str = "D9E2F3") -> None:
+def style_info_table(
+    table,
+    *,
+    language: str,
+    table_style_module: ModuleType,
+    label_fill: str = "D9E2F3",
+    table_kind: str | None = None,
+) -> None:
     theme = _theme_for(language)
     table.style = table_style_module.DEFAULT_DOCX_TABLE_STYLE
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     table.autofit = False
     _set_fixed_layout(table)
+    _apply_column_widths(table, table_style_module, table_kind=table_kind)
 
     for row in table.rows:
         for cell_index, cell in enumerate(row.cells):
@@ -206,10 +220,15 @@ def _set_fixed_layout(table) -> None:
     tbl_layout.set(qn("w:type"), "fixed")
 
 
-def _apply_column_widths(table, table_style_module: ModuleType) -> None:
+def _apply_column_widths(table, table_style_module: ModuleType, *, table_kind: str | None = None) -> None:
     if not table.rows:
         return
     column_count = len(table.columns)
+    preset = get_table_width_preset(table_kind, column_count=column_count)
+    if preset is not None:
+        _apply_explicit_column_widths(table, preset.column_widths_inches)
+        return
+
     lengths = [0] * column_count
     for row in table.rows[: min(len(table.rows), 16)]:
         for index, cell in enumerate(row.cells):
@@ -225,9 +244,63 @@ def _apply_column_widths(table, table_style_module: ModuleType) -> None:
         width = min(table_style_module.DOCX_TABLE_MAX_COL_WIDTH_INCHES, width)
         widths.append(Inches(width))
 
+    _apply_explicit_column_widths(table, [width.inches for width in widths])
+
+
+def get_table_width_preset(table_kind: str | None, *, column_count: int) -> TableWidthPreset | None:
+    presets = {
+        "summary_priority_table": TableWidthPreset(
+            kind="summary_priority_table",
+            column_widths_inches=(0.45, 1.45, 0.9, 3.4),
+        ),
+        "issue_scope_table": TableWidthPreset(
+            kind="issue_scope_table",
+            column_widths_inches=(1.35, 4.85),
+        ),
+        "risk_detail_table": TableWidthPreset(
+            kind="risk_detail_table",
+            column_widths_inches=(1.35, 4.85),
+        ),
+        "log_candidate_summary_table": TableWidthPreset(
+            kind="log_candidate_summary_table",
+            column_widths_inches=(1.6, 0.7, 3.9),
+        ),
+    }
+    preset = presets.get(table_kind or "")
+    if preset is None or len(preset.column_widths_inches) != column_count:
+        return None
+    return preset
+
+
+def _apply_explicit_column_widths(table, widths_inches) -> None:
+    _set_table_width(table, sum(float(width) for width in widths_inches))
+    widths = [Inches(float(width)) for width in widths_inches]
     for row in table.rows:
         for index, cell in enumerate(row.cells):
+            if index >= len(widths):
+                continue
             cell.width = widths[index]
+            _set_cell_width(cell, widths[index])
+
+
+def _set_table_width(table, width_inches: float) -> None:
+    tbl_pr = table._tbl.tblPr
+    tbl_w = tbl_pr.find(qn("w:tblW"))
+    if tbl_w is None:
+        tbl_w = OxmlElement("w:tblW")
+        tbl_pr.append(tbl_w)
+    tbl_w.set(qn("w:type"), "dxa")
+    tbl_w.set(qn("w:w"), str(int(width_inches * 1440)))
+
+
+def _set_cell_width(cell, width) -> None:
+    tc_pr = cell._tc.get_or_add_tcPr()
+    tc_w = tc_pr.find(qn("w:tcW"))
+    if tc_w is None:
+        tc_w = OxmlElement("w:tcW")
+        tc_pr.append(tc_w)
+    tc_w.set(qn("w:type"), "dxa")
+    tc_w.set(qn("w:w"), str(int(width.inches * 1440)))
 
 
 def _apply_cell_shading(cell, fill: str) -> None:

@@ -1,6 +1,9 @@
 import json
 from pathlib import Path
+import time
 from types import SimpleNamespace
+
+import pytest
 
 from dba_assistant.application.request_models import RdbOverrides
 from dba_assistant.capabilities.redis_rdb_analysis.collectors.streaming_aggregate_collector import (
@@ -75,8 +78,71 @@ def test_streaming_aggregate_collector_emits_structured_performance_logs(
 
     assert performance_records
     assert any(record.get("event_name") == "redis_rdb_stream_progress" for record in performance_records)
+    assert any(
+        record.get("event_name") == "redis_rdb_analysis_phase"
+        and record.get("phase") == "rdb_stream_file_collect_start"
+        for record in performance_records
+    )
+    assert any(
+        record.get("event_name") == "redis_rdb_analysis_phase"
+        and record.get("phase") == "rdb_stream_file_collect_loop_end"
+        for record in performance_records
+    )
+    assert any(
+        record.get("event_name") == "redis_rdb_analysis_phase"
+        and record.get("phase") == "rdb_build_analysis_result_start"
+        for record in performance_records
+    )
+    assert any(
+        record.get("event_name") == "redis_rdb_analysis_phase"
+        and record.get("phase") == "rdb_build_analysis_result_end"
+        for record in performance_records
+    )
     assert any(record.get("rows_processed") == 1 for record in performance_records)
     assert any(record.get("rows_processed") == 2 for record in performance_records)
     assert "streaming aggregate progress" not in console_output
 
     reset_observability_state()
+
+
+def test_streaming_aggregate_collector_times_out_when_stream_stops_producing_rows(
+    tmp_path: Path,
+    caplog,
+) -> None:
+    rdb_path = tmp_path / "stuck.rdb"
+    rdb_path.write_bytes(b"test")
+
+    def stuck_rows():
+        yield {
+            "key_name": "cache:1",
+            "key_type": "string",
+            "size_bytes": 128,
+            "has_expiration": False,
+        }
+        time.sleep(5)
+
+    collector = StreamingAggregateCollector(
+        stream_parser=lambda path: SimpleNamespace(
+            strategy_name="stuck_stream",
+            strategy_detail="test",
+            rows=stuck_rows(),
+        ),
+        profile=resolve_profile("generic", RdbOverrides()),
+        progress_log_interval=1,
+        stream_idle_timeout_seconds=0.05,
+    )
+    caplog.set_level(
+        "INFO",
+        logger="dba_assistant.capabilities.redis_rdb_analysis.collectors.streaming_aggregate_collector",
+    )
+
+    with pytest.raises(TimeoutError, match="RDB stream produced no rows"):
+        collector.collect([rdb_path])
+
+    assert any(
+        record.event_name == "redis_rdb_analysis_phase"
+        and record.phase == "rdb_stream_collect_idle_timeout"
+        and record.rows_processed == 1
+        for record in caplog.records
+        if hasattr(record, "event_name")
+    )

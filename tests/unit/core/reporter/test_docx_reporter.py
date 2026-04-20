@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 from zipfile import ZipFile
 import xml.etree.ElementTree as ET
 
@@ -18,6 +19,8 @@ from dba_assistant.core.reporter.report_model import (
     render_summary_text,
 )
 from dba_assistant.core.reporter.types import OutputMode, ReportFormat, ReportOutputConfig
+from dba_assistant.core.observability import bootstrap_observability, reset_observability_state
+from dba_assistant.deep_agent_integration.config import ObservabilityConfig
 
 
 WORD_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
@@ -69,6 +72,47 @@ def test_docx_reporter_creates_a_minimal_report_document(tmp_path: Path) -> None
     assert "Largest Keys" in text
     assert "Risk Summary" not in text
     assert len(document.tables) == 1
+
+
+def test_docx_reporter_emits_render_and_save_diagnostics(tmp_path: Path) -> None:
+    reset_observability_state()
+    config = ObservabilityConfig(
+        enabled=True,
+        console_enabled=False,
+        file_level="INFO",
+        log_dir=tmp_path / "logs",
+        app_log_file="app.log.jsonl",
+        audit_log_file="audit.jsonl",
+    )
+    bootstrap_observability(config)
+    output_path = tmp_path / "diagnostic-report.docx"
+
+    DocxReporter().render(
+        build_analysis(),
+        ReportOutputConfig(
+            output_path=output_path,
+            mode=OutputMode.REPORT,
+            format=ReportFormat.DOCX,
+            template_name="rdb-analysis",
+            language="en-US",
+        ),
+    )
+
+    records = [
+        json.loads(line)
+        for line in config.app_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    phases = [record.get("phase") for record in records if record.get("event_name") == "redis_rdb_analysis_phase"]
+
+    assert "rdb_report_template_load_start" in phases
+    assert "rdb_report_template_load_end" in phases
+    assert "rdb_report_section_render_start" in phases
+    assert "rdb_report_section_render_end" in phases
+    assert "rdb_docx_save_start" in phases
+    assert "rdb_docx_save_end" in phases
+    assert any(record.get("output_path") == str(output_path) for record in records)
+    reset_observability_state()
 
 
 def test_docx_reporter_supports_generic_analysis_report(tmp_path: Path) -> None:

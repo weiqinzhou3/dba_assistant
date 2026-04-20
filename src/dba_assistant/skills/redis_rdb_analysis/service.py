@@ -1,55 +1,46 @@
 from __future__ import annotations
 
-import logging
-import os
 from pathlib import Path
-from time import perf_counter
 
-from dba_assistant.application.request_models import DEFAULT_MYSQL_STAGE_BATCH_SIZE, RdbOverrides
+from dba_assistant.application.request_models import RdbOverrides
+from dba_assistant.core.reporter.report_model import AnalysisReport
 from dba_assistant.capabilities.redis_rdb_analysis.analyzers.overall import analyze_overall
 from dba_assistant.capabilities.redis_rdb_analysis.collectors.path_a_mysql_backed_collector import (
     PathAMySQLBackedCollector,
 )
-from dba_assistant.capabilities.redis_rdb_analysis.collectors.path_b_mysql_preparsed_collector import (
-    PathBMySQLPreparsedCollector,
-)
 from dba_assistant.capabilities.redis_rdb_analysis.collectors.path_b_precomputed_collector import (
     PathBPrecomputedCollector,
+)
+from dba_assistant.capabilities.redis_rdb_analysis.collectors.path_b_mysql_preparsed_collector import (
+    PathBMySQLPreparsedCollector,
 )
 from dba_assistant.capabilities.redis_rdb_analysis.collectors.path_c_direct_parser_collector import (
     PathCDirectParserCollector,
 )
 from dba_assistant.capabilities.redis_rdb_analysis.collectors.streaming_aggregate_collector import (
-    RdbStreamIdleTimeout,
     StreamingAggregateCollector,
 )
 from dba_assistant.capabilities.redis_rdb_analysis.path_router import choose_path
+from dba_assistant.parsers.rdb_parser_strategy import (
+    StreamedRowsResult,
+    build_default_rdb_parser_strategy,
+)
 from dba_assistant.capabilities.redis_rdb_analysis.profile_resolver import resolve_profile
 from dba_assistant.capabilities.redis_rdb_analysis.reports.assembler import assemble_report
 from dba_assistant.capabilities.redis_rdb_analysis.reports.localization import report_title
 from dba_assistant.capabilities.redis_rdb_analysis.types import (
     AnalysisStatus,
-    ConfirmationRequest,
     DATABASE_BACKED_ANALYSIS,
     DIRECT_RDB_ANALYSIS,
+    ConfirmationRequest,
     InputSourceKind,
     NormalizedRdbDataset,
     PREPARSED_DATASET_ANALYSIS,
     RdbAnalysisRequest,
     phase_label_for_route_name,
 )
-from dba_assistant.core.reporter.report_model import AnalysisReport
-from dba_assistant.core.observability.rdb_diagnostics import emit_rdb_phase
-from dba_assistant.parsers.rdb_parser_strategy import (
-    LegacyRdbtoolsStrategy,
-    StreamedRowsResult,
-    build_default_rdb_parser_strategy,
-)
 
-
-LARGE_RDB_AUTO_SUMMARY_THRESHOLD_BYTES = 1024 * 1024 * 1024
-AUTO_LEGACY_FALLBACK_ENV = "DBA_ASSISTANT_RDB_AUTO_LEGACY_FALLBACK_ON_IDLE"
-logger = logging.getLogger(__name__)
+LARGE_RDB_AUTO_SUMMARY_THRESHOLD_BYTES = 512 * 1024 * 1024
 
 
 def analyze_rdb(
@@ -120,10 +111,6 @@ def analyze_rdb(
             stream_parser=tracked_stream_parser,
             stage_rows_to_mysql=stage_rdb_rows_to_mysql,
             table_name=request.mysql_table,
-            batch_size=request.mysql_stage_batch_size or DEFAULT_MYSQL_STAGE_BATCH_SIZE,
-            mysql_target_host=request.mysql_host,
-            mysql_target_port=request.mysql_port,
-            mysql_target_database=request.mysql_database,
         )
         staging = collector.collect(paths)
         sample_rows = [
@@ -150,12 +137,6 @@ def analyze_rdb(
             **report.metadata,
             "input_count": str(len(sample_rows)),
             "route": selected_route,
-            "mysql_host": staging.mysql_host or request.mysql_host or "",
-            "mysql_port": (
-                ""
-                if staging.mysql_port is None and request.mysql_port is None
-                else str(staging.mysql_port or request.mysql_port or "")
-            ),
             "mysql_database": staging.database_name or request.mysql_database or "",
             "mysql_table": staging.table_name,
             "mysql_run_id": staging.run_id,
@@ -187,83 +168,12 @@ def analyze_rdb(
             stream_parser=_stream_direct_rdb_rows,
             profile=effective_profile,
         )
-        collect_started = perf_counter()
-        emit_rdb_phase(
-            logger,
-            "rdb_stream_collect_start",
-            input_count=len(local_paths),
-            profile_name=effective_profile.name,
-            route=selected_route,
-        )
-        try:
-            aggregated = collector.collect(local_paths)
-        except RdbStreamIdleTimeout as exc:
-            if not _should_fallback_to_legacy_after_idle_timeout(exc):
-                raise
-            emit_rdb_phase(
-                logger,
-                "rdb_stream_collect_legacy_fallback_start",
-                input_count=len(local_paths),
-                profile_name=effective_profile.name,
-                route=selected_route,
-                failed_parser_strategy=exc.parser_strategy,
-                failed_path=str(exc.path),
-                failed_rows_processed=exc.rows_processed,
-                idle_timeout_seconds=exc.idle_timeout_seconds,
-            )
-            fallback_started = perf_counter()
-            fallback_collector = StreamingAggregateCollector(
-                stream_parser=_stream_legacy_rdb_rows,
-                profile=effective_profile,
-            )
-            aggregated = fallback_collector.collect(local_paths)
-            aggregated.metadata["parser_fallback"] = "hdt_idle_timeout_to_legacy"
-            aggregated.metadata["parser_fallback_failed_rows"] = str(exc.rows_processed)
-            aggregated.metadata["parser_fallback_failed_path"] = str(exc.path)
-            emit_rdb_phase(
-                logger,
-                "rdb_stream_collect_legacy_fallback_end",
-                input_count=len(local_paths),
-                profile_name=effective_profile.name,
-                route=selected_route,
-                failed_parser_strategy=exc.parser_strategy,
-                parser_strategy=aggregated.metadata.get("parser_strategy"),
-                rows_processed=aggregated.metadata.get("rows_processed"),
-                elapsed_seconds=round(perf_counter() - fallback_started, 6),
-            )
-        emit_rdb_phase(
-            logger,
-            "rdb_stream_collect_end",
-            input_count=len(local_paths),
-            profile_name=effective_profile.name,
-            route=selected_route,
-            rows_processed=aggregated.metadata.get("rows_processed"),
-            parser_strategy=aggregated.metadata.get("parser_strategy"),
-            peak_memory_bytes_estimate=aggregated.metadata.get("peak_memory_bytes_estimate"),
-            elapsed_seconds=round(perf_counter() - collect_started, 6),
-        )
-        assemble_started = perf_counter()
-        emit_rdb_phase(
-            logger,
-            "rdb_report_assemble_start",
-            input_count=len(local_paths),
-            profile_name=effective_profile.name,
-            route=selected_route,
-        )
+        aggregated = collector.collect(local_paths)
         report = assemble_report(
             aggregated.analysis_result,
             profile=effective_profile,
             title=report_title(request.report_language),
             language=request.report_language,
-        )
-        emit_rdb_phase(
-            logger,
-            "rdb_report_assemble_end",
-            input_count=len(local_paths),
-            profile_name=effective_profile.name,
-            route=selected_route,
-            section_count=len(report.sections),
-            elapsed_seconds=round(perf_counter() - assemble_started, 6),
         )
         metadata = {
             **report.metadata,
@@ -335,11 +245,7 @@ def _collect_dataset(
     path_c_collector,
     parser,
 ) -> NormalizedRdbDataset:
-    paths = [
-        Path(sample.source)
-        for sample in request.inputs
-        if sample.kind is not InputSourceKind.REMOTE_REDIS
-    ]
+    paths = [Path(sample.source) for sample in request.inputs if sample.kind is not InputSourceKind.REMOTE_REDIS]
 
     if selected_route == PREPARSED_DATASET_ANALYSIS:
         if any(sample.kind is InputSourceKind.PREPARSED_MYSQL for sample in request.inputs):
@@ -380,10 +286,6 @@ def _stream_rdb_rows(path: Path):
             strategy_name=metadata.get("parser_strategy", "materialized_fallback"),
             strategy_detail=metadata.get("parser_binary"),
         )
-
-
-def _stream_legacy_rdb_rows(path: Path) -> StreamedRowsResult:
-    return LegacyRdbtoolsStrategy().stream_rows_result(path)
 
 
 _DEFAULT_PARSE_RDB_ROWS = _parse_rdb_rows
@@ -436,16 +338,6 @@ def _total_input_bytes(paths: list[Path]) -> int:
     return sum(_safe_stat_size(path) for path in paths)
 
 
-def _should_fallback_to_legacy_after_idle_timeout(exc: RdbStreamIdleTimeout) -> bool:
-    parser_override = os.getenv("DBA_ASSISTANT_RDB_PARSER", "").strip().lower()
-    if parser_override in {"legacy", "rdbtools", "legacy_rdbtools"}:
-        return False
-    enabled = os.getenv(AUTO_LEGACY_FALLBACK_ENV, "1").strip().lower()
-    if enabled in {"0", "false", "no", "off"}:
-        return False
-    return exc.parser_strategy == "HdtRdbCliStrategy"
-
-
 def _require_remote_rdb_path(discovery: object) -> str:
     if not isinstance(discovery, dict):
         raise ValueError("remote_discovery did not return a dictionary payload")
@@ -453,12 +345,3 @@ def _require_remote_rdb_path(discovery: object) -> str:
     if not isinstance(rdb_path, str) or not rdb_path.strip():
         raise ValueError("remote_discovery did not return rdb_path")
     return rdb_path
-
-
-__all__ = [
-    "analyze_rdb",
-    "_collect_dataset",
-    "_parse_rdb_rows",
-    "_require_remote_rdb_path",
-    "_stream_rdb_rows",
-]

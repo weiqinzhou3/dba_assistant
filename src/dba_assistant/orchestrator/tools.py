@@ -10,6 +10,7 @@ from functools import wraps
 import inspect
 import json
 import logging
+import os
 import re
 import time
 from pathlib import Path
@@ -38,6 +39,10 @@ from dba_assistant.application.request_models import (
     build_default_mysql_table_name,
 )
 from dba_assistant.core.observability import observe_tool_call
+from dba_assistant.core.observability.rdb_diagnostics import (
+    emit_rdb_phase,
+    rdb_phase_event_handler,
+)
 from dba_assistant.core.reporter.output_path_policy import ensure_report_output_path
 from dba_assistant.core.reporter.types import OutputMode, ReportFormat, ReportOutputConfig
 from dba_assistant.core.runtime_paths import DEFAULT_EVIDENCE_DIR, make_runtime_work_dir
@@ -795,104 +800,148 @@ def _make_analyze_local_rdb_stream_tool(
         focus_prefixes: str = "",
         mysql_staging_refused: bool = False,
     ) -> str:
-        # Latch MySQL refusal into session state so other tools respect it.
-        if mysql_staging_refused:
-            rdb_session_state["mysql_staging_refused"] = True
-        paths = [Path(p.strip()).expanduser() for p in input_paths.split(",") if p.strip()]
-        if not paths:
-            return "Error: no input paths provided."
-        for path in paths:
-            if not path.exists():
-                return f"Error: input path does not exist on host filesystem: {path}"
-            if not path.is_file():
-                return f"Error: input path is not a regular file on host filesystem: {path}"
+        with rdb_phase_event_handler(context.event_handler):
+            # Latch MySQL refusal into session state so other tools respect it.
+            if mysql_staging_refused:
+                rdb_session_state["mysql_staging_refused"] = True
+            paths = [Path(p.strip()).expanduser() for p in input_paths.split(",") if p.strip()]
+            if not paths:
+                return "Error: no input paths provided."
+            for path in paths:
+                if not path.exists():
+                    return f"Error: input path does not exist on host filesystem: {path}"
+                if not path.is_file():
+                    return f"Error: input path is not a regular file on host filesystem: {path}"
 
-        overrides: dict[str, object] = {}
-        if focus_prefixes:
-            overrides["focus_prefixes"] = tuple(
-                p.strip() for p in focus_prefixes.split(",") if p.strip()
+            overrides: dict[str, object] = {}
+            if focus_prefixes:
+                overrides["focus_prefixes"] = tuple(
+                    p.strip() for p in focus_prefixes.split(",") if p.strip()
+                )
+            elif request.rdb_overrides.focus_prefixes:
+                overrides["focus_prefixes"] = request.rdb_overrides.focus_prefixes
+            if request.rdb_overrides.focus_only:
+                overrides["focus_only"] = True
+            if request.rdb_overrides.top_n:
+                overrides["top_n"] = dict(request.rdb_overrides.top_n)
+
+            try:
+                analyze_kwargs = {
+                    "prompt": request.prompt,
+                    "input_paths": paths,
+                    "input_kind": "local_rdb",
+                    "profile_name": profile_name,
+                    "report_language": report_language or request.runtime_inputs.report_language,
+                    "path_mode": "direct_rdb_analysis",  # Locked to streaming
+                    "profile_overrides": overrides,
+                }
+                emit_rdb_phase(
+                    logger,
+                    "rdb_direct_analysis_start",
+                    input_count=len(paths),
+                    profile_name=profile_name,
+                    parser_override=os.getenv("DBA_ASSISTANT_RDB_PARSER") or "",
+                )
+                analysis = analyze_rdb_tool(
+                    **analyze_kwargs,
+                )
+                emit_rdb_phase(
+                    logger,
+                    "rdb_direct_analysis_end",
+                    input_count=len(paths),
+                    route=str(getattr(analysis, "metadata", {}).get("route", "")),
+                    parser_strategy=str(getattr(analysis, "metadata", {}).get("parser_strategy", "")),
+                )
+            except ValueError as exc:
+                emit_rdb_phase(logger, "rdb_direct_analysis_error", error=str(exc))
+                return f"Error: {exc}"
+            except PermissionError as exc:
+                emit_rdb_phase(logger, "rdb_direct_analysis_error", error=str(exc))
+                return str(exc)
+
+            from dba_assistant.core.reporter.generate_analysis_report import (
+                generate_analysis_report as _generate,
             )
-        elif request.rdb_overrides.focus_prefixes:
-            overrides["focus_prefixes"] = request.rdb_overrides.focus_prefixes
-        if request.rdb_overrides.focus_only:
-            overrides["focus_only"] = True
-        if request.rdb_overrides.top_n:
-            overrides["top_n"] = dict(request.rdb_overrides.top_n)
 
-        try:
-            analyze_kwargs = {
-                "prompt": request.prompt,
-                "input_paths": paths,
-                "input_kind": "local_rdb",
-                "profile_name": profile_name,
-                "report_language": report_language or request.runtime_inputs.report_language,
-                "path_mode": "direct_rdb_analysis",  # Locked to streaming
-                "profile_overrides": overrides,
-            }
-            analysis = analyze_rdb_tool(
-                **analyze_kwargs,
+            diagnostic_summary_only = _env_flag("DBA_ASSISTANT_RDB_DIAGNOSTIC_SUMMARY_ONLY")
+            effective_output_mode = output_mode or request.runtime_inputs.output_mode or "summary"
+            effective_report_format = (
+                report_format
+                or request.runtime_inputs.report_format
+                or ("summary" if effective_output_mode == "summary" else "docx")
             )
-        except ValueError as exc:
-            return f"Error: {exc}"
-        except PermissionError as exc:
-            return str(exc)
+            if diagnostic_summary_only:
+                effective_output_mode = "summary"
+                effective_report_format = "summary"
 
-        from dba_assistant.core.reporter.generate_analysis_report import (
-            generate_analysis_report as _generate,
-        )
+            # Hard guard: force DOCX when the original prompt demands it.
+            prompt_wants_docx = (
+                _prompt_requests_docx_output(request.prompt)
+                or _prompt_requests_docx_output(request.raw_prompt)
+            )
+            if prompt_wants_docx and effective_report_format != "docx" and not diagnostic_summary_only:
+                effective_output_mode = "report"
+                effective_report_format = "docx"
 
-        effective_output_mode = output_mode or request.runtime_inputs.output_mode or "summary"
-        effective_report_format = (
-            report_format
-            or request.runtime_inputs.report_format
-            or ("summary" if effective_output_mode == "summary" else "docx")
-        )
+            runtime_inputs = ensure_report_output_path(
+                replace(
+                    request.runtime_inputs,
+                    output_mode=effective_output_mode,
+                    report_format=effective_report_format,
+                    output_path=Path(output_path) if output_path else request.runtime_inputs.output_path,
+                ),
+                effective_report_format,
+            )
+            fmt = ReportFormat.SUMMARY if effective_report_format == "summary" else ReportFormat.DOCX
+            out = runtime_inputs.output_path
+            if fmt is ReportFormat.DOCX and out is None:
+                return "Error: DOCX output requires an output path."
 
-        # Hard guard: force DOCX when the original prompt demands it.
-        prompt_wants_docx = (
-            _prompt_requests_docx_output(request.prompt)
-            or _prompt_requests_docx_output(request.raw_prompt)
-        )
-        if prompt_wants_docx and effective_report_format != "docx":
-            effective_output_mode = "report"
-            effective_report_format = "docx"
+            config = ReportOutputConfig(
+                mode=OutputMode.SUMMARY if effective_output_mode == "summary" else OutputMode.REPORT,
+                format=fmt,
+                output_path=out,
+                template_name="rdb-analysis",
+                language=runtime_inputs.report_language,
+            )
+            emit_rdb_phase(
+                logger,
+                "rdb_report_render_start",
+                report_format=fmt.value,
+                output_path=str(out) if out is not None else "",
+                diagnostic_summary_only=diagnostic_summary_only,
+            )
+            try:
+                artifact = _generate(analysis, config)
+            except Exception as exc:  # noqa: BLE001
+                emit_rdb_phase(
+                    logger,
+                    "rdb_report_render_error",
+                    report_format=fmt.value,
+                    output_path=str(out) if out is not None else "",
+                    error=str(exc),
+                )
+                raise
+            emit_rdb_phase(
+                logger,
+                "rdb_report_render_end",
+                report_format=fmt.value,
+                output_path=str(artifact.output_path) if artifact.output_path is not None else "",
+            )
 
-        runtime_inputs = ensure_report_output_path(
-            replace(
-                request.runtime_inputs,
-                output_mode=effective_output_mode,
-                report_format=effective_report_format,
-                output_path=Path(output_path) if output_path else request.runtime_inputs.output_path,
-            ),
-            effective_report_format,
-        )
-        fmt = ReportFormat.SUMMARY if effective_report_format == "summary" else ReportFormat.DOCX
-        out = runtime_inputs.output_path
-        if fmt is ReportFormat.DOCX and out is None:
-            return "Error: DOCX output requires an output path."
+            # Postcondition: when DOCX was requested, verify the artifact path.
+            if fmt is ReportFormat.DOCX:
+                if artifact.output_path is not None and artifact.output_path.exists():
+                    return str(artifact.output_path)
+                if artifact.output_path is not None:
+                    return f"Error: DOCX generation completed but artifact not found at {artifact.output_path}"
+                return "Error: DOCX output was requested but no artifact path was generated by the reporter."
 
-        config = ReportOutputConfig(
-            mode=OutputMode.SUMMARY if effective_output_mode == "summary" else OutputMode.REPORT,
-            format=fmt,
-            output_path=out,
-            template_name="rdb-analysis",
-            language=runtime_inputs.report_language,
-        )
-        artifact = _generate(analysis, config)
-
-        # Postcondition: when DOCX was requested, verify the artifact path.
-        if fmt is ReportFormat.DOCX:
-            if artifact.output_path is not None and artifact.output_path.exists():
-                return str(artifact.output_path)
+            if artifact.content is not None:
+                return artifact.content
             if artifact.output_path is not None:
-                return f"Error: DOCX generation completed but artifact not found at {artifact.output_path}"
-            return "Error: DOCX output was requested but no artifact path was generated by the reporter."
-
-        if artifact.content is not None:
-            return artifact.content
-        if artifact.output_path is not None:
-            return str(artifact.output_path)
-        return "Analysis complete but no output generated."
+                return str(artifact.output_path)
+            return "Analysis complete but no output generated."
 
     return _named_tool(
         analyze_local_rdb_stream,
@@ -911,6 +960,10 @@ def _make_analyze_local_rdb_stream_tool(
             "mysql_staging_refused (set true when user declines MySQL staging for large files)."
         ),
     )
+
+
+def _env_flag(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _make_analyze_staged_rdb_tool(

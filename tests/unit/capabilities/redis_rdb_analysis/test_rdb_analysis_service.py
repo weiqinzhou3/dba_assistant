@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import time
 
 import pytest
 from docx import Document
@@ -959,6 +960,95 @@ def test_analyze_rdb_large_local_file_auto_uses_streaming_large_summary_profile(
         "prefix_top_summary",
         "top_big_keys",
     }
+
+
+def test_analyze_rdb_streaming_route_emits_collect_and_assemble_phases(
+    monkeypatch,
+    tmp_path: Path,
+    caplog,
+) -> None:
+    source = tmp_path / "direct.rdb"
+    source.write_bytes(b"fixture")
+    rows = [
+        {"key_name": "cache:1", "key_type": "string", "size_bytes": 300, "has_expiration": False, "ttl_seconds": None},
+    ]
+    request = RdbAnalysisRequest(
+        prompt="analyze this rdb",
+        inputs=[SampleInput(source=source, kind=InputSourceKind.LOCAL_RDB)],
+        path_mode="direct_rdb_analysis",
+    )
+    monkeypatch.setattr(
+        "dba_assistant.capabilities.redis_rdb_analysis.service._stream_rdb_rows",
+        lambda _path: _streamed_rows(rows),
+    )
+    caplog.set_level("INFO", logger="dba_assistant.capabilities.redis_rdb_analysis.service")
+
+    result = analyze_rdb(
+        request,
+        profile=None,
+        remote_discovery=lambda *_args, **_kwargs: {"rdb_path": "/data/redis/dump.rdb"},
+    )
+
+    assert isinstance(result, AnalysisReport)
+    phases = [record.phase for record in caplog.records if hasattr(record, "phase")]
+    assert "rdb_stream_collect_start" in phases
+    assert "rdb_stream_collect_end" in phases
+    assert "rdb_report_assemble_start" in phases
+    assert "rdb_report_assemble_end" in phases
+
+
+def test_analyze_rdb_falls_back_to_legacy_when_hdt_stream_idles(
+    monkeypatch,
+    tmp_path: Path,
+    caplog,
+) -> None:
+    source = tmp_path / "direct.rdb"
+    source.write_bytes(b"fixture")
+
+    def stuck_hdt_rows():
+        yield {
+            "key_name": "cache:partial",
+            "key_type": "string",
+            "size_bytes": 1,
+            "has_expiration": False,
+            "ttl_seconds": None,
+        }
+        time.sleep(5)
+
+    legacy_rows = [
+        {"key_name": "cache:1", "key_type": "string", "size_bytes": 300, "has_expiration": False, "ttl_seconds": None},
+        {"key_name": "cache:2", "key_type": "hash", "size_bytes": 200, "has_expiration": True, "ttl_seconds": 60},
+    ]
+    request = RdbAnalysisRequest(
+        prompt="analyze this rdb",
+        inputs=[SampleInput(source=source, kind=InputSourceKind.LOCAL_RDB)],
+        path_mode="direct_rdb_analysis",
+    )
+    monkeypatch.setenv("DBA_ASSISTANT_RDB_STREAM_IDLE_TIMEOUT_SECONDS", "0.01")
+    monkeypatch.delenv("DBA_ASSISTANT_RDB_PARSER", raising=False)
+    monkeypatch.setattr(
+        "dba_assistant.capabilities.redis_rdb_analysis.service._stream_rdb_rows",
+        lambda _path: StreamedRowsResult(rows=stuck_hdt_rows(), strategy_name="HdtRdbCliStrategy"),
+    )
+    monkeypatch.setattr(
+        "dba_assistant.capabilities.redis_rdb_analysis.service._stream_legacy_rdb_rows",
+        lambda _path: StreamedRowsResult(rows=iter(legacy_rows), strategy_name="LegacyRdbtoolsStrategy"),
+    )
+    caplog.set_level("INFO", logger="dba_assistant.capabilities.redis_rdb_analysis.service")
+
+    result = analyze_rdb(
+        request,
+        profile=None,
+        remote_discovery=lambda *_args, **_kwargs: {"rdb_path": "/data/redis/dump.rdb"},
+    )
+
+    assert isinstance(result, AnalysisReport)
+    assert result.metadata["rows_processed"] == "2"
+    assert result.metadata["parser_strategy"] == "LegacyRdbtoolsStrategy"
+    assert result.metadata["parser_fallback"] == "hdt_idle_timeout_to_legacy"
+    phases = [record.phase for record in caplog.records if hasattr(record, "phase")]
+    assert "rdb_stream_collect_legacy_fallback_start" in phases
+    assert "rdb_stream_collect_legacy_fallback_end" in phases
 
 
 def test_large_rdb_summary_threshold_is_one_gibibyte() -> None:

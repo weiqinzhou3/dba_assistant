@@ -4,8 +4,11 @@ from collections import Counter, defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 import logging
+import os
 from pathlib import Path
+import queue
 import sys
+import threading
 from time import perf_counter
 from typing import Any
 
@@ -18,9 +21,29 @@ from dba_assistant.capabilities.redis_rdb_analysis.collectors.row_value_coercion
     _coerce_required_int,
 )
 from dba_assistant.capabilities.redis_rdb_analysis.types import EffectiveProfile
+from dba_assistant.core.observability.rdb_diagnostics import emit_rdb_phase
 from dba_assistant.parsers.rdb_parser_strategy import StreamedRowsResult
 
 logger = logging.getLogger(__name__)
+DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS = 300.0
+STREAM_IDLE_TIMEOUT_ENV = "DBA_ASSISTANT_RDB_STREAM_IDLE_TIMEOUT_SECONDS"
+
+
+class RdbStreamIdleTimeout(TimeoutError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        path: Path,
+        parser_strategy: str,
+        rows_processed: int,
+        idle_timeout_seconds: float,
+    ) -> None:
+        super().__init__(message)
+        self.path = path
+        self.parser_strategy = parser_strategy
+        self.rows_processed = rows_processed
+        self.idle_timeout_seconds = idle_timeout_seconds
 
 
 @dataclass(frozen=True)
@@ -236,10 +259,16 @@ class StreamingAggregateCollector:
         stream_parser: Callable[[Path], StreamedRowsResult],
         profile: EffectiveProfile,
         progress_log_interval: int = 100_000,
+        stream_idle_timeout_seconds: float | None = None,
     ) -> None:
         self._stream_parser = stream_parser
         self._profile = profile
         self._progress_log_interval = progress_log_interval
+        self._stream_idle_timeout_seconds = (
+            _stream_idle_timeout_seconds()
+            if stream_idle_timeout_seconds is None
+            else stream_idle_timeout_seconds
+        )
 
     def collect(self, paths: list[Path]) -> StreamingAggregationResult:
         pipeline = StreamingAnalysisPipeline(profile=self._profile)
@@ -259,9 +288,24 @@ class StreamingAggregateCollector:
             file_start = perf_counter()
             file_rows = 0
             next_progress_mark = self._progress_log_interval
+            emit_rdb_phase(
+                logger,
+                "rdb_stream_file_collect_start",
+                path=str(path),
+                parser_strategy=streamed.strategy_name,
+                parser_binary=streamed.strategy_detail,
+                total_rows=pipeline.rows_processed,
+                peak_memory_bytes_estimate=_peak_memory_bytes_estimate(),
+            )
             
             # Real-time console reporting setup
-            for row in streamed.rows:
+            for row in _iter_rows_with_idle_timeout(
+                streamed.rows,
+                idle_timeout_seconds=self._stream_idle_timeout_seconds,
+                path=path,
+                parser_strategy=streamed.strategy_name,
+                rows_processed=lambda: file_rows,
+            ):
                 pipeline.consume_row(dict(row))
                 file_rows += 1
                 
@@ -291,6 +335,17 @@ class StreamingAggregateCollector:
 
             file_elapsed = perf_counter() - file_start
             file_rows_per_second = file_rows / file_elapsed if file_elapsed > 0 else 0.0
+            emit_rdb_phase(
+                logger,
+                "rdb_stream_file_collect_loop_end",
+                path=str(path),
+                parser_strategy=streamed.strategy_name,
+                parser_binary=streamed.strategy_detail,
+                rows_processed=file_rows,
+                total_rows=pipeline.rows_processed,
+                elapsed_seconds=round(file_elapsed, 6),
+                peak_memory_bytes_estimate=_peak_memory_bytes_estimate(),
+            )
             progress.append(
                 f"path={path} rows={file_rows} elapsed={file_elapsed:.3f}s rows_per_sec={file_rows_per_second:.2f}"
             )
@@ -313,8 +368,27 @@ class StreamingAggregateCollector:
         if peak_memory is not None:
             metadata["peak_memory_bytes_estimate"] = str(peak_memory)
 
+        build_started = perf_counter()
+        emit_rdb_phase(
+            logger,
+            "rdb_build_analysis_result_start",
+            total_rows=total_rows,
+            elapsed_seconds=round(total_elapsed, 6),
+            parser_strategy=metadata["parser_strategy"],
+            peak_memory_bytes_estimate=peak_memory,
+        )
+        analysis_result = pipeline.build_analysis_result(sample_rows=sample_rows)
+        emit_rdb_phase(
+            logger,
+            "rdb_build_analysis_result_end",
+            total_rows=total_rows,
+            elapsed_seconds=round(perf_counter() - build_started, 6),
+            parser_strategy=metadata["parser_strategy"],
+            peak_memory_bytes_estimate=_peak_memory_bytes_estimate(),
+        )
+
         return StreamingAggregationResult(
-            analysis_result=pipeline.build_analysis_result(sample_rows=sample_rows),
+            analysis_result=analysis_result,
             metadata=metadata,
         )
 
@@ -331,6 +405,84 @@ def _matches_prefix(key_name: str, prefix: str) -> bool:
     return key_name == prefix
 
 
+def _iter_rows_with_idle_timeout(
+    rows,
+    *,
+    idle_timeout_seconds: float,
+    path: Path,
+    parser_strategy: str,
+    rows_processed: Callable[[], int],
+):
+    sentinel = object()
+    row_queue: queue.Queue[object] = queue.Queue(maxsize=1024)
+    stop_event = threading.Event()
+    row_iter = iter(rows)
+
+    def produce_rows() -> None:
+        try:
+            for row in row_iter:
+                if stop_event.is_set():
+                    break
+                row_queue.put(row)
+        except Exception as exc:  # noqa: BLE001
+            row_queue.put(exc)
+        finally:
+            row_queue.put(sentinel)
+
+    producer = threading.Thread(target=produce_rows, daemon=True)
+    producer.start()
+
+    while True:
+        try:
+            item = row_queue.get(timeout=idle_timeout_seconds)
+        except queue.Empty as exc:
+            stop_event.set()
+            _close_row_iterator(row_iter, path=path, parser_strategy=parser_strategy)
+            processed = rows_processed()
+            emit_rdb_phase(
+                logger,
+                "rdb_stream_collect_idle_timeout",
+                path=str(path),
+                parser_strategy=parser_strategy,
+                rows_processed=processed,
+                idle_timeout_seconds=idle_timeout_seconds,
+                producer_alive=producer.is_alive(),
+                peak_memory_bytes_estimate=_peak_memory_bytes_estimate(),
+            )
+            raise RdbStreamIdleTimeout(
+                f"RDB stream produced no rows for {idle_timeout_seconds:.3f}s "
+                f"while reading {path} after {processed} rows",
+                path=path,
+                parser_strategy=parser_strategy,
+                rows_processed=processed,
+                idle_timeout_seconds=idle_timeout_seconds,
+            ) from exc
+        if item is sentinel:
+            break
+        if isinstance(item, Exception):
+            raise item
+        yield item
+
+
+def _close_row_iterator(row_iter, *, path: Path, parser_strategy: str) -> None:
+    close = getattr(row_iter, "close", None)
+    if close is None:
+        return
+    try:
+        close()
+    except Exception as exc:  # noqa: BLE001
+        logger.info(
+            "rdb stream iterator close failed",
+            extra={
+                "event_name": "redis_rdb_analysis_phase",
+                "phase": "rdb_stream_iterator_close_failed",
+                "path": str(path),
+                "parser_strategy": parser_strategy,
+                "error": str(exc),
+            },
+        )
+
+
 def _peak_memory_human() -> str:
     bytes_val = _peak_memory_bytes_estimate()
     if bytes_val is None:
@@ -342,6 +494,19 @@ def _peak_memory_human() -> str:
             return f"{val:.1f} {unit}"
         val /= 1024
     return f"{val:.1f} TB"
+
+
+def _stream_idle_timeout_seconds() -> float:
+    raw_value = os.getenv(STREAM_IDLE_TIMEOUT_ENV, "").strip()
+    if not raw_value:
+        return DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS
+    try:
+        parsed = float(raw_value)
+    except ValueError:
+        return DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS
+    if parsed <= 0:
+        return DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS
+    return parsed
 
 
 def _peak_memory_bytes_estimate() -> int | None:

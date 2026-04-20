@@ -223,6 +223,10 @@ def _print_cli_event(event: dict[str, object]) -> None:
     tool_name = str(event.get("tool_name") or "")
     if event_type == "tool_start" and tool_name:
         print(f"[tool:start] {tool_name}", flush=True)
+    elif event_type == "tool_phase" and tool_name:
+        phase = str(event.get("phase") or "")
+        if phase:
+            print(f"[tool:phase] {tool_name}: {phase}", flush=True)
     elif event_type == "tool_end" and tool_name:
         print(f"[tool:end] {tool_name}", flush=True)
     elif event_type == "tool_error" and tool_name:

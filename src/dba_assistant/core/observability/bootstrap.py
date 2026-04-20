@@ -89,6 +89,7 @@ def reset_observability_state() -> None:
         for handler in handlers:
             logger.removeHandler(handler)
             handler.close()
+        logger.propagate = True
     _STATE["signature"] = None
     _STATE["logger"] = None
     _STATE["handlers"] = []

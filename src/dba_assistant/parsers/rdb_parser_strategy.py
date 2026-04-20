@@ -1,20 +1,31 @@
 from __future__ import annotations
 
 import csv
+import codecs
 import json
+import logging
 import os
 import queue
+import select
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
+from time import perf_counter
 from typing import Iterable, Iterator, Protocol
 
 from dba_assistant.core.runtime_paths import DEFAULT_TEMP_DIR, ensure_directory
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_HDT_FIFO_IDLE_TIMEOUT_SECONDS = 300.0
+HDT_IDLE_TIMEOUT_ENV = "DBA_ASSISTANT_HDT_FIFO_IDLE_TIMEOUT_SECONDS"
+PARSER_OVERRIDE_ENV = "DBA_ASSISTANT_RDB_PARSER"
 
 
 @dataclass(frozen=True)
@@ -54,9 +65,17 @@ class HdtRdbCliStrategy:
         *,
         binary_path: Path | None = None,
         runner=subprocess.run,
+        fifo_idle_timeout_seconds: float | None = None,
+        writer_join_timeout_seconds: float = 5.0,
     ) -> None:
         self._runner = runner
         self._binary_path = binary_path or _resolve_hdt_rdb_binary()
+        self._fifo_idle_timeout_seconds = (
+            _hdt_fifo_idle_timeout_seconds()
+            if fifo_idle_timeout_seconds is None
+            else fifo_idle_timeout_seconds
+        )
+        self._writer_join_timeout_seconds = writer_join_timeout_seconds
         if self._binary_path is None:
             raise FileNotFoundError(
                 "HDT3213/rdb binary not found. Set DBA_ASSISTANT_HDT_RDB_BIN or install the rdb CLI."
@@ -104,13 +123,41 @@ class HdtRdbCliStrategy:
                 try:
                     # Modify _run_cli to return the process or handle it here
                     cmd = [str(self._binary_path), "-c", "json", "-o", str(output_path), str(path)]
+                    logger.info(
+                        "hdt rdb cli start",
+                        extra={
+                            "event_name": "hdt_rdb_cli_start",
+                            "command": _format_command(cmd),
+                            "path": str(path),
+                            "fifo_path": str(output_path),
+                        },
+                    )
                     p = subprocess.Popen(
                         cmd,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                     )
                     process_box["p"] = p
+                    logger.info(
+                        "hdt rdb cli process started",
+                        extra={
+                            "event_name": "hdt_rdb_cli_process_started",
+                            "pid": getattr(p, "pid", None),
+                            "path": str(path),
+                            "fifo_path": str(output_path),
+                        },
+                    )
                     exit_code = p.wait()
+                    logger.info(
+                        "hdt rdb cli exit",
+                        extra={
+                            "event_name": "hdt_rdb_cli_exit",
+                            "pid": getattr(p, "pid", None),
+                            "exit_code": exit_code,
+                            "path": str(path),
+                            "fifo_path": str(output_path),
+                        },
+                    )
                     if exit_code != 0:
                         raise RuntimeError(f"rdb command failed with {exit_code}")
                 except Exception as exc:  # noqa: BLE001
@@ -118,16 +165,73 @@ class HdtRdbCliStrategy:
 
             writer_thread = threading.Thread(target=writer, daemon=True)
             writer_thread.start()
+            fifo_state: dict[str, object] = {"read_eof": False}
             try:
-                with output_path.open("r", encoding="utf-8") as handle:
-                    yield from _iter_json_array_objects(handle)
+                chunks = _iter_fifo_text_chunks(
+                    output_path,
+                    process_box=process_box,
+                    error_box=error_box,
+                    idle_timeout_seconds=self._fifo_idle_timeout_seconds,
+                    path=path,
+                    fifo_state=fifo_state,
+                )
+                yield from _iter_json_array_objects(_TextChunkHandle(chunks))
             finally:
-                # Force kill the process if still running to unblock FIFO
                 p = process_box.get("p")
+                poll_result = None if p is None else p.poll()
+                logger.info(
+                    "hdt rdb finally enter",
+                    extra={
+                        "event_name": "hdt_rdb_finally_enter",
+                        "path": str(path),
+                        "fifo_path": str(output_path),
+                        "pid": None if p is None else getattr(p, "pid", None),
+                        "poll_result": poll_result,
+                    },
+                )
+                logger.info(
+                    "hdt rdb fifo read status",
+                    extra={
+                        "event_name": "hdt_rdb_fifo_read_status",
+                        "path": str(path),
+                        "fifo_path": str(output_path),
+                        "read_eof": bool(fifo_state.get("read_eof")),
+                    },
+                )
+                # Force kill the process if still running to unblock FIFO
                 if p and p.poll() is None:
+                    logger.info(
+                        "hdt rdb process terminate",
+                        extra={
+                            "event_name": "hdt_rdb_process_terminate",
+                            "path": str(path),
+                            "fifo_path": str(output_path),
+                            "pid": getattr(p, "pid", None),
+                        },
+                    )
                     p.terminate()
-                writer_thread.join(timeout=2.0)
-                if "error" in error_box:
+                logger.info(
+                    "hdt rdb writer join start",
+                    extra={
+                        "event_name": "hdt_rdb_writer_join_start",
+                        "path": str(path),
+                        "fifo_path": str(output_path),
+                        "pid": None if p is None else getattr(p, "pid", None),
+                    },
+                )
+                writer_thread.join(timeout=self._writer_join_timeout_seconds)
+                logger.info(
+                    "hdt rdb writer join end",
+                    extra={
+                        "event_name": "hdt_rdb_writer_join_end",
+                        "path": str(path),
+                        "fifo_path": str(output_path),
+                        "pid": None if p is None else getattr(p, "pid", None),
+                        "writer_alive": writer_thread.is_alive(),
+                        "exit_code": None if p is None else p.poll(),
+                    },
+                )
+                if sys.exc_info()[1] is None and "error" in error_box:
                     raise error_box["error"]
 
     def find_biggest_keys(self, path: Path, *, limit: int = 10) -> list[dict[str, object]]:
@@ -295,15 +399,32 @@ class CompositeRdbParserStrategy:
         raise RuntimeError("All RDB parser strategies failed: " + " | ".join(errors))
 
 
-@lru_cache(maxsize=1)
 def build_default_rdb_parser_strategy() -> CompositeRdbParserStrategy:
+    return _build_default_rdb_parser_strategy((os.getenv(PARSER_OVERRIDE_ENV) or "").strip().lower())
+
+
+@lru_cache(maxsize=8)
+def _build_default_rdb_parser_strategy(parser_override: str) -> CompositeRdbParserStrategy:
     strategies: list[RdbParserStrategy] = []
-    try:
-        strategies.append(HdtRdbCliStrategy())
-    except FileNotFoundError:
-        pass
+    if parser_override in {"legacy", "rdbtools", "legacy_rdbtools"}:
+        logger.info(
+            "forcing legacy rdb parser",
+            extra={
+                "event_name": "rdb_parser_strategy_override",
+                "parser_override": parser_override,
+                "parser_strategy": "LegacyRdbtoolsStrategy",
+            },
+        )
+    else:
+        try:
+            strategies.append(HdtRdbCliStrategy())
+        except FileNotFoundError:
+            pass
     strategies.append(LegacyRdbtoolsStrategy())
     return CompositeRdbParserStrategy(strategies)
+
+
+build_default_rdb_parser_strategy.cache_clear = _build_default_rdb_parser_strategy.cache_clear  # type: ignore[attr-defined]
 
 
 def _normalize_hdt_json_object(obj: object) -> dict[str, object] | None:
@@ -388,6 +509,126 @@ def _looks_like_hdt_rdb(candidate: Path) -> bool:
         "-port",
     )
     return all(marker in output for marker in markers)
+
+
+def _hdt_fifo_idle_timeout_seconds() -> float:
+    raw_value = os.getenv(HDT_IDLE_TIMEOUT_ENV, "").strip()
+    if not raw_value:
+        return DEFAULT_HDT_FIFO_IDLE_TIMEOUT_SECONDS
+    try:
+        parsed = float(raw_value)
+    except ValueError:
+        return DEFAULT_HDT_FIFO_IDLE_TIMEOUT_SECONDS
+    if parsed <= 0:
+        return DEFAULT_HDT_FIFO_IDLE_TIMEOUT_SECONDS
+    return parsed
+
+
+def _format_command(cmd: list[str]) -> str:
+    return " ".join(cmd)
+
+
+class _TextChunkHandle:
+    def __init__(self, chunks: Iterable[str]) -> None:
+        self._chunks = iter(chunks)
+
+    def read(self, _size: int = -1) -> str:
+        try:
+            return next(self._chunks)
+        except StopIteration:
+            return ""
+
+
+def _iter_fifo_text_chunks(
+    fifo_path: Path,
+    *,
+    process_box: dict[str, subprocess.Popen],
+    error_box: dict[str, Exception],
+    idle_timeout_seconds: float,
+    path: Path,
+    fifo_state: dict[str, object] | None = None,
+) -> Iterator[str]:
+    fd: int | None = None
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    last_activity = perf_counter()
+    read_eof = False
+    try:
+        fd = os.open(fifo_path, os.O_RDONLY | os.O_NONBLOCK)
+        logger.info(
+            "hdt rdb fifo opened",
+            extra={
+                "event_name": "hdt_rdb_fifo_opened",
+                "path": str(path),
+                "fifo_path": str(fifo_path),
+            },
+        )
+        while True:
+            wait_seconds = min(1.0, max(0.001, idle_timeout_seconds))
+            readable, _, _ = select.select([fd], [], [], wait_seconds)
+            if readable:
+                data = os.read(fd, 65536)
+                if data:
+                    last_activity = perf_counter()
+                    text = decoder.decode(data)
+                    if text:
+                        yield text
+                    continue
+                read_eof = True
+                if fifo_state is not None:
+                    fifo_state["read_eof"] = True
+                tail = decoder.decode(b"", final=True)
+                if tail:
+                    yield tail
+                logger.info(
+                    "hdt rdb fifo eof",
+                    extra={
+                        "event_name": "hdt_rdb_fifo_eof",
+                        "path": str(path),
+                        "fifo_path": str(fifo_path),
+                        "exit_code": _process_exit_code(process_box),
+                    },
+                )
+                break
+
+            if "error" in error_box:
+                raise error_box["error"]
+
+            idle_elapsed = perf_counter() - last_activity
+            if idle_elapsed >= idle_timeout_seconds:
+                logger.error(
+                    "hdt rdb fifo idle timeout",
+                    extra={
+                        "event_name": "hdt_rdb_fifo_idle_timeout",
+                        "path": str(path),
+                        "fifo_path": str(fifo_path),
+                        "idle_timeout_seconds": idle_timeout_seconds,
+                        "idle_elapsed_seconds": round(idle_elapsed, 6),
+                        "exit_code": _process_exit_code(process_box),
+                    },
+                )
+                raise TimeoutError(
+                    f"HDT RDB JSON stream idle for {idle_timeout_seconds:.3f}s while reading {path}"
+                )
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if not read_eof:
+            logger.info(
+                "hdt rdb fifo closed before eof",
+                extra={
+                    "event_name": "hdt_rdb_fifo_closed_before_eof",
+                    "path": str(path),
+                    "fifo_path": str(fifo_path),
+                    "exit_code": _process_exit_code(process_box),
+                },
+            )
+
+
+def _process_exit_code(process_box: dict[str, subprocess.Popen]) -> int | None:
+    process = process_box.get("p")
+    if process is None:
+        return None
+    return process.poll()
 
 
 class _MemoryRecordStream:

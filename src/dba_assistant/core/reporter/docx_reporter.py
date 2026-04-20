@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from importlib.util import module_from_spec, spec_from_file_location
+import logging
 from pathlib import Path
+from time import perf_counter
 from types import ModuleType
 
 from docx import Document
@@ -31,6 +33,10 @@ from dba_assistant.core.reporter.report_model import (
     coerce_analysis_report,
 )
 from dba_assistant.core.reporter.types import IReporter, ReportArtifact, ReportFormat, ReportOutputConfig
+from dba_assistant.core.observability.rdb_diagnostics import emit_rdb_phase
+
+
+logger = logging.getLogger(__name__)
 
 
 class DocxReporter(IReporter[AnalysisResult | AnalysisReport]):
@@ -42,6 +48,13 @@ class DocxReporter(IReporter[AnalysisResult | AnalysisReport]):
             raise ValueError("DocxReporter requires an output_path.")
 
         template_name = config.template_name or "rdb-analysis"
+        template_load_started = perf_counter()
+        emit_rdb_phase(
+            logger,
+            "rdb_report_template_load_start",
+            template_name=template_name,
+            output_path=str(config.output_path),
+        )
         template_module = self._load_module(
             self.repository_root / "templates" / "reports" / template_name / "template_spec.py",
             f"{template_name.replace('-', '_')}_template",
@@ -57,6 +70,13 @@ class DocxReporter(IReporter[AnalysisResult | AnalysisReport]):
         table_style_module = self._load_module(
             self.repository_root / "templates" / "reports" / "shared" / "table_styles.py",
             "shared_table_styles",
+        )
+        emit_rdb_phase(
+            logger,
+            "rdb_report_template_load_end",
+            template_name=template_name,
+            output_path=str(config.output_path),
+            elapsed_seconds=round(perf_counter() - template_load_started, 6),
         )
 
         language = self._resolve_language(analysis, config)
@@ -80,12 +100,28 @@ class DocxReporter(IReporter[AnalysisResult | AnalysisReport]):
             self._render_major_heading(document, major_index, str(template_text["summary_heading"]), language=language)
             add_body_paragraph(document, summary_text)
 
+        section_render_started = perf_counter()
+        emit_rdb_phase(
+            logger,
+            "rdb_report_section_render_start",
+            template_name=template_name,
+            output_path=str(config.output_path),
+            section_count=len(sections),
+        )
         major_index = self._render_sections(
             document,
             sections,
             table_style_module,
             language,
             start_major_index=major_index,
+        )
+        emit_rdb_phase(
+            logger,
+            "rdb_report_section_render_end",
+            template_name=template_name,
+            output_path=str(config.output_path),
+            section_count=len(sections),
+            elapsed_seconds=round(perf_counter() - section_render_started, 6),
         )
 
         if template_module.TEMPLATE["include_disclaimer"]:
@@ -95,7 +131,21 @@ class DocxReporter(IReporter[AnalysisResult | AnalysisReport]):
                 add_body_paragraph(document, str(paragraph))
 
         config.output_path.parent.mkdir(parents=True, exist_ok=True)
+        save_started = perf_counter()
+        emit_rdb_phase(
+            logger,
+            "rdb_docx_save_start",
+            template_name=template_name,
+            output_path=str(config.output_path),
+        )
         document.save(config.output_path)
+        emit_rdb_phase(
+            logger,
+            "rdb_docx_save_end",
+            template_name=template_name,
+            output_path=str(config.output_path),
+            elapsed_seconds=round(perf_counter() - save_started, 6),
+        )
         return ReportArtifact(format=ReportFormat.DOCX, output_path=config.output_path, content=None)
 
     def _render_cover(self, document: Document, cover, metadata: dict[str, str], language: str) -> None:

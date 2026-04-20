@@ -841,6 +841,44 @@ def test_analyze_local_rdb_tool_runs_full_pipeline(monkeypatch, tmp_path: Path) 
     assert "summary" in result.lower() or "text" in result.lower() or len(result) > 0
 
 
+def test_analyze_local_rdb_stream_emits_phase_events(monkeypatch, tmp_path: Path) -> None:
+    from dba_assistant.core.reporter.report_model import AnalysisReport, ReportSectionModel, TextBlock
+
+    def fake_analyze_rdb_tool(**_kwargs):
+        return AnalysisReport(
+            title="Redis RDB 分析报告",
+            sections=[ReportSectionModel(id="s1", title="摘要", blocks=[TextBlock(text="ok")])],
+            language="zh-CN",
+        )
+
+    monkeypatch.setattr("dba_assistant.orchestrator.tools.analyze_rdb_tool", fake_analyze_rdb_tool)
+    monkeypatch.setattr(
+        "dba_assistant.core.reporter.report_model.render_summary_text",
+        lambda report, *, language=None: "summary text",
+    )
+
+    events: list[dict[str, object]] = []
+    request = _make_request()
+    tools = build_all_tools(request, event_handler=events.append)
+    analyze_tool = next(t for t in tools if t.__name__ == "analyze_local_rdb_stream")
+    source = tmp_path / "dump.rdb"
+    source.write_text("fixture", encoding="utf-8")
+
+    result = analyze_tool(input_paths=str(source), output_mode="summary", report_format="summary")
+
+    assert "ok" in result
+    phases = [
+        event.get("phase")
+        for event in events
+        if event.get("type") == "tool_phase"
+        and event.get("tool_name") == "analyze_local_rdb_stream"
+    ]
+    assert "rdb_direct_analysis_start" in phases
+    assert "rdb_direct_analysis_end" in phases
+    assert "rdb_report_render_start" in phases
+    assert "rdb_report_render_end" in phases
+
+
 def test_analyze_local_rdb_tool_passes_request_top_n_and_explicit_focus_prefix_overrides(
     monkeypatch,
     tmp_path: Path,
